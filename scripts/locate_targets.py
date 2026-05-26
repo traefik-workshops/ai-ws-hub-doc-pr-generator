@@ -53,3 +53,14 @@ def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
             "rationale": f"Inferred section dir {d} from touched paths",
         })
     return out
+
+
+def select_neighbors(*, doc_repo_root: str, target_path: str, limit: int = 5) -> list[str]:
+    target_dir = Path(doc_repo_root) / Path(target_path).parent
+    if not target_dir.is_dir():
+        return []
+    candidates = sorted(
+        p for p in target_dir.iterdir()
+        if p.is_file() and p.suffix in {".md", ".mdx"}
+    )
+    return [str(p.relative_to(doc_repo_root)) for p in candidates[:limit]]

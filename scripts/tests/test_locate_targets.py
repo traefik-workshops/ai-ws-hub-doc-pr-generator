@@ -1,5 +1,8 @@
 import unittest
+import tempfile
+from pathlib import Path
 from scripts.locate_targets import propose_paths
+from scripts.locate_targets import select_neighbors
 
 
 class TestProposePaths(unittest.TestCase):
@@ -32,6 +35,30 @@ class TestProposePaths(unittest.TestCase):
         self.assertTrue(
             any(c["path"].startswith("docs/content/reference/") for c in cands)
         )
+
+
+class TestSelectNeighbors(unittest.TestCase):
+    def test_picks_up_to_five_md_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway/middlewares"
+            d.mkdir(parents=True)
+            for name in ("llm-guard.md", "token-rate-limit.md", "content-guard.md",
+                         "parallel-llm-guard.md", "mcp.md", "extra.md"):
+                (d / name).write_text("placeholder")
+            picked = select_neighbors(
+                doc_repo_root=td,
+                target_path="docs/ai-gateway/middlewares/new-thing.md",
+            )
+        self.assertLessEqual(len(picked), 5)
+        self.assertTrue(all(p.endswith(".md") for p in picked))
+
+    def test_returns_empty_if_dir_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            picked = select_neighbors(
+                doc_repo_root=td,
+                target_path="docs/nope/x.md",
+            )
+        self.assertEqual(picked, [])
 
 
 if __name__ == "__main__":
