@@ -2718,9 +2718,12 @@ class TestOpenHubPr(unittest.TestCase):
                 title="docs: add X",
                 body="...",
             )
-        # First git call should be `git push <fork remote> <branch>:<branch>`.
-        push_call = next(c for c in calls if c[0] == "git" and "push" in c[1][1])
-        self.assertIn("alice/hub-doc", " ".join(push_call[1][1]) + " ".join(push_call[1][1]))
+        # The fork URL should flow through the remote-add call.
+        remote_call = next(c for c in calls if c[0] == "git" and c[1][1][:2] == ["remote", "add"])
+        self.assertIn("alice/hub-doc", " ".join(remote_call[1][1]))
+        # And the gh pr create --head should reference the fork owner.
+        gh_call = next(c for c in calls if c[0] == "gh-text")
+        self.assertIn("alice:docs/x", gh_call[1])
         self.assertEqual(url, "https://github.com/traefik/hub-doc/pull/999")
 ```
 
