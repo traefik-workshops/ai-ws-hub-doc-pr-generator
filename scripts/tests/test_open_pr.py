@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch
-from scripts.open_pr import detect_fork, open_hub_pr
+from scripts.open_pr import detect_fork, open_hub_pr, commit_oss_docs
 
 
 class TestDetectFork(unittest.TestCase):
@@ -43,6 +43,33 @@ class TestOpenHubPr(unittest.TestCase):
         gh_call = next(c for c in calls if c[0] == "gh-text")
         self.assertIn("alice:docs/x", gh_call[1])
         self.assertEqual(url, "https://github.com/traefik/hub-doc/pull/999")
+
+
+class TestCommitOssDocs(unittest.TestCase):
+    def test_single_pr_commit_no_refs(self):
+        with patch("scripts.open_pr._git.run") as g:
+            commit_oss_docs(
+                impl_repo_root="/traefik",
+                title="add encoded characters middleware",
+                doc_files=["docs/content/reference/x.md"],
+                refs_other_prs=[],
+            )
+        commit_call = next(c for c in g.call_args_list if c[0][1][0] == "commit")
+        cmd = " ".join(commit_call[0][1])
+        self.assertIn("docs: add encoded characters middleware", cmd)
+        self.assertNotIn("Refs:", cmd)
+
+    def test_multi_pr_commit_has_refs(self):
+        with patch("scripts.open_pr._git.run") as g:
+            commit_oss_docs(
+                impl_repo_root="/traefik",
+                title="add encoded characters middleware",
+                doc_files=["docs/content/reference/x.md"],
+                refs_other_prs=[5678, 5680],
+            )
+        commit_call = next(c for c in g.call_args_list if c[0][1][0] == "commit")
+        cmd = " ".join(commit_call[0][1])
+        self.assertIn("Refs: traefik#5678, traefik#5680", cmd)
 
 
 if __name__ == "__main__":
