@@ -71,3 +71,35 @@ def _title_to_heading(title: str) -> str:
     # Strip "feat: " / "fix: " etc.; Title-Case the remainder.
     stripped = _PREFIX_RE.sub("", title, count=1).lstrip(":").strip()
     return stripped[:1].upper() + stripped[1:] if stripped else ""
+
+
+_UI_MARKER_RE = re.compile(r"<BrowserWindow\b|!\[[^\]]*\]\(/img/")
+
+
+def needs_screenshots(*, neighbor_paths: list[str], touched_paths: list[str]) -> dict:
+    signals: list[str] = []
+    ui_touch = any(
+        p.startswith("hub/dashboard/") or p.startswith("hub/portal/")
+        for p in touched_paths
+    )
+    if ui_touch:
+        signals.append("ui-code-touched")
+        return {"verdict": "yes", "signals": signals}
+
+    if not neighbor_paths:
+        return {"verdict": "no", "signals": ["no-neighbors"]}
+
+    hits = 0
+    for p in neighbor_paths:
+        try:
+            text = Path(p).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _UI_MARKER_RE.search(text):
+            hits += 1
+
+    ratio = hits / len(neighbor_paths)
+    signals.append(f"neighbor-ui-ratio={ratio:.2f}")
+    if ratio >= 0.5:
+        return {"verdict": "yes", "signals": signals}
+    return {"verdict": "no", "signals": signals}

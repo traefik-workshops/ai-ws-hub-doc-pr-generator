@@ -1,5 +1,9 @@
 import unittest
 from scripts.classify import feature_type, needs_release_note
+from scripts.classify import needs_screenshots
+from pathlib import Path
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class TestFeatureType(unittest.TestCase):
@@ -62,6 +66,31 @@ class TestReleaseNote(unittest.TestCase):
             impl_repo="traefik/traefik-hub",
         )
         self.assertEqual(result["verdict"], "no")
+
+
+class TestScreenshots(unittest.TestCase):
+    def test_ui_neighbors_yes(self):
+        result = needs_screenshots(
+            neighbor_paths=[str(FIXTURES / "hub_doc_neighbor_ui.mdx")] * 3
+            + [str(FIXTURES / "hub_doc_neighbor_middleware.md")],
+            touched_paths=["hub/dashboard/src/App.tsx"],
+        )
+        self.assertEqual(result["verdict"], "yes")
+
+    def test_pure_reference_no(self):
+        result = needs_screenshots(
+            neighbor_paths=[str(FIXTURES / "hub_doc_neighbor_middleware.md")] * 4,
+            touched_paths=["hub/pkg/middleware/tokenratelimit/config.go"],
+        )
+        self.assertEqual(result["verdict"], "no")
+
+    def test_dashboard_code_strong_yes(self):
+        # Even with no neighbors, touching dashboard code is a strong signal.
+        result = needs_screenshots(
+            neighbor_paths=[],
+            touched_paths=["hub/dashboard/src/App.tsx"],
+        )
+        self.assertEqual(result["verdict"], "yes")
 
 
 if __name__ == "__main__":
