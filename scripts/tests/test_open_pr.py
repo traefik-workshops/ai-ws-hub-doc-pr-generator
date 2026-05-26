@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch
-from scripts.open_pr import detect_fork, open_hub_pr, commit_oss_docs
+from scripts.open_pr import detect_fork, open_hub_pr, commit_oss_docs, branch_slug_from_title
 
 
 class TestDetectFork(unittest.TestCase):
@@ -70,6 +70,19 @@ class TestCommitOssDocs(unittest.TestCase):
         commit_call = next(c for c in g.call_args_list if c[0][1][0] == "commit")
         cmd = " ".join(commit_call[0][1])
         self.assertIn("Refs: traefik#5678, traefik#5680", cmd)
+
+
+class TestBranchSlug(unittest.TestCase):
+    def test_strips_prefix_and_lowercases(self):
+        self.assertEqual(
+            branch_slug_from_title("feat: add onDenyResponse to ratelimit"),
+            "docs/add-ondenyresponse-to-ratelimit",
+        )
+
+    def test_caps_length(self):
+        title = "feat: " + "x" * 200
+        slug = branch_slug_from_title(title)
+        self.assertLessEqual(len(slug), 40 + len("docs/"))
 
 
 if __name__ == "__main__":
