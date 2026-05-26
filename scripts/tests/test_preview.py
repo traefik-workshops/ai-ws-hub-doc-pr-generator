@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from scripts.preview import apply_edits, FileEdit
+from unittest.mock import patch
+from scripts.preview import run_linter, LintResult
 
 
 def _init_git(d: Path) -> None:
@@ -32,6 +34,37 @@ class TestApplyEdits(unittest.TestCase):
             edits = [FileEdit(path="existing.md", content="new\n", mode="overwrite")]
             apply_edits(repo_path=str(d), branch="docs/test", edits=edits)
             self.assertEqual((d / "existing.md").read_text(), "new\n")
+
+
+class TestRunLinter(unittest.TestCase):
+    def test_hub_invokes_yarn(self):
+        with patch("scripts.preview.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.stderr = ""
+            result = run_linter(repo_path="/hub-doc", impl_repo="traefik/traefik-hub")
+        self.assertIsInstance(result, LintResult)
+        self.assertTrue(result.ok)
+        first_call_args = mock_run.call_args_list[0][0][0]
+        self.assertIn("yarn", first_call_args[0])
+
+    def test_oss_invokes_mkdocs(self):
+        with patch("scripts.preview.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.stderr = ""
+            result = run_linter(repo_path="/traefik", impl_repo="traefik/traefik")
+        call_args = mock_run.call_args_list[0][0][0]
+        self.assertIn("mkdocs", " ".join(call_args))
+
+    def test_failure_captures_stderr(self):
+        with patch("scripts.preview.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.stderr = "MD013 line too long"
+            result = run_linter(repo_path="/hub-doc", impl_repo="traefik/traefik-hub")
+        self.assertFalse(result.ok)
+        self.assertIn("MD013", result.errors)
 
 
 if __name__ == "__main__":
