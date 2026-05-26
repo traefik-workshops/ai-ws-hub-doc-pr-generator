@@ -103,3 +103,37 @@ def needs_screenshots(*, neighbor_paths: list[str], touched_paths: list[str]) ->
     if ratio >= 0.5:
         return {"verdict": "yes", "signals": signals}
     return {"verdict": "no", "signals": signals}
+
+
+def doc_kind_candidates(
+    *, title: str, touched_paths: list[str], neighbor_paths: list[str]
+) -> list[dict]:
+    title_l = title.lower()
+    score_ref = 0.0
+    score_guide = 0.0
+    rationale_ref: list[str] = []
+    rationale_guide: list[str] = []
+
+    if any(p.startswith("hub/pkg/middleware/") or "/config.go" in p for p in touched_paths):
+        score_ref += 0.6
+        rationale_ref.append("touches config/middleware Go package")
+    if any(p.startswith("hub/dashboard/") or p.startswith("hub/portal/") for p in touched_paths):
+        score_guide += 0.6
+        rationale_guide.append("touches UI code")
+    if any(w in title_l for w in ("guide", "tutorial", "walkthrough", "setup")):
+        score_guide += 0.4
+        rationale_guide.append("title hints at guide")
+    if "reference" in title_l or "crd" in title_l:
+        score_ref += 0.4
+        rationale_ref.append("title mentions reference/CRD")
+
+    # Normalise to [0,1]
+    total = max(score_ref + score_guide, 1.0)
+    cands = [
+        {"kind": "reference", "confidence": round(score_ref / total, 2),
+         "rationale": "; ".join(rationale_ref) or "no signal"},
+        {"kind": "user-guide", "confidence": round(score_guide / total, 2),
+         "rationale": "; ".join(rationale_guide) or "no signal"},
+    ]
+    cands.sort(key=lambda c: c["confidence"], reverse=True)
+    return cands

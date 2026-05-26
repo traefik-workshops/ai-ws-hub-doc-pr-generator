@@ -1,6 +1,7 @@
 import unittest
 from scripts.classify import feature_type, needs_release_note
 from scripts.classify import needs_screenshots
+from scripts.classify import doc_kind_candidates
 from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -91,6 +92,34 @@ class TestScreenshots(unittest.TestCase):
             touched_paths=["hub/dashboard/src/App.tsx"],
         )
         self.assertEqual(result["verdict"], "yes")
+
+
+class TestDocKindCandidates(unittest.TestCase):
+    def test_middleware_code_leans_reference(self):
+        cands = doc_kind_candidates(
+            title="feat: add onDenyResponse to token ratelimit middleware",
+            touched_paths=["hub/pkg/middleware/tokenratelimit/config.go"],
+            neighbor_paths=[],
+        )
+        top = cands[0]
+        self.assertEqual(top["kind"], "reference")
+        self.assertGreater(top["confidence"], 0.5)
+
+    def test_dashboard_code_leans_user_guide(self):
+        cands = doc_kind_candidates(
+            title="feat: add quota panel",
+            touched_paths=["hub/dashboard/src/QuotaPanel.tsx"],
+            neighbor_paths=[],
+        )
+        self.assertEqual(cands[0]["kind"], "user-guide")
+
+    def test_title_hint_guide(self):
+        cands = doc_kind_candidates(
+            title="feat: guide for setting up X",
+            touched_paths=[],
+            neighbor_paths=[],
+        )
+        self.assertEqual(cands[0]["kind"], "user-guide")
 
 
 if __name__ == "__main__":
