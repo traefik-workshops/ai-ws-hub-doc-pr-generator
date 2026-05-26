@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 from scripts.locate_targets import propose_paths
 from scripts.locate_targets import select_neighbors
+from scripts.locate_targets import sidebar_insertion_point, build_locate
 
 
 class TestProposePaths(unittest.TestCase):
@@ -59,6 +60,43 @@ class TestSelectNeighbors(unittest.TestCase):
                 target_path="docs/nope/x.md",
             )
         self.assertEqual(picked, [])
+
+
+class TestSidebarInsertionPoint(unittest.TestCase):
+    def test_finds_section_by_dir_prefix(self):
+        sidebars_js = '''
+const sidebars = {
+  apiSidebar: [
+    { type: "category", label: "AI Gateway", items: [
+      "ai-gateway/middlewares/llm-guard",
+      "ai-gateway/middlewares/content-guard",
+    ]},
+  ],
+};
+'''
+        ins = sidebar_insertion_point(
+            sidebars_js, target_path="docs/ai-gateway/middlewares/new-thing.md",
+        )
+        self.assertEqual(ins["after_id"], "ai-gateway/middlewares/content-guard")
+
+
+class TestBuildLocate(unittest.TestCase):
+    def test_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "docs/ai-gateway/middlewares").mkdir(parents=True)
+            (Path(td) / "docs/ai-gateway/middlewares/llm-guard.md").write_text("x")
+            (Path(td) / "sidebars.js").write_text(
+                'const sidebars = { apiSidebar: ["ai-gateway/middlewares/llm-guard"] };'
+            )
+            out = build_locate(
+                impl_repo="traefik/traefik-hub",
+                doc_repo_root=td,
+                doc_kind="reference",
+                feature_slug="new-thing",
+                touched_paths=["hub/pkg/middleware/newthing/config.go"],
+            )
+        self.assertTrue(out["candidates"][0]["path"].endswith("new-thing.md"))
+        self.assertEqual(out["sidebar_insertion_point"]["file"], "sidebars.js")
 
 
 if __name__ == "__main__":
