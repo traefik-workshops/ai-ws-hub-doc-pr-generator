@@ -18,3 +18,27 @@ def detect_fork(*, upstream: str) -> Optional[str]:
         if parent == upstream:
             return f"{user}/{r['name']}"
     return None
+
+
+UPSTREAM_HUB_DOC = "traefik/hub-doc"
+
+
+def open_hub_pr(*, doc_repo_root: str, fork: str, branch: str,
+                title: str, body: str) -> str:
+    fork_url = f"https://github.com/{fork}.git"
+    # Add fork remote if missing; ignore failure if it already exists.
+    try:
+        _git.run(doc_repo_root, ["remote", "add", "fork", fork_url])
+    except _git.GitError:
+        _git.run(doc_repo_root, ["remote", "set-url", "fork", fork_url])
+    _git.run(doc_repo_root, ["push", "-u", "fork", f"{branch}:{branch}"])
+    url = _gh.run_text([
+        "pr", "create",
+        "--repo", UPSTREAM_HUB_DOC,
+        "--base", "master",
+        "--head", f"{fork.split('/')[0]}:{branch}",
+        "--draft",
+        "--title", title,
+        "--body", body,
+    ]).strip()
+    return url
