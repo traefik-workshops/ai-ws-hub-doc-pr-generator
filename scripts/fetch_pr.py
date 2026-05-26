@@ -14,6 +14,11 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
+from scripts import _gh
+
+
+DIFF_LINE_CAP = 2000
+
 
 _PR_URL_RE = re.compile(
     r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<num>\d+)/?$"
@@ -24,6 +29,43 @@ _PR_URL_RE = re.compile(
 class PrRef:
     repo: str   # "owner/name"
     number: int
+
+
+def fetch_single(ref: PrRef) -> dict:
+    owner_repo = ref.repo
+    view = _gh.run_json([
+        "pr", "view", str(ref.number),
+        "--repo", owner_repo,
+        "--json",
+        "number,title,body,labels,author,headRefName,baseRefName,headRefOid,"
+        "isDraft,mergeable,files,closingIssuesReferences",
+    ])
+    diff_text = _gh.run_text(["pr", "diff", str(ref.number), "--repo", owner_repo, "--patch"])
+    diff_lines = diff_text.splitlines()
+    truncated = len(diff_lines) > DIFF_LINE_CAP
+    diff_capped = "\n".join(diff_lines[:DIFF_LINE_CAP])
+
+    return {
+        "number": view["number"],
+        "title": view["title"],
+        "body": view.get("body") or "",
+        "labels": [l["name"] for l in view.get("labels", [])],
+        "author": (view.get("author") or {}).get("login", ""),
+        "branch": view["headRefName"],
+        "base": view["baseRefName"],
+        "head": view["headRefOid"],
+        "isDraft": view.get("isDraft", False),
+        "mergeable": view.get("mergeable", "UNKNOWN"),
+        "diff": diff_capped,
+        "diff_truncated": truncated,
+        "files_changed": [
+            {"path": f["path"], "additions": f["additions"], "deletions": f["deletions"]}
+            for f in view.get("files", [])
+        ],
+        "closingIssuesReferences": [
+            n["number"] for n in (view.get("closingIssuesReferences") or {}).get("nodes", [])
+        ],
+    }
 
 
 def parse_pr_inputs(args: list[str], cwd_remote: Optional[str]) -> list[PrRef]:

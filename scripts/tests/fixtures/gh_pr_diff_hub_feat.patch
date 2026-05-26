@@ -1,0 +1,10 @@
+diff --git a/hub/pkg/middleware/tokenratelimit/config.go b/hub/pkg/middleware/tokenratelimit/config.go
+index 1111111..2222222 100644
+--- a/hub/pkg/middleware/tokenratelimit/config.go
++++ b/hub/pkg/middleware/tokenratelimit/config.go
+@@ -1,5 +1,8 @@
+ package tokenratelimit
+
+ type Config struct {
++	OnDenyResponse *aiformat.DenyResponse `json:"onDenyResponse,omitempty"`
+ }

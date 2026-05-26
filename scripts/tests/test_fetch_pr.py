@@ -1,5 +1,10 @@
 import unittest
-from scripts.fetch_pr import parse_pr_inputs, PrRef
+import json
+from pathlib import Path
+from unittest.mock import patch
+from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class TestParsePrInputs(unittest.TestCase):
@@ -39,6 +44,23 @@ class TestParsePrInputs(unittest.TestCase):
                 ],
                 cwd_remote=None,
             )
+
+
+class TestFetchSingle(unittest.TestCase):
+    def test_fetch_single_returns_normalized_shape(self):
+        view = json.loads((FIXTURES / "gh_pr_view_hub_feat.json").read_text())
+        diff = (FIXTURES / "gh_pr_diff_hub_feat.patch").read_text()
+        with patch("scripts.fetch_pr._gh.run_json", return_value=view), \
+             patch("scripts.fetch_pr._gh.run_text", return_value=diff):
+            result = fetch_single(PrRef("traefik/traefik-hub", 1234))
+        self.assertEqual(result["number"], 1234)
+        self.assertEqual(result["title"], view["title"])
+        self.assertIn("Closes #5678", result["body"])
+        self.assertEqual(result["base"], "master")
+        self.assertFalse(result["diff_truncated"])
+        self.assertEqual(len(result["files_changed"]), 2)
+        self.assertEqual(result["files_changed"][0]["path"],
+                         "hub/pkg/middleware/tokenratelimit/config.go")
 
 
 if __name__ == "__main__":
