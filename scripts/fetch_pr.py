@@ -196,6 +196,19 @@ def merge_prs(prs: list[dict]) -> dict:
     }
 
 
+def find_existing_doc_pr(impl_repo: str, pr_number: int) -> Optional[dict]:
+    if impl_repo != "traefik/traefik-hub":
+        return None
+    short = impl_repo.split("/")[-1]
+    results = _gh.run_json([
+        "pr", "list", "--repo", "traefik/hub-doc",
+        "--state", "open",
+        "--search", f"{short}#{pr_number}",
+        "--json", "number,title,url",
+    ])
+    return results[0] if results else None
+
+
 def main(argv: list[str]) -> int:
     # Filled in by later tasks.
     parser = argparse.ArgumentParser()

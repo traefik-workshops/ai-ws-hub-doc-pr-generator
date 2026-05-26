@@ -2,7 +2,7 @@ import unittest
 import json
 from pathlib import Path
 from unittest.mock import patch
-from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE, merge_prs
+from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE, merge_prs, find_existing_doc_pr
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -128,6 +128,24 @@ class TestMergePrs(unittest.TestCase):
         self.assertEqual(paths, ["a.go"])
         # Sum additions when deduping
         self.assertEqual(merged["files_changed"][0]["additions"], 8)
+
+
+class TestFindExistingDocPr(unittest.TestCase):
+    def test_hub_returns_match(self):
+        with patch("scripts.fetch_pr._gh.run_json",
+                   return_value=[{"number": 999, "title": "docs: ...", "url": "..."}]):
+            match = find_existing_doc_pr("traefik/traefik-hub", 1234)
+        self.assertEqual(match["number"], 999)
+
+    def test_hub_returns_none_when_empty(self):
+        with patch("scripts.fetch_pr._gh.run_json", return_value=[]):
+            match = find_existing_doc_pr("traefik/traefik-hub", 1234)
+        self.assertIsNone(match)
+
+    def test_oss_returns_none(self):
+        # OSS does not file separate doc PRs — duplicate detection is the impl PR diff.
+        match = find_existing_doc_pr("traefik/traefik", 1234)
+        self.assertIsNone(match)
 
 
 if __name__ == "__main__":
