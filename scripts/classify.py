@@ -137,3 +137,39 @@ def doc_kind_candidates(
     ]
     cands.sort(key=lambda c: c["confidence"], reverse=True)
     return cands
+
+
+def classify(bundle: dict, *, grounding: dict, neighbor_paths: list[str]) -> dict:
+    primary = next(
+        (p for p in bundle["prs"] if p["number"] == bundle["merged"]["primary_pr"]),
+        bundle["prs"][0],
+    )
+    touched = [f["path"] for f in bundle["merged"]["files_changed"]]
+    return {
+        "feature_type": feature_type(primary["title"]),
+        "needs_release_note": needs_release_note(primary, impl_repo=bundle["impl_repo"]),
+        "needs_screenshots": needs_screenshots(
+            neighbor_paths=neighbor_paths, touched_paths=touched
+        ),
+        "doc_kind_candidates": doc_kind_candidates(
+            title=primary["title"], touched_paths=touched, neighbor_paths=neighbor_paths
+        ),
+    }
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bundle", required=True, help="path to pr-bundle.json")
+    parser.add_argument("--grounding", required=True, help="path to grounding.json")
+    parser.add_argument("--neighbor", action="append", default=[],
+                        help="path to a neighbor doc file; repeat")
+    args = parser.parse_args(argv)
+    bundle = json.loads(Path(args.bundle).read_text())
+    grounding = json.loads(Path(args.grounding).read_text())
+    out = classify(bundle, grounding=grounding, neighbor_paths=args.neighbor)
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

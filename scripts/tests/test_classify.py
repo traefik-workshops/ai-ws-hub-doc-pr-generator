@@ -2,6 +2,7 @@ import unittest
 from scripts.classify import feature_type, needs_release_note
 from scripts.classify import needs_screenshots
 from scripts.classify import doc_kind_candidates
+from scripts.classify import classify
 from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -120,6 +121,31 @@ class TestDocKindCandidates(unittest.TestCase):
             neighbor_paths=[],
         )
         self.assertEqual(cands[0]["kind"], "user-guide")
+
+
+class TestClassify(unittest.TestCase):
+    def test_envelope_combines_all_three(self):
+        bundle = {
+            "impl_repo": "traefik/traefik-hub",
+            "prs": [{
+                "number": 1234,
+                "title": "feat: add onDenyResponse to token ratelimit middleware",
+                "labels": ["feature"],
+                "body": "",
+            }],
+            "merged": {
+                "files_changed": [
+                    {"path": "hub/pkg/middleware/tokenratelimit/config.go"}
+                ],
+                "primary_pr": 1234,
+            },
+        }
+        result = classify(bundle, grounding={"concepts": []}, neighbor_paths=[])
+        self.assertEqual(result["feature_type"], "feat")
+        self.assertEqual(result["needs_release_note"]["verdict"], "yes")
+        self.assertEqual(result["needs_release_note"]["proposed_shape"], "ea-subsection")
+        self.assertEqual(result["needs_screenshots"]["verdict"], "no")
+        self.assertEqual(result["doc_kind_candidates"][0]["kind"], "reference")
 
 
 if __name__ == "__main__":
