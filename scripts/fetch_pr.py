@@ -158,6 +158,44 @@ def collect_issues(repo: str, pr_body: str, closing_refs: list[int]) -> list[dic
     return out
 
 
+def merge_prs(prs: list[dict]) -> dict:
+    if not prs:
+        return {"files_changed": [], "linked_issues": [], "sub_issues": [],
+                "primary_pr": None, "title_synthesis": ""}
+
+    by_path: dict[str, dict] = {}
+    for pr in prs:
+        for f in pr.get("files_changed", []):
+            entry = by_path.setdefault(
+                f["path"], {"path": f["path"], "additions": 0, "deletions": 0}
+            )
+            entry["additions"] += f.get("additions", 0)
+            entry["deletions"] += f.get("deletions", 0)
+
+    seen_issue_nums: set[int] = set()
+    linked_issues = []
+    sub_issues = []
+    for pr in prs:
+        for iss in pr.get("linked_issues", []):
+            if iss["number"] in seen_issue_nums:
+                continue
+            seen_issue_nums.add(iss["number"])
+            (sub_issues if iss.get("is_sub_issue") else linked_issues).append(iss)
+
+    primary = max(
+        prs,
+        key=lambda p: sum(f.get("additions", 0) for f in p.get("files_changed", [])),
+    )
+
+    return {
+        "files_changed": list(by_path.values()),
+        "linked_issues": linked_issues,
+        "sub_issues": sub_issues,
+        "primary_pr": primary["number"],
+        "title_synthesis": " / ".join(p["title"] for p in prs),
+    }
+
+
 def main(argv: list[str]) -> int:
     # Filled in by later tasks.
     parser = argparse.ArgumentParser()

@@ -2,7 +2,7 @@ import unittest
 import json
 from pathlib import Path
 from unittest.mock import patch
-from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE
+from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE, merge_prs
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -96,6 +96,38 @@ class TestCollectIssues(unittest.TestCase):
             )
         authors = [c["author"] for c in issues[0]["comments"]]
         self.assertEqual(authors, ["alice"])
+
+
+class TestMergePrs(unittest.TestCase):
+    def test_single_pr_primary_is_only_pr(self):
+        prs = [{"number": 7, "files_changed": [{"path": "a.go", "additions": 3, "deletions": 0}],
+                "title": "feat: A", "linked_issues": [], "sub_issues": []}]
+        merged = merge_prs(prs)
+        self.assertEqual(merged["primary_pr"], 7)
+        self.assertEqual(merged["files_changed"][0]["path"], "a.go")
+
+    def test_multi_pr_picks_largest_as_primary(self):
+        prs = [
+            {"number": 7, "files_changed": [{"path": "a.go", "additions": 3, "deletions": 0}],
+             "title": "feat: A", "linked_issues": [], "sub_issues": []},
+            {"number": 8, "files_changed": [{"path": "b.go", "additions": 50, "deletions": 0}],
+             "title": "feat: B", "linked_issues": [], "sub_issues": []},
+        ]
+        merged = merge_prs(prs)
+        self.assertEqual(merged["primary_pr"], 8)
+
+    def test_files_changed_dedupes_by_path(self):
+        prs = [
+            {"number": 7, "files_changed": [{"path": "a.go", "additions": 3, "deletions": 0}],
+             "title": "", "linked_issues": [], "sub_issues": []},
+            {"number": 8, "files_changed": [{"path": "a.go", "additions": 5, "deletions": 1}],
+             "title": "", "linked_issues": [], "sub_issues": []},
+        ]
+        merged = merge_prs(prs)
+        paths = [f["path"] for f in merged["files_changed"]]
+        self.assertEqual(paths, ["a.go"])
+        # Sum additions when deduping
+        self.assertEqual(merged["files_changed"][0]["additions"], 8)
 
 
 if __name__ == "__main__":
