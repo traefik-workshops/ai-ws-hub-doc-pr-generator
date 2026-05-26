@@ -1201,7 +1201,7 @@ INDEX_PATH = "INDEX.md"
 DOC_INDEX_PATH = "DOC_INDEX.json"
 
 _HEADER_RE = re.compile(r"^###\s+(?P<id>\S+)\s*$")
-_FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.+)$")
+_FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
 _BULLET_RE = re.compile(r"^\s+-\s+(?P<val>.+)$")
 
 
