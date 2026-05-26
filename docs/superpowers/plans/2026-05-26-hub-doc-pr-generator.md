@@ -1780,6 +1780,7 @@ class TestClassify(unittest.TestCase):
         bundle = {
             "impl_repo": "traefik/traefik-hub",
             "prs": [{
+                "number": 1234,
                 "title": "feat: add onDenyResponse to token ratelimit middleware",
                 "labels": ["feature"],
                 "body": "",
