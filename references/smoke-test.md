@@ -4,7 +4,7 @@ End-to-end check that the skill produces something sensible against a real recen
 
 ## Prerequisites
 
-- Local clones at `$HUB_DOC_PATH` (default `~/Developer/traefik-playground/hub-doc`) on a clean `master`.
+- Local clones at `$HUB_DOC_PATH` (default `~/Developer/traefik-playground/hub-doc`) on a clean `main`.
 - `gh` authenticated.
 
 ## Steps

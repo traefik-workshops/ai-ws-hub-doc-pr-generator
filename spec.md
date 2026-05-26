@@ -45,7 +45,7 @@ Intended outcome: a draft doc PR (or doc commit) that's good enough to need only
 
 | Impl repo | Doc target | Mechanism | Release notes? |
 |---|---|---|---|
-| `traefik/traefik-hub` | `traefik/hub-doc` | New branch in engineer's fork → draft PR cross-repo against `traefik/hub-doc:master` | Yes, when warranted (see §7) — appended to `docs/api-gateway/release-notes.mdx` |
+| `traefik/traefik-hub` | `traefik/hub-doc` | New branch in engineer's fork → draft PR cross-repo against `traefik/hub-doc:main` | Yes, when warranted (see §7) — appended to `docs/api-gateway/release-notes.mdx` |
 | `traefik/traefik` | same repo, `docs/content/...` | New commit appended to the impl PR branch (no separate PR) | **Never** — OSS doesn't use this release-notes file |
 | anything else | — | Refuse with `unsupported impl repo: <owner>/<name>` | — |
 
@@ -119,7 +119,7 @@ Output: `pr-bundle.json` — a list of per-PR entries plus an aggregate view:
   "impl_repo": "traefik/traefik-hub",
   "prs": [
     { "number": 1234, "title": "...", "body": "...", "labels": [...], "author": "...",
-      "branch": "...", "base": "master", "head": "abc123",
+      "branch": "...", "base": "main", "head": "abc123",
       "isDraft": false, "mergeable": true,
       "diff": "<unified patch, capped at 2000 lines>",
       "diff_truncated": false,
@@ -237,7 +237,7 @@ On (2): the engineer types feedback ("make the intro shorter", "add a Kubernetes
 1. Detect engineer's fork: `gh repo list <gh-user> --fork --json name,parent | jq '.[] | select(.parent.nameWithOwner == "traefik/hub-doc")'`
 2. If fork exists: `git push <fork-remote> docs/<slug>:docs/<slug>`
 3. If no fork: prompt `[f] create fork via 'gh repo fork traefik/hub-doc --remote=false' / [u] push branch to traefik/hub-doc / [a] abort`
-4. Open draft PR: `gh pr create --repo traefik/hub-doc --base master --draft --title "docs: <feature title>" --body-file <generated-body>`
+4. Open draft PR: `gh pr create --repo traefik/hub-doc --base main --draft --title "docs: <feature title>" --body-file <generated-body>`
 5. The PR body (`pr-body.md.tmpl`) includes:
    - `Source:` — one line per impl PR for multi-PR (`Source: traefik/traefik-hub#1234, #1235, #1240`); single line for single-PR
    - Linked issue summary (union for multi-PR)
@@ -368,7 +368,7 @@ AI suggests: reference (confidence 0.78)
 - Never push without an explicit `y` from the engineer
 - Never use `--force` or `--force-with-lease`
 - Never `git commit --amend` (always a new commit; matches the user's confirmed preference and avoids overwriting coauthors)
-- Never push to a protected branch (master/main) — only to feature branches in the engineer's fork or to the impl PR branch
+- Never push to a protected branch (main/master) — only to feature branches in the engineer's fork or to the impl PR branch
 - If `gh auth status` fails → exit with `gh auth login` instructions; do nothing
 
 ## 15. Error handling / edge cases
@@ -402,7 +402,7 @@ The skill itself is tested by running it against real recent PRs (see §17 verif
 
 After implementation, the skill is "done" when all of these pass against real recent PRs:
 
-1. **Hub feat PR** (e.g. a recent `feat:` PR adding a new middleware option): skill opens a draft PR in the engineer's `hub-doc` fork against `traefik/hub-doc:master`. Diff includes the page, `sidebars.js` patch, an EA release-notes `#### <Feature Name>` subsection under the current month's `### What's New` in `docs/api-gateway/release-notes.mdx`, and screenshot TODOs if neighbors have imagery. `yarn docs:markdown` + `yarn docs:alex` pass.
+1. **Hub feat PR** (e.g. a recent `feat:` PR adding a new middleware option): skill opens a draft PR in the engineer's `hub-doc` fork against `traefik/hub-doc:main`. Diff includes the page, `sidebars.js` patch, an EA release-notes `#### <Feature Name>` subsection under the current month's `### What's New` in `docs/api-gateway/release-notes.mdx`, and screenshot TODOs if neighbors have imagery. `yarn docs:markdown` + `yarn docs:alex` pass.
 2. **Hub fix PR** (a `fix:` PR): no release-notes entry, no screenshots, just the affected page edits. Draft PR opens cleanly.
 3. **Hub GA-graduation PR** (body mentions "graduates to GA"): release-notes patch is a bullet appended to the existing `#### Graduated to GA` list under the current month, not a new subsection.
 4. **OSS feat PR** (a recent `traefik/traefik` PR touching `pkg/middlewares/`): skill `gh pr checkout`s the branch, adds a `docs: <title>` commit modifying `docs/content/reference/.../<area>.md`. **No release-notes file is touched.** `mkdocs build --strict` passes. Engineer's `git push` updates the existing PR.

@@ -35,7 +35,7 @@ def open_hub_pr(*, doc_repo_root: str, fork: str, branch: str,
     url = _gh.run_text([
         "pr", "create",
         "--repo", UPSTREAM_HUB_DOC,
-        "--base", "master",
+        "--base", "main",
         "--head", f"{fork.split('/')[0]}:{branch}",
         "--draft",
         "--title", title,

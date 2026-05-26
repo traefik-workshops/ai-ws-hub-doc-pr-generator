@@ -2752,7 +2752,7 @@ def open_hub_pr(*, doc_repo_root: str, fork: str, branch: str,
     url = _gh.run_text([
         "pr", "create",
         "--repo", UPSTREAM_HUB_DOC,
-        "--base", "master",
+        "--base", "main",
         "--head", f"{fork.split('/')[0]}:{branch}",
         "--draft",
         "--title", title,
@@ -3051,8 +3051,8 @@ Images live under `/static/img/<feature>/`. Reference them as `/img/<feature>/..
 
 ## Branch and PR
 
-- Branch from `master` (not `main`)
-- PR base: `master`
+- Branch from `main`
+- PR base: `main`
 - Open as **draft** so screenshots can be added before review
 - PR body must include `Source: traefik/traefik-hub#<N>` line
 ```
@@ -3428,7 +3428,7 @@ End-to-end check that the skill produces something sensible against a real recen
 
 ## Prerequisites
 
-- Local clones at `$HUB_DOC_PATH` (default `~/Developer/traefik-playground/hub-doc`) on a clean `master`.
+- Local clones at `$HUB_DOC_PATH` (default `~/Developer/traefik-playground/hub-doc`) on a clean `main`.
 - `gh` authenticated.
 
 ## Steps

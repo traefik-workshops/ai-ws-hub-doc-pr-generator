@@ -79,7 +79,7 @@ Images live under `/static/img/<feature>/`. Reference them as `/img/<feature>/..
 
 ## Branch and PR
 
-- Branch from `master` (not `main`)
-- PR base: `master`
+- Branch from `main`
+- PR base: `main`
 - Open as **draft** so screenshots can be added before review
 - PR body must include `Source: traefik/traefik-hub#<N>` line
