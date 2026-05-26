@@ -1,0 +1,10 @@
+{
+  "number": 5678,
+  "title": "Customizable deny response for guards",
+  "body": "Agentic clients break on 403. We need configurable status + body.",
+  "comments": [
+    {"author": {"login": "alice"}, "body": "I have a draft of the YAML shape."},
+    {"author": {"login": "dependabot[bot]"}, "body": "Bumping deps..."},
+    {"author": {"login": "bob"}, "body": ""}
+  ]
+}

@@ -97,6 +97,67 @@ def parse_pr_inputs(args: list[str], cwd_remote: Optional[str]) -> list[PrRef]:
     return refs
 
 
+_BODY_LINK_RE = re.compile(r"(?:Closes|Fixes|Resolves):?\s+#(\d+)", re.IGNORECASE)
+_BOT_AUTHOR_RE = re.compile(r"\[bot\]$", re.IGNORECASE)
+
+
+def _fetch_sub_issues(repo: str, issue_number: int) -> list[dict]:
+    try:
+        return _gh.run_json([
+            "api", f"repos/{repo}/issues/{issue_number}/sub_issues",
+        ])
+    except _gh.GhError:
+        return []  # endpoint not enabled for this repo
+
+
+def _fetch_issue(repo: str, number: int) -> dict:
+    return _gh.run_json([
+        "issue", "view", str(number), "--repo", repo,
+        "--json", "number,title,body,comments",
+    ])
+
+
+def collect_issues(repo: str, pr_body: str, closing_refs: list[int]) -> list[dict]:
+    seen: set[int] = set()
+    queue: list[int] = list(dict.fromkeys(closing_refs))
+    for m in _BODY_LINK_RE.finditer(pr_body):
+        n = int(m.group(1))
+        if n not in queue:
+            queue.append(n)
+
+    out: list[dict] = []
+    for num in queue:
+        if num in seen:
+            continue
+        seen.add(num)
+        raw = _fetch_issue(repo, num)
+        comments = [
+            {"author": (c.get("author") or {}).get("login", ""), "body": c.get("body", "")}
+            for c in raw.get("comments", [])
+            if c.get("body")
+            and not _BOT_AUTHOR_RE.search((c.get("author") or {}).get("login", ""))
+        ]
+        out.append({
+            "number": raw["number"],
+            "title": raw["title"],
+            "body": raw.get("body") or "",
+            "comments": comments,
+            "is_sub_issue": False,
+        })
+        for sub in _fetch_sub_issues(repo, num):
+            if sub["number"] in seen:
+                continue
+            seen.add(sub["number"])
+            out.append({
+                "number": sub["number"],
+                "title": sub.get("title", ""),
+                "body": sub.get("body", ""),
+                "comments": [],
+                "is_sub_issue": True,
+            })
+    return out
+
+
 def main(argv: list[str]) -> int:
     # Filled in by later tasks.
     parser = argparse.ArgumentParser()
