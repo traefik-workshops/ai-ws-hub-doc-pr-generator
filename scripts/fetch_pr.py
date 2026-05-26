@@ -209,15 +209,48 @@ def find_existing_doc_pr(impl_repo: str, pr_number: int) -> Optional[dict]:
     return results[0] if results else None
 
 
+def build_bundle(refs: list[PrRef]) -> dict:
+    impl_repo = refs[0].repo
+    prs = []
+    for ref in refs:
+        pr = fetch_single(ref)
+        pr["linked_issues"] = collect_issues(
+            impl_repo, pr["body"], pr["closingIssuesReferences"]
+        )
+        pr["sub_issues"] = [i for i in pr["linked_issues"] if i.get("is_sub_issue")]
+        pr["linked_issues"] = [i for i in pr["linked_issues"] if not i.get("is_sub_issue")]
+        prs.append(pr)
+    existing = find_existing_doc_pr(impl_repo, refs[0].number) if len(refs) == 1 else None
+    return {
+        "impl_repo": impl_repo,
+        "prs": prs,
+        "merged": merge_prs(prs),
+        "existing_doc_pr": existing,
+    }
+
+
+def _cwd_remote() -> Optional[str]:
+    from scripts import _git
+    try:
+        url = _git.run(".", ["config", "--get", "remote.origin.url"]).strip()
+    except Exception:
+        return None
+    m = re.search(r"github\.com[:/](?P<owner>[^/]+)/(?P<name>[^/\s]+?)(?:\.git)?$", url)
+    return f"{m['owner']}/{m['name']}" if m else None
+
+
 def main(argv: list[str]) -> int:
-    # Filled in by later tasks.
+    import json as _json
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pr", action="append", default=[])
-    parser.add_argument("--url", action="append", default=[])
-    parser.add_argument("--repo", default=None)
-    parser.add_argument("--auto-detect", action="store_true")
-    parser.parse_args(argv)
-    print("{}", file=sys.stdout)  # placeholder
+    parser.add_argument("--pr", action="append", default=[],
+                        help="PR number or full URL; repeat for multi-PR")
+    parser.add_argument("--repo", default=None,
+                        help="Override owner/name; otherwise inferred from cwd remote")
+    args = parser.parse_args(argv)
+    cwd_remote = args.repo or _cwd_remote()
+    refs = parse_pr_inputs(args.pr, cwd_remote)
+    bundle = build_bundle(refs)
+    print(_json.dumps(bundle, indent=2))
     return 0
 
 

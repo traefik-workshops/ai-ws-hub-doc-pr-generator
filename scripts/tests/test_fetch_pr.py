@@ -2,7 +2,7 @@ import unittest
 import json
 from pathlib import Path
 from unittest.mock import patch
-from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE, merge_prs, find_existing_doc_pr
+from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE, merge_prs, find_existing_doc_pr, build_bundle
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -146,6 +146,31 @@ class TestFindExistingDocPr(unittest.TestCase):
         # OSS does not file separate doc PRs — duplicate detection is the impl PR diff.
         match = find_existing_doc_pr("traefik/traefik", 1234)
         self.assertIsNone(match)
+
+
+class TestBuildBundle(unittest.TestCase):
+    def test_envelope_shape(self):
+        view = json.loads((FIXTURES / "gh_pr_view_hub_feat.json").read_text())
+        diff = (FIXTURES / "gh_pr_diff_hub_feat.patch").read_text()
+        issue = json.loads((FIXTURES / "gh_issue_5678.json").read_text())
+
+        with patch("scripts.fetch_pr._gh.run_json") as mock_json, \
+             patch("scripts.fetch_pr._gh.run_text", return_value=diff):
+            def route(args):
+                joined = " ".join(args)
+                if "issues/" in joined and "sub_issues" in joined:
+                    return []
+                if "pr list" in joined or args[:2] == ["pr", "list"]:
+                    return []
+                if "issue view" in joined or args[:2] == ["issue", "view"]:
+                    return issue
+                return view
+            mock_json.side_effect = route
+            bundle = build_bundle([PrRef("traefik/traefik-hub", 1234)])
+        self.assertEqual(bundle["impl_repo"], "traefik/traefik-hub")
+        self.assertEqual(len(bundle["prs"]), 1)
+        self.assertEqual(bundle["merged"]["primary_pr"], 1234)
+        self.assertIsNone(bundle["existing_doc_pr"])
 
 
 if __name__ == "__main__":
