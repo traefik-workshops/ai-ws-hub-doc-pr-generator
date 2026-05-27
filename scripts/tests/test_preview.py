@@ -53,7 +53,7 @@ class TestRunLinter(unittest.TestCase):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = ""
             mock_run.return_value.stderr = ""
-            result = run_linter(repo_path="/traefik", impl_repo="traefik/traefik")
+            run_linter(repo_path="/traefik", impl_repo="traefik/traefik")
         call_args = mock_run.call_args_list[0][0][0]
         self.assertIn("mkdocs", " ".join(call_args))
 
