@@ -61,13 +61,56 @@ class TestFetchSingle(unittest.TestCase):
         self.assertEqual(len(result["files_changed"]), 2)
         self.assertEqual(result["files_changed"][0]["path"],
                          "hub/pkg/middleware/tokenratelimit/config.go")
+        self.assertEqual(
+            result["closingIssuesReferences"],
+            [{"number": 5678, "repo": "traefik/traefik-hub"}],
+        )
+
+    def test_closing_issues_accepts_flat_list_and_nodes(self):
+        from scripts.fetch_pr import _closing_issue_nodes
+        # gh pr view --json returns a flat list
+        self.assertEqual(_closing_issue_nodes([{"number": 1}]), [{"number": 1}])
+        # raw GraphQL returns {"nodes": [...]}
+        self.assertEqual(_closing_issue_nodes({"nodes": [{"number": 2}]}), [{"number": 2}])
+        # None / empty degrade to []
+        self.assertEqual(_closing_issue_nodes(None), [])
+        self.assertEqual(_closing_issue_nodes({}), [])
+
+    def test_node_repo_resolves_cross_repo_reference(self):
+        from scripts.fetch_pr import _node_repo
+        # repository object on the node wins
+        self.assertEqual(
+            _node_repo(
+                {"number": 5, "repository": {"name": "hub-issues",
+                                             "owner": {"login": "traefik"}}},
+                "traefik/traefik-hub",
+            ),
+            "traefik/hub-issues",
+        )
+        # falls back to parsing the issue url
+        self.assertEqual(
+            _node_repo(
+                {"number": 5, "url": "https://github.com/traefik/hub-issues/issues/5"},
+                "traefik/traefik-hub",
+            ),
+            "traefik/hub-issues",
+        )
+        # no repo info → default to the PR's repo
+        self.assertEqual(_node_repo({"number": 5}, "traefik/traefik-hub"),
+                         "traefik/traefik-hub")
 
 
 class TestCollectIssues(unittest.TestCase):
     def test_body_regex_finds_all_forms(self):
         body = "Closes #1\nfixes #2 and Resolves: #3"
-        nums = sorted(int(m.group(1)) for m in _BODY_LINK_RE.finditer(body))
+        nums = sorted(int(m.group("num")) for m in _BODY_LINK_RE.finditer(body))
         self.assertEqual(nums, [1, 2, 3])
+
+    def test_body_regex_captures_cross_repo_reference(self):
+        body = "Closes traefik/hub-issues#42"
+        m = _BODY_LINK_RE.search(body)
+        self.assertEqual(m.group("repo"), "traefik/hub-issues")
+        self.assertEqual(m.group("num"), "42")
 
     def test_collect_issues_merges_closes_and_subissues(self):
         issue = json.loads((FIXTURES / "gh_issue_5678.json").read_text())
@@ -82,17 +125,37 @@ class TestCollectIssues(unittest.TestCase):
             issues = collect_issues(
                 repo="traefik/traefik-hub",
                 pr_body="Closes #5678",
-                closing_refs=[5678],
+                closing_refs=[{"number": 5678, "repo": "traefik/traefik-hub"}],
             )
         nums = {i["number"] for i in issues}
         self.assertEqual(nums, {5678, 5681})
+
+    def test_collect_issues_fetches_from_issue_repo(self):
+        issue = json.loads((FIXTURES / "gh_issue_5678.json").read_text())
+        seen_repos = []
+
+        def fake_json(args):
+            if args[:2] == ["issue", "view"]:
+                seen_repos.append(args[args.index("--repo") + 1])
+                return issue
+            return []  # sub_issues
+
+        with patch("scripts.fetch_pr._gh.run_json", side_effect=fake_json):
+            issues = collect_issues(
+                repo="traefik/traefik-hub",
+                pr_body="",
+                closing_refs=[{"number": 5678, "repo": "traefik/hub-issues"}],
+            )
+        self.assertEqual(seen_repos, ["traefik/hub-issues"])
+        self.assertEqual(issues[0]["repo"], "traefik/hub-issues")
 
     def test_comments_drop_bots_and_empty(self):
         issue = json.loads((FIXTURES / "gh_issue_5678.json").read_text())
         with patch("scripts.fetch_pr._gh.run_json", return_value=issue), \
              patch("scripts.fetch_pr._fetch_sub_issues", return_value=[]):
             issues = collect_issues(
-                repo="traefik/traefik-hub", pr_body="", closing_refs=[5678]
+                repo="traefik/traefik-hub", pr_body="",
+                closing_refs=[{"number": 5678, "repo": "traefik/traefik-hub"}],
             )
         authors = [c["author"] for c in issues[0]["comments"]]
         self.assertEqual(authors, ["alice"])

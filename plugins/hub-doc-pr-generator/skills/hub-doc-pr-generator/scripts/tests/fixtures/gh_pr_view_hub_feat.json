@@ -2,16 +2,37 @@
   "number": 1234,
   "title": "feat: add onDenyResponse to token ratelimit middleware",
   "body": "Adds customizable deny responses.\n\nCloses #5678\nRelated to #5680",
-  "labels": [{"name": "feature"}, {"name": "ai-gateway"}],
-  "author": {"login": "octocat"},
+  "labels": [
+    {
+      "name": "feature"
+    },
+    {
+      "name": "ai-gateway"
+    }
+  ],
+  "author": {
+    "login": "octocat"
+  },
   "headRefName": "feat/token-ratelimit-deny",
   "baseRefName": "master",
   "headRefOid": "abc1234567890",
   "isDraft": false,
   "mergeable": "MERGEABLE",
   "files": [
-    {"path": "hub/pkg/middleware/tokenratelimit/config.go", "additions": 42, "deletions": 3},
-    {"path": "hub/pkg/middleware/tokenratelimit/middleware.go", "additions": 80, "deletions": 5}
+    {
+      "path": "hub/pkg/middleware/tokenratelimit/config.go",
+      "additions": 42,
+      "deletions": 3
+    },
+    {
+      "path": "hub/pkg/middleware/tokenratelimit/middleware.go",
+      "additions": 80,
+      "deletions": 5
+    }
   ],
-  "closingIssuesReferences": {"nodes": [{"number": 5678}]}
+  "closingIssuesReferences": [
+    {
+      "number": 5678
+    }
+  ]
 }
