@@ -11,18 +11,13 @@ mkdir -p ~/.claude/skills
 git clone <this-repo-url> ~/.claude/skills/hub-doc-pr-generator
 ```
 
-Set local-clone paths (the skill reads neighbor pages from disk):
-
-```bash
-export HUB_DOC_PATH=~/Developer/traefik-playground/hub-doc
-export TRAEFIK_PATH=~/Developer/traefik-playground/traefik
-```
-
 Ensure `gh` is authenticated:
 
 ```bash
 gh auth status   # or gh auth login
 ```
+
+The skill auto-discovers your local `hub-doc` clone (env var → persisted config → cwd siblings → common workspace dirs). If it can't find one on first run, you'll be prompted for the path and the answer is remembered. For OSS (`traefik/traefik`) work, the skill uses cwd directly — no setup needed.
 
 ## Usage
 

@@ -18,16 +18,27 @@ For multi-PR aggregation: all PRs must be in the same impl repo. Cross-repo invo
 ## Required environment
 
 - `gh` CLI on PATH, authenticated (`gh auth status` succeeds)
-- Local clones of `traefik/hub-doc` and/or `traefik/traefik` (the skill reads neighbor pages from disk; it doesn't fetch them via `gh api`)
 - Python 3.11+
+- Local clone of `traefik/hub-doc` somewhere on disk (only when the impl repo is `traefik/traefik-hub`)
 
-The skill expects clone roots at:
-- `hub-doc`: `$HUB_DOC_PATH` env var, else `~/Developer/traefik-playground/hub-doc`
-- `traefik`: `$TRAEFIK_PATH` env var, else `~/Developer/traefik-playground/traefik`
+The skill auto-discovers the hub-doc clone in this order:
+
+1. `$HUB_DOC_PATH` env var (escape hatch)
+2. Persisted answer at `~/.config/hub-doc-pr-generator/config.json` (filled after the first prompt)
+3. Sibling directories of cwd (walks up to depth 5 looking for `hub-doc/`)
+4. Common workspace dirs (`~/code`, `~/dev`, `~/src`, `~/Developer`, `~/workspace`, `~/projects`, `~/git`) one level deep plus one nested level
+
+If none match, the orchestrator asks via `AskUserQuestion` and saves the answer for next time.
+
+For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes the skill from the impl PR branch, so `cwd`'s git root IS the impl repo.
 
 ## Pipeline (the agent follows this checklist)
 
-0. **Preflight.** Run `gh auth status` via Bash. If it fails, stop and tell the engineer to run `gh auth login`. Verify `$HUB_DOC_PATH` (or `$TRAEFIK_PATH` for OSS) points to a clean working tree — if dirty, ask the engineer to stash/commit before continuing.
+0. **Preflight.** Run `gh auth status` via Bash. If it fails, stop and tell the engineer to run `gh auth login`.
+
+   For the Hub flow: discover the hub-doc clone via `python3 -m scripts._discover hub-doc`. If it exits non-zero, ask the engineer via `AskUserQuestion` for the path (offer a "create a fresh clone in ~/code/hub-doc" option that runs `gh repo clone traefik/hub-doc`). Persist the answer with `python3 -m scripts._discover save-hub-doc <path>`. Confirm the working tree is clean (`git -C <path> status --porcelain`); if dirty, ask the engineer to stash/commit.
+
+   For the OSS flow: discover the impl repo via `python3 -m scripts._discover oss` (uses cwd). Confirm clean working tree.
 
 1. **Parse inputs.** Resolve each argument to `{impl_repo, pr_number}`. Forms:
    - PR URL: `https://github.com/<owner>/<repo>/pull/<N>`

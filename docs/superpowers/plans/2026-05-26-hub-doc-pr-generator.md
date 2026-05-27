@@ -1,5 +1,7 @@
 # Hub-doc PR Generator Implementation Plan
 
+> **Postscript (2026-05-26):** The `$HUB_DOC_PATH` / `$TRAEFIK_PATH` env-var contract described below (and the `~/Developer/traefik-playground/...` defaults baked into earlier snapshots of SKILL.md / README.md / smoke-test.md) was replaced with auto-discovery via `scripts/_discover.py`. The OSS path env var was dropped entirely (cwd's git root is the impl repo). The hub-doc path is found via: env var → persisted config at `~/.config/hub-doc-pr-generator/config.json` → cwd siblings → common workspace dirs. The embedded file snapshots later in this plan retain the original wording for historical context; the live files in the repo are authoritative.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a Claude Code skill that turns an implementation PR in `traefik/traefik-hub` or `traefik/traefik` into a fully-drafted documentation PR (Hub flow) or doc commit on the impl PR branch (OSS flow), following the conventions and grounding sources defined in `spec.md`.

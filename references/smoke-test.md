@@ -4,7 +4,7 @@ End-to-end check that the skill produces something sensible against a real recen
 
 ## Prerequisites
 
-- Local clones at `$HUB_DOC_PATH` (default `~/Developer/traefik-playground/hub-doc`) on a clean `main`.
+- A local `hub-doc` clone somewhere on disk (auto-discovered by the skill), on a clean `main`.
 - `gh` authenticated.
 
 ## Steps
@@ -15,7 +15,7 @@ End-to-end check that the skill produces something sensible against a real recen
 4. At the path question, accept the top candidate.
 5. Preview prints a diff and lint result; lint should pass.
 6. Choose `[3] save and exit (no push)`.
-7. Inspect the generated branch in `$HUB_DOC_PATH`: `git -C $HUB_DOC_PATH log -1 --stat docs/<branch>`.
+7. Inspect the generated branch in your local hub-doc clone: `git -C <hub-doc-path> log -1 --stat docs/<branch>`.
 8. Compare against the actual merged doc PR for the same feature (if any).
 
 ## Expected results

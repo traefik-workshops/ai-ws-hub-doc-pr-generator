@@ -449,16 +449,16 @@ After implementation, the skill is "done" when all of these pass against real re
 
 | Claim | Evidence |
 |---|---|
-| `hub-doc` uses Docusaurus 3, navigation in `sidebars.js` | `/Users/xxsheddy/Developer/traefik-playground/hub-doc/sidebars.js`, `docusaurus.config.js` |
+| `hub-doc` uses Docusaurus 3, navigation in `sidebars.js` | `<hub-doc>/sidebars.js`, `<hub-doc>/docusaurus.config.js` (auto-discovered by the skill) |
 | Front matter fields: `title`, `id`, `description`, `tags`, `toc_min_heading_level`, `toc_max_heading_level` | `hub-doc/docs/api-management/api.md` (and many others) |
 | `<BrowserWindow>` screenshot convention | `hub-doc/docs/operations/installation.md` |
 | Release-notes single source of truth at `docs/api-gateway/release-notes.mdx`; `api-management/release-notes.md` re-imports it | Both files read directly; the api-management one is `import ReleaseNotes from '../api-gateway/release-notes.mdx'` + `<ReleaseNotes />` |
 | Release-notes structure: `## <Month YYYY>` → `### What's New` → `#### Graduated to GA` bullets and/or `#### <Feature Name>` subsections (with `:::warning Early Access` for EA features) | `hub-doc/docs/api-gateway/release-notes.mdx` lines 26-200 (May 2026, April 2026 entries) |
 | Images live under `/static/img/` | `hub-doc/static/img/` |
 | Linters: markdownlint, alex, remark, vale | `hub-doc/.markdownlint.json`, `.vale.ini`, `package.json` scripts |
-| `traefik-hub` has no in-repo `docs/` | `ls /Users/xxsheddy/Developer/traefik-playground/traefik-hub` |
+| `traefik-hub` has no in-repo `docs/` | `ls <traefik-hub>` (no `docs/` directory) |
 | Recent Hub feature PR pattern (e.g. messagesapi, onDenyResponse) | `traefik-hub` commit log (`a85e7617`, `5fd0af37`) and matching `hub-doc` commits (`f4a7dce`, `f9bec97`) |
-| OSS docs in-repo at `docs/content/` (MkDocs) | `/Users/xxsheddy/Developer/traefik-playground/traefik/docs/mkdocs.yml`, `docs/content/getting-started/kubernetes.md`, `docs/content/reference/install-configuration/entrypoints.md` |
+| OSS docs in-repo at `docs/content/` (MkDocs) | `<traefik>/docs/mkdocs.yml`, `docs/content/getting-started/kubernetes.md`, `docs/content/reference/install-configuration/entrypoints.md` (OSS impl repo discovered from cwd) |
 | OSS convention: code + docs in single combined commit | `traefik` commit `4d9031bdb` (PR #13195), `ead1c84fae` |
 | `traefik/reference` registry shape (concept_id, kind, source, fields, extracted_from) | `gh repo view traefik/reference`; `INDEX.md`, `DOC_INDEX.json`, `oss/http/routers.md` |
 | `llms.txt` published at `doc.traefik.io/{,traefik/,traefik-hub/}llms.txt` | `traefik/reference` `docs/llms/` |
