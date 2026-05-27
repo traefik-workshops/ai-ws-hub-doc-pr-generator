@@ -62,7 +62,7 @@ def fetch_single(ref: PrRef) -> dict:
         "--repo", owner_repo,
         "--json",
         "number,title,body,labels,author,headRefName,baseRefName,headRefOid,"
-        "isDraft,mergeable,files,closingIssuesReferences",
+        "isDraft,mergeable,mergedAt,files,closingIssuesReferences",
     ])
     diff_text = _gh.run_text(["pr", "diff", str(ref.number), "--repo", owner_repo, "--patch"])
     diff_lines = diff_text.splitlines()
@@ -80,6 +80,7 @@ def fetch_single(ref: PrRef) -> dict:
         "head": view["headRefOid"],
         "isDraft": view.get("isDraft", False),
         "mergeable": view.get("mergeable", "UNKNOWN"),
+        "merged_at": view.get("mergedAt"),
         "diff": diff_capped,
         "diff_truncated": truncated,
         "files_changed": [

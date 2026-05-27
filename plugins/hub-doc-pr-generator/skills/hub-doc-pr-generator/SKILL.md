@@ -94,10 +94,10 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
 8. **Generate.** This is the LLM step — no script. Read:
    - `/tmp/bundle.json` (the PR + diff, linked issues with their `parent`/`siblings`, and `merged.related_prs` — use the parent epic and sibling issues to understand the feature's intent and scope, not just the single PR's diff)
    - `/tmp/grounding.json` (concept fields)
-   - `/tmp/classify.json` (release-note shape, screenshot verdict)
+   - `/tmp/classify.json` (release-note shape via `needs_release_note.proposed_shape`, target month via `needs_release_note.target_month`, screenshot verdict)
    - `/tmp/locate.json` (target path + neighbors)
    - Template files from `${CLAUDE_SKILL_DIR}/templates/` (Hub or OSS depending on impl repo)
-   - For Hub: last ~150 lines of `docs/api-gateway/release-notes.mdx` (so you know the current month section)
+   - For Hub: last ~150 lines of `docs/api-gateway/release-notes.mdx`. Insert the entry under the `## <target_month>` heading from classify; if that heading doesn't exist, create it at the top of the post-header area. Don't just append to whatever the newest heading happens to be.
    - Up to 3 neighbor pages in full (read with the Read tool)
    - `${CLAUDE_SKILL_DIR}/references/<convention>.md` files on demand
 

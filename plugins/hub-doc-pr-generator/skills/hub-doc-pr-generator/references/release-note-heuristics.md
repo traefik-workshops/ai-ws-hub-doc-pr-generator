@@ -34,16 +34,38 @@ For configuration details, see the [...](...) documentation.
 
 ## Shape selection
 
-| Verdict | Shape | Template |
-|---|---|---|
-| EA feat (default for `feat:`) | `#### <Feature Name>` under "What's New" with `:::warning Early Access` admonition | `release-note-ea.mdx.tmpl` |
-| GA feat | Same shape, no admonition | `release-note-ga-subsection.mdx.tmpl` |
-| GA graduation (title/body says "graduates to GA") | Bullet appended to existing `#### Graduated to GA` | `release-note-ga-bullet.mdx.tmpl` |
-| Breaking change | `#### Breaking Changes` subsection (new if absent — flag for engineer review) | `release-note-breaking.mdx.tmpl` |
+`classify.py:needs_release_note()` picks a shape from the signals below, checked
+**in this order** (first match wins). Hub has no maturity labels (only
+`kind/enhancement` etc.), so EA/GA is read from title/body keywords, not labels.
+
+| # | Signal | Shape | Template |
+|---|---|---|---|
+| 1 | label contains `breaking` **or** body has "breaking change" | `breaking-subsection` (new if absent — flag for engineer review) | `release-note-breaking.mdx.tmpl` |
+| 2 | title/body matches a graduation marker (`graduat`, "now generally available", "promote(d) to ga") | `ga-bullet` appended to existing `#### Graduated to GA` | `release-note-ga-bullet.mdx.tmpl` |
+| 3 | title/body matches an EA marker ("early access", "experimental", "tech preview", " beta ", " alpha ") | `ea-subsection` with `:::warning Early Access` admonition | `release-note-ea.mdx.tmpl` |
+| 4 | `feat:` **and** a new-GA marker ("general availability", "generally available", "stable release", " ga ", "(ga)") without graduation wording | `ga-subsection` (same shape, no admonition) | `release-note-ga-subsection.mdx.tmpl` |
+| 5 | `feat:` with no maturity marker | `ea-subsection` (signal `feat-default-ea`) | `release-note-ea.mdx.tmpl` |
+| 6 | `fix:`/`chore:`/`refactor:`/etc. | none | — |
+| 7 | otherwise | `ask` the engineer | — |
 
 ## EA vs GA defaulting
 
-Default to EA when "yes". Engineers flip to GA in the edit loop.
+EA is only the fallback (#5) for an unmarked `feat:` — which matches the Hub
+convention that new features ship as Early Access and are later listed under
+"Graduated to GA". Explicit EA/GA wording (#2–#4) is detected and wins over the
+default. Either way the engineer can flip the shape in the edit loop.
+
+New-GA (#4, a feature shipping straight to GA) vs graduation (#2, an existing EA
+feature promoted) is a fuzzy call from text alone; when both readings are
+plausible the engineer corrects it in the edit loop.
+
+## Which month
+
+`needs_release_note()` returns `target_month` (e.g. `May 2026`): the PR's **merge
+month** (`merged_at`) when known, else the current month for an open/unmerged PR.
+Insert the entry under that `## <Month YYYY>` heading, creating it at the top of
+the post-header area if it doesn't exist yet. Do **not** simply append to whatever
+the newest heading happens to be.
 
 ## Links
 

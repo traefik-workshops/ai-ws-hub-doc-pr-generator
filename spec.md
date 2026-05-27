@@ -288,9 +288,11 @@ For Hub PRs, the heuristic table:
 | `feat:` but only adds a new optional config field to an existing middleware | Ask — could be note-worthy or not, depending on how the feature is positioned |
 | Otherwise | Ask the engineer; show every signal observed |
 
-**EA vs GA defaulting (Hub):** when "yes" is the verdict, the skill defaults to **Early Access** (with the `:::warning Early Access` admonition) unless the PR signals GA explicitly. Engineers can flip to GA in the edit loop.
+**EA vs GA detection (Hub):** Hub has no maturity labels, so maturity is read from title/body keywords. Detection precedence: breaking → graduation (`graduat`/"now generally available"/"promote(d) to ga" → `ga-bullet`) → explicit EA marker ("early access"/"experimental"/"tech preview"/beta/alpha → `ea-subsection`) → new-GA marker on a `feat:` ("general availability"/"generally available"/"stable release"/" ga "/"(ga)" → `ga-subsection`). An unmarked `feat:` falls back to **Early Access** — matching the Hub convention that new features ship EA and graduate later. Engineers can flip the shape in the edit loop.
 
-Output: `{verdict: yes|no|ask, signals: [...], proposed_shape: "ea-subsection"|"ga-subsection"|"ga-bullet"|"breaking-subsection"|"compat-matrix"|null, proposed_section_heading: "<Feature Name>"|null}`. The engineer can override regardless.
+**Which month:** `needs_release_note` returns `target_month` from the PR's merge date (`merged_at`), falling back to the current month for an open PR. The entry goes under that `## <Month YYYY>` heading (created at the top if absent), not under whatever the newest heading happens to be.
+
+Output: `{verdict: yes|no|ask, signals: [...], proposed_shape: "ea-subsection"|"ga-subsection"|"ga-bullet"|"breaking-subsection"|"compat-matrix"|null, proposed_section_heading: "<Feature Name>"|null, target_month: "<Month YYYY>"|null}`. The engineer can override regardless.
 
 For multi-PR aggregation, the heuristic runs on the **merged** signal set (union of labels, concatenated titles, etc.) — one entry covers the whole feature.
 
