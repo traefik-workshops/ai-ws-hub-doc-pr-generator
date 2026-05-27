@@ -1,0 +1,1057 @@
+From 0a041945d61b49a7e533517df17f80804bfa5357 Mon Sep 17 00:00:00 2001
+From: Simon Delicata <simon.delicata@traefik.io>
+Date: Tue, 12 May 2026 17:01:29 +0200
+Subject: [PATCH] feat: add API management gen_ai metrics support
+
+---
+ hub/pkg/middleware/aimetrics/labels.go        |  57 ++++++++
+ hub/pkg/middleware/aimetrics/labels_test.go   |  97 +++++++++++++
+ .../aimetrics/zz_generated.deepcopy.go        |  39 ++++++
+ hub/pkg/middleware/chatcompletion/config.go   |  13 +-
+ .../middleware/chatcompletion/middleware.go   |  14 +-
+ .../chatcompletion/middleware_test.go         | 122 +++++++++++++++++
+ hub/pkg/middleware/messagesapi/config.go      |  15 +-
+ hub/pkg/middleware/messagesapi/middleware.go  |  12 +-
+ .../middleware/messagesapi/middleware_test.go | 129 +++++++++++++++++-
+ hub/pkg/middleware/responsesapi/config.go     |  19 ++-
+ hub/pkg/middleware/responsesapi/middleware.go |  14 +-
+ .../responsesapi/middleware_test.go           | 127 ++++++++++++++++-
+ hub/pkg/testutil/aimetrics/assert.go          |  62 +++++++++
+ 13 files changed, 666 insertions(+), 54 deletions(-)
+ create mode 100644 hub/pkg/middleware/aimetrics/labels.go
+ create mode 100644 hub/pkg/middleware/aimetrics/labels_test.go
+ create mode 100644 hub/pkg/middleware/aimetrics/zz_generated.deepcopy.go
+ create mode 100644 hub/pkg/testutil/aimetrics/assert.go
+
+diff --git a/hub/pkg/middleware/aimetrics/labels.go b/hub/pkg/middleware/aimetrics/labels.go
+new file mode 100644
+index 0000000000..703ab3cf4a
+--- /dev/null
++++ b/hub/pkg/middleware/aimetrics/labels.go
+@@ -0,0 +1,57 @@
++// Package aimetrics provides the opt-in API Management label configuration
++// shared by the AI middlewares (chat-completion, responses-api, messages-api).
++package aimetrics
++
++import (
++	"net/http"
++
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware"
++	"go.opentelemetry.io/otel/attribute"
++)
++
++// +k8s:deepcopy-gen=true
++
++// Metrics holds the opt-in configuration that controls which API Management
++// labels are added to the gen_ai metrics emitted by the AI middlewares.
++type Metrics struct {
++	AddLabels AddLabels `json:"addLabels,omitzero"`
++}
++
++// +k8s:deepcopy-gen=true
++
++// AddLabels selects which API Management attributes are appended to gen_ai
++// metrics. Each flag is independent and defaults to false.
++type AddLabels struct {
++	AppID   bool `json:"appId,omitempty"`
++	AppName bool `json:"appName,omitempty"`
++	UserID  bool `json:"userId,omitempty"`
++}
++
++// AppendAPIManagementAttrs appends the enabled API Management attributes to
++// attrs based on cfg and the Hub-* headers present on req. It returns attrs
++// unchanged when cfg is nil, and skips any flag whose source header is empty.
++func AppendAPIManagementAttrs(req *http.Request, cfg *Metrics, attrs []attribute.KeyValue) []attribute.KeyValue {
++	if cfg == nil {
++		return attrs
++	}
++
++	if cfg.AddLabels.AppID {
++		if v := req.Header.Get(middleware.HubAppIDHeader); v != "" {
++			attrs = append(attrs, attribute.String("app_id", v))
++		}
++	}
++
++	if cfg.AddLabels.AppName {
++		if v := req.Header.Get(middleware.HubAppNameHeader); v != "" {
++			attrs = append(attrs, attribute.String("app_name", v))
++		}
++	}
++
++	if cfg.AddLabels.UserID {
++		if v := req.Header.Get(middleware.HubUserIDHeader); v != "" {
++			attrs = append(attrs, attribute.String("user_id", v))
++		}
++	}
++
++	return attrs
++}
+diff --git a/hub/pkg/middleware/aimetrics/labels_test.go b/hub/pkg/middleware/aimetrics/labels_test.go
+new file mode 100644
+index 0000000000..675526b2e1
+--- /dev/null
++++ b/hub/pkg/middleware/aimetrics/labels_test.go
+@@ -0,0 +1,97 @@
++package aimetrics
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware"
++	"go.opentelemetry.io/otel/attribute"
++)
++
++func TestAppendAPIManagementAttrs(t *testing.T) {
++	t.Parallel()
++
++	tests := []struct {
++		desc     string
++		cfg      *Metrics
++		headers  map[string]string
++		expected []attribute.KeyValue
++	}{
++		{
++			desc: "nil config returns attrs unchanged",
++			cfg:  nil,
++			headers: map[string]string{
++				middleware.HubAppIDHeader:   "app-id",
++				middleware.HubAppNameHeader: "app-name",
++				middleware.HubUserIDHeader:  "user-id",
++			},
++			expected: nil,
++		},
++		{
++			desc:     "all flags disabled returns attrs unchanged",
++			cfg:      &Metrics{},
++			headers:  map[string]string{middleware.HubAppIDHeader: "app-id"},
++			expected: nil,
++		},
++		{
++			desc: "all flags enabled with headers set",
++			cfg: &Metrics{AddLabels: AddLabels{
++				AppID:   true,
++				AppName: true,
++				UserID:  true,
++			}},
++			headers: map[string]string{
++				middleware.HubAppIDHeader:   "app-id",
++				middleware.HubAppNameHeader: "app-name",
++				middleware.HubUserIDHeader:  "user-id",
++			},
++			expected: []attribute.KeyValue{
++				attribute.String("app_id", "app-id"),
++				attribute.String("app_name", "app-name"),
++				attribute.String("user_id", "user-id"),
++			},
++		},
++		{
++			desc: "only userId flag enabled",
++			cfg:  &Metrics{AddLabels: AddLabels{UserID: true}},
++			headers: map[string]string{
++				middleware.HubAppIDHeader:   "app-id",
++				middleware.HubAppNameHeader: "app-name",
++				middleware.HubUserIDHeader:  "user-id",
++			},
++			expected: []attribute.KeyValue{
++				attribute.String("user_id", "user-id"),
++			},
++		},
++		{
++			desc: "flag enabled but header empty skips label",
++			cfg: &Metrics{AddLabels: AddLabels{
++				AppID:   true,
++				AppName: true,
++				UserID:  true,
++			}},
++			headers: map[string]string{
++				middleware.HubAppIDHeader: "app-id",
++			},
++			expected: []attribute.KeyValue{
++				attribute.String("app_id", "app-id"),
++			},
++		},
++	}
++
++	for _, test := range tests {
++		t.Run(test.desc, func(t *testing.T) {
++			t.Parallel()
++
++			req := httptest.NewRequest(http.MethodPost, "http://example.com", http.NoBody)
++			for k, v := range test.headers {
++				req.Header.Set(k, v)
++			}
++
++			got := AppendAPIManagementAttrs(req, test.cfg, nil)
++			assert.Equal(t, test.expected, got)
++		})
++	}
++}
+diff --git a/hub/pkg/middleware/aimetrics/zz_generated.deepcopy.go b/hub/pkg/middleware/aimetrics/zz_generated.deepcopy.go
+new file mode 100644
+index 0000000000..905fc49165
+--- /dev/null
++++ b/hub/pkg/middleware/aimetrics/zz_generated.deepcopy.go
+@@ -0,0 +1,39 @@
++//go:build !ignore_autogenerated
++// +build !ignore_autogenerated
++
++// Code generated by deepcopy-gen. DO NOT EDIT.
++
++package aimetrics
++
++// DeepCopyInto is an autogenerated deepcopy function, copying the receiver, writing into out. in must be non-nil.
++func (in *AddLabels) DeepCopyInto(out *AddLabels) {
++	*out = *in
++	return
++}
++
++// DeepCopy is an autogenerated deepcopy function, copying the receiver, creating a new AddLabels.
++func (in *AddLabels) DeepCopy() *AddLabels {
++	if in == nil {
++		return nil
++	}
++	out := new(AddLabels)
++	in.DeepCopyInto(out)
++	return out
++}
++
++// DeepCopyInto is an autogenerated deepcopy function, copying the receiver, writing into out. in must be non-nil.
++func (in *Metrics) DeepCopyInto(out *Metrics) {
++	*out = *in
++	out.AddLabels = in.AddLabels
++	return
++}
++
++// DeepCopy is an autogenerated deepcopy function, copying the receiver, creating a new Metrics.
++func (in *Metrics) DeepCopy() *Metrics {
++	if in == nil {
++		return nil
++	}
++	out := new(Metrics)
++	in.DeepCopyInto(out)
++	return out
++}
+diff --git a/hub/pkg/middleware/chatcompletion/config.go b/hub/pkg/middleware/chatcompletion/config.go
+index e6b2b09ebd..164c1bc3ec 100644
+--- a/hub/pkg/middleware/chatcompletion/config.go
++++ b/hub/pkg/middleware/chatcompletion/config.go
+@@ -1,15 +1,18 @@
+ package chatcompletion
+ 
++import "github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aimetrics"
++
+ // APIGatewayIdentifier is the API Gateway ID of the chat-completion middleware.
+ const APIGatewayIdentifier = "chat-completion"
+ 
+ // Config holds the ChatCompletion Middleware configuration.
+ type Config struct {
+-	Token               string  `json:"token,omitempty" loggable:"false"`
+-	Model               string  `json:"model,omitempty"`
+-	AllowModelOverride  *bool   `json:"allowModelOverride,omitempty"`
+-	Params              *Params `json:"params,omitempty"`
+-	AllowParamsOverride *bool   `json:"allowParamsOverride,omitempty"`
++	Token               string             `json:"token,omitempty" loggable:"false"`
++	Model               string             `json:"model,omitempty"`
++	AllowModelOverride  *bool              `json:"allowModelOverride,omitempty"`
++	Params              *Params            `json:"params,omitempty"`
++	AllowParamsOverride *bool              `json:"allowParamsOverride,omitempty"`
++	Metrics             *aimetrics.Metrics `json:"metrics,omitempty"`
+ }
+ 
+ // Params holds param configuration.
+diff --git a/hub/pkg/middleware/chatcompletion/middleware.go b/hub/pkg/middleware/chatcompletion/middleware.go
+index 938a4c7a18..3f33acdd00 100644
+--- a/hub/pkg/middleware/chatcompletion/middleware.go
++++ b/hub/pkg/middleware/chatcompletion/middleware.go
+@@ -12,7 +12,7 @@ import (
+ 	"strings"
+ 
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/config/static"
+-	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware"
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aimetrics"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/traefik/service/observability"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/version"
+ 	"github.com/traefik/traefik/v3/pkg/middlewares"
+@@ -147,19 +147,12 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+ 
+ 	// Metrics or tracing are enable.
+ 	var genAIAttrs []attribute.KeyValue
+-	var metricsGenAIAttrs []attribute.KeyValue
+ 	genAIAttrs = append(genAIAttrs, semconv.GenAIOperationNameChat)
+ 	genAIAttrs = append(genAIAttrs, semconv.GenAIRequestModel(modelStr))
+ 	genAIAttrs = append(genAIAttrs, semconv.GenAIProviderNameOpenAI)
+ 
+-	// Specific metrics attribute here.
+-	if req.Header.Get(middleware.HubAppNameHeader) != "" {
+-		metricsGenAIAttrs = append(metricsGenAIAttrs, attribute.String("app_name", req.Header.Get(middleware.HubAppNameHeader)))
+-	}
+-
+-	if req.Header.Get(middleware.HubAppIDHeader) != "" {
+-		metricsGenAIAttrs = append(metricsGenAIAttrs, attribute.String("app_id", req.Header.Get(middleware.HubAppIDHeader)))
+-	}
++	metricsGenAIAttrs := aimetrics.AppendAPIManagementAttrs(req, m.cfg.Metrics, nil)
++	metricsGenAIAttrs = append(metricsGenAIAttrs, genAIAttrs...)
+ 
+ 	if IdentityIsDisabled(req) {
+ 		http.Error(rw, http.StatusText(http.StatusNotAcceptable), http.StatusNotAcceptable)
+@@ -174,7 +167,6 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+ 	}
+ 	m.next.ServeHTTP(rwbuf, req)
+ 
+-	metricsGenAIAttrs = append(metricsGenAIAttrs, genAIAttrs...)
+ 	metricsGenAIAttrs = append(metricsGenAIAttrs, aiSemConvContext.Attributes...)
+ 
+ 	if span != nil {
+diff --git a/hub/pkg/middleware/chatcompletion/middleware_test.go b/hub/pkg/middleware/chatcompletion/middleware_test.go
+index 83dc864d17..05aba91f26 100644
+--- a/hub/pkg/middleware/chatcompletion/middleware_test.go
++++ b/hub/pkg/middleware/chatcompletion/middleware_test.go
+@@ -17,7 +17,9 @@ import (
+ 	ptypes "github.com/traefik/paerser/types"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/config/static"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware"
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aimetrics"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/provider/hub"
++	aimetricstest "github.com/traefik/traefik-hub/v3/hub/pkg/testutil/aimetrics"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/traefik/service/observability"
+ 	tobservability "github.com/traefik/traefik/v3/pkg/middlewares/observability"
+ 	"github.com/traefik/traefik/v3/pkg/observability/metrics"
+@@ -101,6 +103,13 @@ func TestMetrics(t *testing.T) {
+ 	mCfg := Config{
+ 		Token: "xxx",
+ 		Model: "gpt-4o",
++		Metrics: &aimetrics.Metrics{
++			AddLabels: aimetrics.AddLabels{
++				AppID:   true,
++				AppName: true,
++				UserID:  true,
++			},
++		},
+ 	}
+ 
+ 	tp := observability.NewObservabilityRoundTripper(mockTransport{response: &http.Response{
+@@ -129,6 +138,7 @@ func TestMetrics(t *testing.T) {
+ 	req.Header.Set(hub.XTraefikAPIID, "my-api")
+ 	req.Header.Set(middleware.HubAppNameHeader, "my-api")
+ 	req.Header.Set(middleware.HubAppIDHeader, "app-id")
++	req.Header.Set(middleware.HubUserIDHeader, "user-id")
+ 
+ 	ctx := tobservability.WithObservability(req.Context(), tobservability.Observability{
+ 		MetricsEnabled:        true,
+@@ -169,6 +179,7 @@ func TestMetrics(t *testing.T) {
+ 						semconv.GenAIOperationNameChat,
+ 						attribute.Key("app_name").String("my-api"),
+ 						attribute.Key("app_id").String("app-id"),
++						attribute.Key("user_id").String("user-id"),
+ 					),
+ 				},
+ 			},
+@@ -201,6 +212,7 @@ func TestMetrics(t *testing.T) {
+ 						semconv.GenAITokenTypeInput,
+ 						attribute.Key("app_name").String("my-api"),
+ 						attribute.Key("app_id").String("app-id"),
++						attribute.Key("user_id").String("user-id"),
+ 					),
+ 				},
+ 				{
+@@ -220,6 +232,7 @@ func TestMetrics(t *testing.T) {
+ 						semconv.GenAITokenTypeOutput,
+ 						attribute.Key("app_name").String("my-api"),
+ 						attribute.Key("app_id").String("app-id"),
++						attribute.Key("user_id").String("user-id"),
+ 					),
+ 				},
+ 			},
+@@ -230,6 +243,115 @@ func TestMetrics(t *testing.T) {
+ 	metricdatatest.AssertEqual[metricdata.Metrics](t, expectedGenAIUsage, hubMetrics[1], metricdatatest.IgnoreTimestamp())
+ }
+ 
++func TestAPIManagementLabels(t *testing.T) {
++	tests := []struct {
++		desc           string
++		cfg            *aimetrics.Metrics
++		headers        map[string]string
++		expectedLabels map[string]string
++		absentKeys     []string
++	}{
++		{
++			desc:       "no metrics config emits no labels",
++			cfg:        nil,
++			headers:    map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			absentKeys: []string{"app_id", "app_name", "user_id"},
++		},
++		{
++			desc:       "all flags disabled emits no labels",
++			cfg:        &aimetrics.Metrics{},
++			headers:    map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			absentKeys: []string{"app_id", "app_name", "user_id"},
++		},
++		{
++			desc:           "appId flag alone emits only app_id",
++			cfg:            &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{AppID: true}},
++			headers:        map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			expectedLabels: map[string]string{"app_id": "app-id"},
++			absentKeys:     []string{"app_name", "user_id"},
++		},
++		{
++			desc:           "appName flag alone emits only app_name",
++			cfg:            &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{AppName: true}},
++			headers:        map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			expectedLabels: map[string]string{"app_name": "app-name"},
++			absentKeys:     []string{"app_id", "user_id"},
++		},
++		{
++			desc:           "userId flag alone emits only user_id",
++			cfg:            &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{UserID: true}},
++			headers:        map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			expectedLabels: map[string]string{"user_id": "user-id"},
++			absentKeys:     []string{"app_id", "app_name"},
++		},
++		{
++			desc: "flags enabled but headers empty emit no labels",
++			cfg: &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{
++				AppID:   true,
++				AppName: true,
++				UserID:  true,
++			}},
++			headers:    map[string]string{},
++			absentKeys: []string{"app_id", "app_name", "user_id"},
++		},
++	}
++
++	// Sub-tests cannot run in parallel: metrics.SetMeterProvider sets a global.
++	for _, test := range tests {
++		t.Run(test.desc, func(t *testing.T) {
++			rdr := sdkmetric.NewManualReader()
++			meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr))
++			metrics.SetMeterProvider(meterProvider)
++
++			var otlpCfg ottypes.OTLP
++			(&otlpCfg).SetDefaults()
++			otlpCfg.AddRoutersLabels = true
++			otlpCfg.PushInterval = ptypes.Duration(10 * time.Millisecond)
++
++			semConvMetricRegistry, err := metrics.NewSemConvMetricRegistry(t.Context(), &otlpCfg)
++			require.NoError(t, err)
++
++			mCfg := Config{
++				Token:   "xxx",
++				Model:   "gpt-4o",
++				Metrics: test.cfg,
++			}
++
++			tp := observability.NewObservabilityRoundTripper(mockTransport{response: &http.Response{
++				StatusCode: http.StatusOK,
++				Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4o-2024-08-06","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
++			}})
++
++			proxy := &httputil.ReverseProxy{Transport: tp, Director: func(*http.Request) {}}
++
++			h, err := New(proxy, mCfg, "test", semConvMetricRegistry, []float64{}, &static.AIGateway{MaxRequestBodySize: 1024 * 1024})
++			require.NoError(t, err)
++
++			req := httptest.NewRequest(http.MethodPost, "https://api.openai.com/test", bytes.NewBufferString(`{"messages":[{"role":"user","content":"hi"}]}`))
++			for k, v := range test.headers {
++				req.Header.Set(k, v)
++			}
++
++			ctx := tobservability.WithObservability(req.Context(), tobservability.Observability{
++				MetricsEnabled:        true,
++				SemConvMetricsEnabled: true,
++			})
++			req = req.WithContext(ctx)
++
++			h.ServeHTTP(httptest.NewRecorder(), req)
++
++			got := metricdata.ResourceMetrics{}
++			require.NoError(t, rdr.Collect(t.Context(), &got))
++			require.Len(t, got.ScopeMetrics, 1)
++			require.GreaterOrEqual(t, len(got.ScopeMetrics[0].Metrics), 1)
++
++			for _, m := range got.ScopeMetrics[0].Metrics {
++				aimetricstest.AssertAttributePresence(t, m, test.expectedLabels, test.absentKeys)
++			}
++		})
++	}
++}
++
+ func TestGovernance(t *testing.T) {
+ 	testCases := []struct {
+ 		desc        string
+diff --git a/hub/pkg/middleware/messagesapi/config.go b/hub/pkg/middleware/messagesapi/config.go
+index 15354ca110..048975cbea 100644
+--- a/hub/pkg/middleware/messagesapi/config.go
++++ b/hub/pkg/middleware/messagesapi/config.go
+@@ -3,6 +3,8 @@ package messagesapi
+ import (
+ 	"encoding/json"
+ 	"fmt"
++
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aimetrics"
+ )
+ 
+ // APIGatewayIdentifier is the API Gateway ID of the messages-api middleware.
+@@ -10,12 +12,13 @@ const APIGatewayIdentifier = "messages-api"
+ 
+ // Config holds the MessagesAPI Middleware configuration.
+ type Config struct {
+-	APIKey              string  `json:"apiKey,omitempty" loggable:"false"`
+-	AuthToken           string  `json:"authToken,omitempty" loggable:"false"`
+-	Model               string  `json:"model,omitempty"`
+-	AllowModelOverride  *bool   `json:"allowModelOverride,omitempty"`
+-	AllowParamsOverride *bool   `json:"allowParamsOverride,omitempty"`
+-	Params              *Params `json:"params,omitempty"`
++	APIKey              string             `json:"apiKey,omitempty" loggable:"false"`
++	AuthToken           string             `json:"authToken,omitempty" loggable:"false"`
++	Model               string             `json:"model,omitempty"`
++	AllowModelOverride  *bool              `json:"allowModelOverride,omitempty"`
++	AllowParamsOverride *bool              `json:"allowParamsOverride,omitempty"`
++	Params              *Params            `json:"params,omitempty"`
++	Metrics             *aimetrics.Metrics `json:"metrics,omitempty"`
+ }
+ 
+ // CacheControlEphemeral configures a cache_control marker on the last cacheable block.
+diff --git a/hub/pkg/middleware/messagesapi/middleware.go b/hub/pkg/middleware/messagesapi/middleware.go
+index f3b6895913..30dc5eb963 100644
+--- a/hub/pkg/middleware/messagesapi/middleware.go
++++ b/hub/pkg/middleware/messagesapi/middleware.go
+@@ -10,9 +10,9 @@ import (
+ 	"net/http"
+ 
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/config/static"
+-	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aiformat"
+ 	messagesapifmt "github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aiformat/messagesapi"
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aimetrics"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/chatcompletion"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/traefik/service/observability"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/version"
+@@ -158,17 +158,9 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+ 		semconv.GenAIProviderNameAnthropic,
+ 	}
+ 
+-	var metricsGenAIAttrs []attribute.KeyValue
++	metricsGenAIAttrs := aimetrics.AppendAPIManagementAttrs(req, m.cfg.Metrics, nil)
+ 	metricsGenAIAttrs = append(metricsGenAIAttrs, genAIAttrs...)
+ 
+-	if req.Header.Get(middleware.HubAppNameHeader) != "" {
+-		metricsGenAIAttrs = append(metricsGenAIAttrs, attribute.String("app_name", req.Header.Get(middleware.HubAppNameHeader)))
+-	}
+-
+-	if req.Header.Get(middleware.HubAppIDHeader) != "" {
+-		metricsGenAIAttrs = append(metricsGenAIAttrs, attribute.String("app_id", req.Header.Get(middleware.HubAppIDHeader)))
+-	}
+-
+ 	if chatcompletion.IdentityIsDisabled(req) {
+ 		http.Error(rw, http.StatusText(http.StatusNotAcceptable), http.StatusNotAcceptable)
+ 
+diff --git a/hub/pkg/middleware/messagesapi/middleware_test.go b/hub/pkg/middleware/messagesapi/middleware_test.go
+index 8f29b0c970..302be8cf66 100644
+--- a/hub/pkg/middleware/messagesapi/middleware_test.go
++++ b/hub/pkg/middleware/messagesapi/middleware_test.go
+@@ -15,7 +15,10 @@ import (
+ 	"github.com/stretchr/testify/require"
+ 	ptypes "github.com/traefik/paerser/types"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/config/static"
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware"
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aimetrics"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/provider/hub"
++	aimetricstest "github.com/traefik/traefik-hub/v3/hub/pkg/testutil/aimetrics"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/traefik/service/observability"
+ 	tobservability "github.com/traefik/traefik/v3/pkg/middlewares/observability"
+ 	"github.com/traefik/traefik/v3/pkg/observability/metrics"
+@@ -479,6 +482,13 @@ func TestMetrics(t *testing.T) {
+ 	mCfg := Config{
+ 		APIKey: "test-api-key",
+ 		Model:  "claude-opus-4-5",
++		Metrics: &aimetrics.Metrics{
++			AddLabels: aimetrics.AddLabels{
++				AppID:   true,
++				AppName: true,
++				UserID:  true,
++			},
++		},
+ 	}
+ 
+ 	tp := observability.NewObservabilityRoundTripper(mockTransport{response: &http.Response{
+@@ -506,8 +516,9 @@ func TestMetrics(t *testing.T) {
+ 	req := httptest.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewBufferString(requestBody))
+ 	req.ContentLength = int64(len(requestBody))
+ 	req.Header.Set(hub.XTraefikAPIID, "my-api")
+-	req.Header.Set("Hub-App-Name", "my-app")
+-	req.Header.Set("Hub-App-Id", "app-id")
++	req.Header.Set(middleware.HubAppNameHeader, "my-app")
++	req.Header.Set(middleware.HubAppIDHeader, "app-id")
++	req.Header.Set(middleware.HubUserIDHeader, "user-id")
+ 
+ 	ctx := tobservability.WithObservability(req.Context(), tobservability.Observability{
+ 		MetricsEnabled:        true,
+@@ -548,6 +559,7 @@ func TestMetrics(t *testing.T) {
+ 						semconv.GenAIOperationNameChat,
+ 						attribute.Key("app_name").String("my-app"),
+ 						attribute.Key("app_id").String("app-id"),
++						attribute.Key("user_id").String("user-id"),
+ 					),
+ 				},
+ 			},
+@@ -580,6 +592,7 @@ func TestMetrics(t *testing.T) {
+ 						semconv.GenAITokenTypeInput,
+ 						attribute.Key("app_name").String("my-app"),
+ 						attribute.Key("app_id").String("app-id"),
++						attribute.Key("user_id").String("user-id"),
+ 					),
+ 				},
+ 				{
+@@ -599,6 +612,7 @@ func TestMetrics(t *testing.T) {
+ 						semconv.GenAITokenTypeOutput,
+ 						attribute.Key("app_name").String("my-app"),
+ 						attribute.Key("app_id").String("app-id"),
++						attribute.Key("user_id").String("user-id"),
+ 					),
+ 				},
+ 			},
+@@ -609,6 +623,117 @@ func TestMetrics(t *testing.T) {
+ 	metricdatatest.AssertEqual[metricdata.Metrics](t, expectedGenAIUsage, hubMetrics[1], metricdatatest.IgnoreTimestamp())
+ }
+ 
++func TestAPIManagementLabels(t *testing.T) {
++	tests := []struct {
++		desc           string
++		cfg            *aimetrics.Metrics
++		headers        map[string]string
++		expectedLabels map[string]string
++		absentKeys     []string
++	}{
++		{
++			desc:       "no metrics config emits no labels",
++			cfg:        nil,
++			headers:    map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			absentKeys: []string{"app_id", "app_name", "user_id"},
++		},
++		{
++			desc:       "all flags disabled emits no labels",
++			cfg:        &aimetrics.Metrics{},
++			headers:    map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			absentKeys: []string{"app_id", "app_name", "user_id"},
++		},
++		{
++			desc:           "appId flag alone emits only app_id",
++			cfg:            &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{AppID: true}},
++			headers:        map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			expectedLabels: map[string]string{"app_id": "app-id"},
++			absentKeys:     []string{"app_name", "user_id"},
++		},
++		{
++			desc:           "appName flag alone emits only app_name",
++			cfg:            &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{AppName: true}},
++			headers:        map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			expectedLabels: map[string]string{"app_name": "app-name"},
++			absentKeys:     []string{"app_id", "user_id"},
++		},
++		{
++			desc:           "userId flag alone emits only user_id",
++			cfg:            &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{UserID: true}},
++			headers:        map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			expectedLabels: map[string]string{"user_id": "user-id"},
++			absentKeys:     []string{"app_id", "app_name"},
++		},
++		{
++			desc: "flags enabled but headers empty emit no labels",
++			cfg: &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{
++				AppID:   true,
++				AppName: true,
++				UserID:  true,
++			}},
++			headers:    map[string]string{},
++			absentKeys: []string{"app_id", "app_name", "user_id"},
++		},
++	}
++
++	// Sub-tests cannot run in parallel: metrics.SetMeterProvider sets a global.
++	for _, test := range tests {
++		t.Run(test.desc, func(t *testing.T) {
++			rdr := sdkmetric.NewManualReader()
++			meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr))
++			metrics.SetMeterProvider(meterProvider)
++
++			var otlpCfg ottypes.OTLP
++			(&otlpCfg).SetDefaults()
++			otlpCfg.AddRoutersLabels = true
++			otlpCfg.PushInterval = ptypes.Duration(10 * time.Millisecond)
++
++			semConvMetricRegistry, err := metrics.NewSemConvMetricRegistry(t.Context(), &otlpCfg)
++			require.NoError(t, err)
++
++			mCfg := Config{
++				APIKey:  "test-api-key",
++				Model:   "claude-opus-4-5",
++				Metrics: test.cfg,
++			}
++
++			tp := observability.NewObservabilityRoundTripper(mockTransport{response: &http.Response{
++				StatusCode: http.StatusOK,
++				Body:       io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-4-5-20251101","content":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
++			}})
++
++			proxy := &httputil.ReverseProxy{Transport: tp, Director: func(*http.Request) {}}
++
++			h, err := New(proxy, mCfg, "test", semConvMetricRegistry, []float64{}, &static.AIGateway{MaxRequestBodySize: 1024 * 1024})
++			require.NoError(t, err)
++
++			body := `{"model":"claude-opus-4-5","messages":[{"role":"user","content":"hi"}],"max_tokens":16}`
++			req := httptest.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewBufferString(body))
++			req.ContentLength = int64(len(body))
++			for k, v := range test.headers {
++				req.Header.Set(k, v)
++			}
++
++			ctx := tobservability.WithObservability(req.Context(), tobservability.Observability{
++				MetricsEnabled:        true,
++				SemConvMetricsEnabled: true,
++			})
++			req = req.WithContext(ctx)
++
++			h.ServeHTTP(httptest.NewRecorder(), req)
++
++			got := metricdata.ResourceMetrics{}
++			require.NoError(t, rdr.Collect(t.Context(), &got))
++			require.Len(t, got.ScopeMetrics, 1)
++			require.GreaterOrEqual(t, len(got.ScopeMetrics[0].Metrics), 1)
++
++			for _, m := range got.ScopeMetrics[0].Metrics {
++				aimetricstest.AssertAttributePresence(t, m, test.expectedLabels, test.absentKeys)
++			}
++		})
++	}
++}
++
+ func boolPtr(b bool) *bool {
+ 	return &b
+ }
+diff --git a/hub/pkg/middleware/responsesapi/config.go b/hub/pkg/middleware/responsesapi/config.go
+index f67e35fb4e..ce53afe7b6 100644
+--- a/hub/pkg/middleware/responsesapi/config.go
++++ b/hub/pkg/middleware/responsesapi/config.go
+@@ -1,6 +1,10 @@
+ package responsesapi
+ 
+-import "encoding/json"
++import (
++	"encoding/json"
++
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aimetrics"
++)
+ 
+ // APIGatewayIdentifier is the API Gateway ID of the responses-api middleware.
+ const APIGatewayIdentifier = "responses-api"
+@@ -21,12 +25,13 @@ const (
+ 
+ // Config holds the ResponsesAPI Middleware configuration.
+ type Config struct {
+-	Token               string  `json:"token,omitempty" loggable:"false"`
+-	Model               string  `json:"model,omitempty"`
+-	AllowModelOverride  *bool   `json:"allowModelOverride,omitempty"`
+-	AllowParamsOverride *bool   `json:"allowParamsOverride,omitempty"`
+-	Params              *Params `json:"params,omitempty"`
+-	Instructions        string  `json:"instructions,omitempty"`
++	Token               string             `json:"token,omitempty" loggable:"false"`
++	Model               string             `json:"model,omitempty"`
++	AllowModelOverride  *bool              `json:"allowModelOverride,omitempty"`
++	AllowParamsOverride *bool              `json:"allowParamsOverride,omitempty"`
++	Params              *Params            `json:"params,omitempty"`
++	Instructions        string             `json:"instructions,omitempty"`
++	Metrics             *aimetrics.Metrics `json:"metrics,omitempty"`
+ }
+ 
+ // Params holds param configuration following the spec.
+diff --git a/hub/pkg/middleware/responsesapi/middleware.go b/hub/pkg/middleware/responsesapi/middleware.go
+index 793f7386bc..c1bfa531e7 100644
+--- a/hub/pkg/middleware/responsesapi/middleware.go
++++ b/hub/pkg/middleware/responsesapi/middleware.go
+@@ -9,7 +9,7 @@ import (
+ 	"net/http"
+ 
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/config/static"
+-	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware"
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aimetrics"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/chatcompletion"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/traefik/service/observability"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/version"
+@@ -160,15 +160,8 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+ 	genAIAttrs = append(genAIAttrs, semconv.GenAIRequestModel(request.Model))
+ 	genAIAttrs = append(genAIAttrs, semconv.GenAIProviderNameOpenAI)
+ 
+-	// Hub-Specific metrics attributes.
+-	var metricsGenAIAttrs []attribute.KeyValue
+-	if req.Header.Get(middleware.HubAppNameHeader) != "" {
+-		metricsGenAIAttrs = append(metricsGenAIAttrs, attribute.String("app_name", req.Header.Get(middleware.HubAppNameHeader)))
+-	}
+-
+-	if req.Header.Get(middleware.HubAppIDHeader) != "" {
+-		metricsGenAIAttrs = append(metricsGenAIAttrs, attribute.String("app_id", req.Header.Get(middleware.HubAppIDHeader)))
+-	}
++	metricsGenAIAttrs := aimetrics.AppendAPIManagementAttrs(req, m.cfg.Metrics, nil)
++	metricsGenAIAttrs = append(metricsGenAIAttrs, genAIAttrs...)
+ 
+ 	if aiSemConvContext == nil {
+ 		m.next.ServeHTTP(rw, req)
+@@ -190,7 +183,6 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+ 	}
+ 	m.next.ServeHTTP(rwbuf, req)
+ 
+-	metricsGenAIAttrs = append(metricsGenAIAttrs, genAIAttrs...)
+ 	metricsGenAIAttrs = append(metricsGenAIAttrs, aiSemConvContext.Attributes...)
+ 
+ 	if span != nil {
+diff --git a/hub/pkg/middleware/responsesapi/middleware_test.go b/hub/pkg/middleware/responsesapi/middleware_test.go
+index c5a1fb32c5..a89c7bae76 100644
+--- a/hub/pkg/middleware/responsesapi/middleware_test.go
++++ b/hub/pkg/middleware/responsesapi/middleware_test.go
+@@ -15,7 +15,10 @@ import (
+ 	"github.com/stretchr/testify/require"
+ 	ptypes "github.com/traefik/paerser/types"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/config/static"
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware"
++	"github.com/traefik/traefik-hub/v3/hub/pkg/middleware/aimetrics"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/provider/hub"
++	aimetricstest "github.com/traefik/traefik-hub/v3/hub/pkg/testutil/aimetrics"
+ 	"github.com/traefik/traefik-hub/v3/hub/pkg/traefik/service/observability"
+ 	tobservability "github.com/traefik/traefik/v3/pkg/middlewares/observability"
+ 	"github.com/traefik/traefik/v3/pkg/observability/metrics"
+@@ -381,6 +384,13 @@ func TestMetrics(t *testing.T) {
+ 	mCfg := Config{
+ 		Token: "xxx",
+ 		Model: "gpt-4o",
++		Metrics: &aimetrics.Metrics{
++			AddLabels: aimetrics.AddLabels{
++				AppID:   true,
++				AppName: true,
++				UserID:  true,
++			},
++		},
+ 	}
+ 
+ 	tp := observability.NewObservabilityRoundTripper(mockTransport{response: &http.Response{
+@@ -410,8 +420,9 @@ func TestMetrics(t *testing.T) {
+ 
+ 	req := httptest.NewRequest("POST", "https://api.openai.com/test", bytes.NewBufferString(requestBody))
+ 	req.Header.Set(hub.XTraefikAPIID, "my-api")
+-	req.Header.Set("Hub-App-Name", "my-api")
+-	req.Header.Set("Hub-App-Id", "app-id")
++	req.Header.Set(middleware.HubAppNameHeader, "my-api")
++	req.Header.Set(middleware.HubAppIDHeader, "app-id")
++	req.Header.Set(middleware.HubUserIDHeader, "user-id")
+ 
+ 	ctx := tobservability.WithObservability(req.Context(), tobservability.Observability{
+ 		MetricsEnabled:        true,
+@@ -452,6 +463,7 @@ func TestMetrics(t *testing.T) {
+ 						semconv.GenAIOperationNameKey.String("responses"),
+ 						attribute.Key("app_name").String("my-api"),
+ 						attribute.Key("app_id").String("app-id"),
++						attribute.Key("user_id").String("user-id"),
+ 					),
+ 				},
+ 			},
+@@ -484,6 +496,7 @@ func TestMetrics(t *testing.T) {
+ 						semconv.GenAITokenTypeInput,
+ 						attribute.Key("app_name").String("my-api"),
+ 						attribute.Key("app_id").String("app-id"),
++						attribute.Key("user_id").String("user-id"),
+ 					),
+ 				},
+ 				{
+@@ -503,6 +516,7 @@ func TestMetrics(t *testing.T) {
+ 						semconv.GenAITokenTypeOutput,
+ 						attribute.Key("app_name").String("my-api"),
+ 						attribute.Key("app_id").String("app-id"),
++						attribute.Key("user_id").String("user-id"),
+ 					),
+ 				},
+ 			},
+@@ -513,6 +527,115 @@ func TestMetrics(t *testing.T) {
+ 	metricdatatest.AssertEqual[metricdata.Metrics](t, expectedGenAIUsage, hubMetrics[1], metricdatatest.IgnoreTimestamp())
+ }
+ 
++func TestAPIManagementLabels(t *testing.T) {
++	tests := []struct {
++		desc           string
++		cfg            *aimetrics.Metrics
++		headers        map[string]string
++		expectedLabels map[string]string
++		absentKeys     []string
++	}{
++		{
++			desc:       "no metrics config emits no labels",
++			cfg:        nil,
++			headers:    map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			absentKeys: []string{"app_id", "app_name", "user_id"},
++		},
++		{
++			desc:       "all flags disabled emits no labels",
++			cfg:        &aimetrics.Metrics{},
++			headers:    map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			absentKeys: []string{"app_id", "app_name", "user_id"},
++		},
++		{
++			desc:           "appId flag alone emits only app_id",
++			cfg:            &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{AppID: true}},
++			headers:        map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			expectedLabels: map[string]string{"app_id": "app-id"},
++			absentKeys:     []string{"app_name", "user_id"},
++		},
++		{
++			desc:           "appName flag alone emits only app_name",
++			cfg:            &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{AppName: true}},
++			headers:        map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			expectedLabels: map[string]string{"app_name": "app-name"},
++			absentKeys:     []string{"app_id", "user_id"},
++		},
++		{
++			desc:           "userId flag alone emits only user_id",
++			cfg:            &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{UserID: true}},
++			headers:        map[string]string{middleware.HubAppIDHeader: "app-id", middleware.HubAppNameHeader: "app-name", middleware.HubUserIDHeader: "user-id"},
++			expectedLabels: map[string]string{"user_id": "user-id"},
++			absentKeys:     []string{"app_id", "app_name"},
++		},
++		{
++			desc: "flags enabled but headers empty emit no labels",
++			cfg: &aimetrics.Metrics{AddLabels: aimetrics.AddLabels{
++				AppID:   true,
++				AppName: true,
++				UserID:  true,
++			}},
++			headers:    map[string]string{},
++			absentKeys: []string{"app_id", "app_name", "user_id"},
++		},
++	}
++
++	// Sub-tests cannot run in parallel: metrics.SetMeterProvider sets a global.
++	for _, test := range tests {
++		t.Run(test.desc, func(t *testing.T) {
++			rdr := sdkmetric.NewManualReader()
++			meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(rdr))
++			metrics.SetMeterProvider(meterProvider)
++
++			var otlpCfg ottypes.OTLP
++			(&otlpCfg).SetDefaults()
++			otlpCfg.AddRoutersLabels = true
++			otlpCfg.PushInterval = ptypes.Duration(10 * time.Millisecond)
++
++			semConvMetricRegistry, err := metrics.NewSemConvMetricRegistry(t.Context(), &otlpCfg)
++			require.NoError(t, err)
++
++			mCfg := Config{
++				Token:   "xxx",
++				Model:   "gpt-4o",
++				Metrics: test.cfg,
++			}
++
++			tp := observability.NewObservabilityRoundTripper(mockTransport{response: &http.Response{
++				StatusCode: http.StatusOK,
++				Body:       io.NopCloser(strings.NewReader(`{"id":"resp_1","object":"response","model":"gpt-4o-2024-08-06","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)),
++			}})
++
++			proxy := &httputil.ReverseProxy{Transport: tp, Director: func(*http.Request) {}}
++
++			h, err := New(proxy, mCfg, "test", semConvMetricRegistry, []float64{}, &static.AIGateway{MaxRequestBodySize: 1024 * 1024})
++			require.NoError(t, err)
++
++			req := httptest.NewRequest(http.MethodPost, "https://api.openai.com/test", bytes.NewBufferString(`{"input":"hi","model":"gpt-4o"}`))
++			for k, v := range test.headers {
++				req.Header.Set(k, v)
++			}
++
++			ctx := tobservability.WithObservability(req.Context(), tobservability.Observability{
++				MetricsEnabled:        true,
++				SemConvMetricsEnabled: true,
++			})
++			req = req.WithContext(ctx)
++
++			h.ServeHTTP(httptest.NewRecorder(), req)
++
++			got := metricdata.ResourceMetrics{}
++			require.NoError(t, rdr.Collect(t.Context(), &got))
++			require.Len(t, got.ScopeMetrics, 1)
++			require.GreaterOrEqual(t, len(got.ScopeMetrics[0].Metrics), 1)
++
++			for _, m := range got.ScopeMetrics[0].Metrics {
++				aimetricstest.AssertAttributePresence(t, m, test.expectedLabels, test.absentKeys)
++			}
++		})
++	}
++}
++
+ func TestMiddleware_ToolGovernance(t *testing.T) {
+ 	t.Parallel()
+ 
+diff --git a/hub/pkg/testutil/aimetrics/assert.go b/hub/pkg/testutil/aimetrics/assert.go
+new file mode 100644
+index 0000000000..87e6a8ef71
+--- /dev/null
++++ b/hub/pkg/testutil/aimetrics/assert.go
+@@ -0,0 +1,62 @@
++// Package aimetrics provides test helpers for asserting on the gen_ai metric
++// attributes emitted by the AI middlewares (chat-completion, responses-api,
++// messages-api).
++package aimetrics
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++	"go.opentelemetry.io/otel/attribute"
++	"go.opentelemetry.io/otel/sdk/metric/metricdata"
++)
++
++// AssertAttributePresence verifies that the metric's data point attribute sets
++// contain every expected key/value pair and none of the absent keys.
++func AssertAttributePresence(t *testing.T, m metricdata.Metrics, expected map[string]string, absent []string) {
++	t.Helper()
++
++	var attrSets []attribute.Set
++	switch d := m.Data.(type) {
++	case metricdata.Histogram[float64]:
++		for _, dp := range d.DataPoints {
++			attrSets = append(attrSets, dp.Attributes)
++		}
++	case metricdata.Histogram[int64]:
++		for _, dp := range d.DataPoints {
++			attrSets = append(attrSets, dp.Attributes)
++		}
++	case metricdata.Sum[float64]:
++		for _, dp := range d.DataPoints {
++			attrSets = append(attrSets, dp.Attributes)
++		}
++	case metricdata.Sum[int64]:
++		for _, dp := range d.DataPoints {
++			attrSets = append(attrSets, dp.Attributes)
++		}
++	case metricdata.Gauge[float64]:
++		for _, dp := range d.DataPoints {
++			attrSets = append(attrSets, dp.Attributes)
++		}
++	case metricdata.Gauge[int64]:
++		for _, dp := range d.DataPoints {
++			attrSets = append(attrSets, dp.Attributes)
++		}
++	}
++
++	require.NotEmpty(t, attrSets, "metric %q has no data points", m.Name)
++
++	for _, attrs := range attrSets {
++		for key, want := range expected {
++			got, ok := attrs.Value(attribute.Key(key))
++			assert.True(t, ok, "metric %q: expected attribute %q not found", m.Name, key)
++			assert.Equal(t, want, got.AsString(), "metric %q: attribute %q mismatch", m.Name, key)
++		}
++
++		for _, key := range absent {
++			_, ok := attrs.Value(attribute.Key(key))
++			assert.False(t, ok, "metric %q: attribute %q must not be present", m.Name, key)
++		}
++	}
++}

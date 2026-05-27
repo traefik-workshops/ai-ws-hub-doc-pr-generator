@@ -1,5 +1,7 @@
 # Hub-doc PR Generator Implementation Plan
 
+> **Postscript (2026-05-26):** The `$HUB_DOC_PATH` / `$TRAEFIK_PATH` env-var contract described below (and the `~/Developer/traefik-playground/...` defaults baked into earlier snapshots of SKILL.md / README.md / smoke-test.md) was replaced with auto-discovery via `scripts/_discover.py`. The OSS path env var was dropped entirely (cwd's git root is the impl repo). The hub-doc path is found via: env var → persisted config at `~/.config/hub-doc-pr-generator/config.json` → cwd siblings → common workspace dirs. The embedded file snapshots later in this plan retain the original wording for historical context; the live files in the repo are authoritative.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a Claude Code skill that turns an implementation PR in `traefik/traefik-hub` or `traefik/traefik` into a fully-drafted documentation PR (Hub flow) or doc commit on the impl PR branch (OSS flow), following the conventions and grounding sources defined in `spec.md`.
@@ -1201,7 +1203,7 @@ INDEX_PATH = "INDEX.md"
 DOC_INDEX_PATH = "DOC_INDEX.json"
 
 _HEADER_RE = re.compile(r"^###\s+(?P<id>\S+)\s*$")
-_FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.+)$")
+_FIELD_RE = re.compile(r"^-\s+(?P<key>\w+):\s*(?P<val>.*)$")
 _BULLET_RE = re.compile(r"^\s+-\s+(?P<val>.+)$")
 
 
@@ -1780,6 +1782,7 @@ class TestClassify(unittest.TestCase):
         bundle = {
             "impl_repo": "traefik/traefik-hub",
             "prs": [{
+                "number": 1234,
                 "title": "feat: add onDenyResponse to token ratelimit middleware",
                 "labels": ["feature"],
                 "body": "",
@@ -2717,9 +2720,12 @@ class TestOpenHubPr(unittest.TestCase):
                 title="docs: add X",
                 body="...",
             )
-        # First git call should be `git push <fork remote> <branch>:<branch>`.
-        push_call = next(c for c in calls if c[0] == "git" and "push" in c[1][1])
-        self.assertIn("alice/hub-doc", " ".join(push_call[1][1]) + " ".join(push_call[1][1]))
+        # The fork URL should flow through the remote-add call.
+        remote_call = next(c for c in calls if c[0] == "git" and c[1][1][:2] == ["remote", "add"])
+        self.assertIn("alice/hub-doc", " ".join(remote_call[1][1]))
+        # And the gh pr create --head should reference the fork owner.
+        gh_call = next(c for c in calls if c[0] == "gh-text")
+        self.assertIn("alice:docs/x", gh_call[1])
         self.assertEqual(url, "https://github.com/traefik/hub-doc/pull/999")
 ```
 
@@ -2748,7 +2754,7 @@ def open_hub_pr(*, doc_repo_root: str, fork: str, branch: str,
     url = _gh.run_text([
         "pr", "create",
         "--repo", UPSTREAM_HUB_DOC,
-        "--base", "master",
+        "--base", "main",
         "--head", f"{fork.split('/')[0]}:{branch}",
         "--draft",
         "--title", title,
@@ -2826,11 +2832,10 @@ def commit_oss_docs(*, impl_repo_root: str, title: str,
                     doc_files: list[str], refs_other_prs: list[int]) -> None:
     if doc_files:
         _git.run(impl_repo_root, ["add", *doc_files])
-    msg_lines = [f"docs: {title}", ""]
+    msg_lines = [f"docs: {title}"]
     if refs_other_prs:
-        msg_lines.append("Refs: " + ", ".join(f"traefik#{n}" for n in refs_other_prs))
         msg_lines.append("")
-    msg_lines.append("Co-Authored-By: Claude <noreply@anthropic.com>")
+        msg_lines.append("Refs: " + ", ".join(f"traefik#{n}" for n in refs_other_prs))
     msg = "\n".join(msg_lines)
     _git.run(impl_repo_root, ["commit", "-m", msg])
 ```
@@ -3047,8 +3052,8 @@ Images live under `/static/img/<feature>/`. Reference them as `/img/<feature>/..
 
 ## Branch and PR
 
-- Branch from `master` (not `main`)
-- PR base: `master`
+- Branch from `main`
+- PR base: `main`
 - Open as **draft** so screenshots can be added before review
 - PR body must include `Source: traefik/traefik-hub#<N>` line
 ```
@@ -3424,7 +3429,7 @@ End-to-end check that the skill produces something sensible against a real recen
 
 ## Prerequisites
 
-- Local clones at `$HUB_DOC_PATH` (default `~/Developer/traefik-playground/hub-doc`) on a clean `master`.
+- Local clones at `$HUB_DOC_PATH` (default `~/Developer/traefik-playground/hub-doc`) on a clean `main`.
 - `gh` authenticated.
 
 ## Steps
