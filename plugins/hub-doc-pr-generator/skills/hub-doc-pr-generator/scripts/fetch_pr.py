@@ -158,10 +158,91 @@ def collect_issues(repo: str, pr_body: str, closing_refs: list[int]) -> list[dic
     return out
 
 
+PARENT_BODY_CAP = 4000
+RELATED_PR_CAP = 30
+
+_ISSUE_GRAPH_QUERY = """
+query($owner:String!,$repo:String!,$num:Int!){
+  repository(owner:$owner,name:$repo){
+    issue(number:$num){
+      number
+      closedByPullRequestsReferences(first:20, includeClosedPrs:true){
+        nodes { number title url repository { nameWithOwner } }
+      }
+      parent {
+        number title body
+        subIssues(first:50){
+          nodes {
+            number title
+            closedByPullRequestsReferences(first:10, includeClosedPrs:true){
+              nodes { number title url repository { nameWithOwner } }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _pr_refs(node_block: Optional[dict]) -> list[dict]:
+    out = []
+    for n in (node_block or {}).get("nodes", []):
+        out.append({
+            "number": n["number"],
+            "title": n.get("title", ""),
+            "url": n.get("url", ""),
+            "repo": (n.get("repository") or {}).get("nameWithOwner", ""),
+        })
+    return out
+
+
+def fetch_issue_graph(repo: str, number: int) -> dict:
+    """Upward context for one issue: its parent (1 level, with body), the
+    parent's other sub-issues (siblings, number+title), and the PRs that close
+    the issue and each sibling. Degrades to empty when the repo doesn't use
+    native sub-issues or the API call fails."""
+    empty = {"parent": None, "siblings": [], "related_prs": []}
+    owner, name = repo.split("/", 1)
+    try:
+        resp = _gh.run_json([
+            "api", "graphql",
+            "-f", f"query={_ISSUE_GRAPH_QUERY}",
+            "-F", f"owner={owner}",
+            "-F", f"repo={name}",
+            "-F", f"num={number}",
+        ])
+    except _gh.GhError:
+        return empty
+
+    issue = (((resp or {}).get("data") or {}).get("repository") or {}).get("issue") or {}
+    if not issue:
+        return empty
+
+    related = _pr_refs(issue.get("closedByPullRequestsReferences"))
+    parent = None
+    siblings: list[dict] = []
+    parent_raw = issue.get("parent")
+    if parent_raw:
+        parent = {
+            "number": parent_raw["number"],
+            "title": parent_raw.get("title", ""),
+            "body": (parent_raw.get("body") or "")[:PARENT_BODY_CAP],
+        }
+        for s in (parent_raw.get("subIssues") or {}).get("nodes", []):
+            if s["number"] == number:
+                continue  # skip the issue itself
+            siblings.append({"number": s["number"], "title": s.get("title", "")})
+            related.extend(_pr_refs(s.get("closedByPullRequestsReferences")))
+
+    return {"parent": parent, "siblings": siblings, "related_prs": related}
+
+
 def merge_prs(prs: list[dict]) -> dict:
     if not prs:
         return {"files_changed": [], "linked_issues": [], "sub_issues": [],
-                "primary_pr": None, "title_synthesis": ""}
+                "related_prs": [], "primary_pr": None, "title_synthesis": ""}
 
     by_path: dict[str, dict] = {}
     for pr in prs:
@@ -182,6 +263,11 @@ def merge_prs(prs: list[dict]) -> dict:
             seen_issue_nums.add(iss["number"])
             (sub_issues if iss.get("is_sub_issue") else linked_issues).append(iss)
 
+    related_by_key: dict[tuple, dict] = {}
+    for pr in prs:
+        for rp in pr.get("related_prs", []):
+            related_by_key[(rp["repo"], rp["number"])] = rp
+
     primary = max(
         prs,
         key=lambda p: sum(f.get("additions", 0) for f in p.get("files_changed", [])),
@@ -191,6 +277,7 @@ def merge_prs(prs: list[dict]) -> dict:
         "files_changed": list(by_path.values()),
         "linked_issues": linked_issues,
         "sub_issues": sub_issues,
+        "related_prs": list(related_by_key.values()),
         "primary_pr": primary["number"],
         "title_synthesis": " / ".join(p["title"] for p in prs),
     }
@@ -211,6 +298,7 @@ def find_existing_doc_pr(impl_repo: str, pr_number: int) -> Optional[dict]:
 
 def build_bundle(refs: list[PrRef]) -> dict:
     impl_repo = refs[0].repo
+    source_pr_numbers = {ref.number for ref in refs}
     prs = []
     for ref in refs:
         pr = fetch_single(ref)
@@ -219,6 +307,17 @@ def build_bundle(refs: list[PrRef]) -> dict:
         )
         pr["sub_issues"] = [i for i in pr["linked_issues"] if i.get("is_sub_issue")]
         pr["linked_issues"] = [i for i in pr["linked_issues"] if not i.get("is_sub_issue")]
+
+        related_by_key: dict[tuple, dict] = {}
+        for iss in pr["linked_issues"]:
+            graph = fetch_issue_graph(impl_repo, iss["number"])
+            iss["parent"] = graph["parent"]
+            iss["siblings"] = graph["siblings"]
+            for rp in graph["related_prs"]:
+                if rp["number"] in source_pr_numbers and rp["repo"] == impl_repo:
+                    continue  # don't list the PR(s) we're documenting
+                related_by_key[(rp["repo"], rp["number"])] = rp
+        pr["related_prs"] = list(related_by_key.values())[:RELATED_PR_CAP]
         prs.append(pr)
     existing = find_existing_doc_pr(impl_repo, refs[0].number) if len(refs) == 1 else None
     return {

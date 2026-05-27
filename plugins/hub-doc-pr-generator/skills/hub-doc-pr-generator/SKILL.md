@@ -63,6 +63,8 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    ```
    Inspect `existing_doc_pr`; if non-null, ask the engineer `[u]pdate / [n]ew / [a]bort` via `AskUserQuestion`.
 
+   The bundle gathers issue context in both directions: each linked issue carries its `parent` epic (with body) and `siblings` (the parent's other sub-issues), and `merged.related_prs` lists the other PRs that implement the same feature (the PRs closing the linked issue and its siblings). Use this for the *why* behind the feature in step 8. If a `related_prs` entry looks load-bearing for the docs and the bundle's diff isn't enough, fetch that specific PR with `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.fetch_pr --pr <related-N>` — don't pull them all by default.
+
 3. **Fetch grounding.**
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.fetch_grounding --impl-repo "$(jq -r '.impl_repo' /tmp/bundle.json)" --touched-files $(jq -r '.merged.files_changed[].path' /tmp/bundle.json) > /tmp/grounding.json
@@ -90,7 +92,7 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    Show the top candidate; confirm or accept a custom path.
 
 8. **Generate.** This is the LLM step — no script. Read:
-   - `/tmp/bundle.json` (the PR + issues + diff)
+   - `/tmp/bundle.json` (the PR + diff, linked issues with their `parent`/`siblings`, and `merged.related_prs` — use the parent epic and sibling issues to understand the feature's intent and scope, not just the single PR's diff)
    - `/tmp/grounding.json` (concept fields)
    - `/tmp/classify.json` (release-note shape, screenshot verdict)
    - `/tmp/locate.json` (target path + neighbors)
