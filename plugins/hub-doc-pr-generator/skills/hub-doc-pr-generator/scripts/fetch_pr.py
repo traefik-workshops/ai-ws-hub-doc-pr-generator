@@ -31,6 +31,30 @@ class PrRef:
     number: int
 
 
+def _closing_issue_nodes(ref) -> list:
+    """`gh pr view --json closingIssuesReferences` returns a flat list, but the
+    raw GraphQL shape is `{"nodes": [...]}`. Accept either."""
+    if isinstance(ref, dict):
+        return ref.get("nodes") or []
+    return ref or []
+
+
+_ISSUE_URL_RE = re.compile(r"github\.com/(?P<repo>[^/]+/[^/]+)/issues/\d+")
+
+
+def _node_repo(node: dict, default: str) -> str:
+    """A closing-issue reference can live in a different repo than the PR
+    (e.g. traefik/traefik-hub PRs close traefik/hub-issues issues). Resolve the
+    issue's own repo from the node, falling back to the PR's repo."""
+    repo = node.get("repository") or {}
+    owner = (repo.get("owner") or {}).get("login")
+    name = repo.get("name")
+    if owner and name:
+        return f"{owner}/{name}"
+    m = _ISSUE_URL_RE.search(node.get("url") or "")
+    return m["repo"] if m else default
+
+
 def fetch_single(ref: PrRef) -> dict:
     owner_repo = ref.repo
     view = _gh.run_json([
@@ -63,7 +87,8 @@ def fetch_single(ref: PrRef) -> dict:
             for f in view.get("files", [])
         ],
         "closingIssuesReferences": [
-            n["number"] for n in (view.get("closingIssuesReferences") or {}).get("nodes", [])
+            {"number": n["number"], "repo": _node_repo(n, owner_repo)}
+            for n in _closing_issue_nodes(view.get("closingIssuesReferences"))
         ],
     }
 
@@ -97,7 +122,10 @@ def parse_pr_inputs(args: list[str], cwd_remote: Optional[str]) -> list[PrRef]:
     return refs
 
 
-_BODY_LINK_RE = re.compile(r"(?:Closes|Fixes|Resolves):?\s+#(\d+)", re.IGNORECASE)
+_BODY_LINK_RE = re.compile(
+    r"(?:Closes|Fixes|Resolves):?\s+(?:(?P<repo>[\w.-]+/[\w.-]+))?#(?P<num>\d+)",
+    re.IGNORECASE,
+)
 _BOT_AUTHOR_RE = re.compile(r"\[bot\]$", re.IGNORECASE)
 
 
@@ -117,20 +145,28 @@ def _fetch_issue(repo: str, number: int) -> dict:
     ])
 
 
-def collect_issues(repo: str, pr_body: str, closing_refs: list[int]) -> list[dict]:
-    seen: set[int] = set()
-    queue: list[int] = list(dict.fromkeys(closing_refs))
+def collect_issues(repo: str, pr_body: str, closing_refs: list[dict]) -> list[dict]:
+    """`repo` is the PR's repo, used as the default when a reference doesn't name
+    its own. Issues can live in a separate tracker (e.g. traefik/hub-issues), so
+    each issue carries its own `repo` and dedup is keyed by (repo, number)."""
+    seen: set[tuple[str, int]] = set()
+    queue: list[tuple[str, int]] = []
+
+    def _enqueue(r: str, n: int) -> None:
+        if (r, n) not in queue:
+            queue.append((r, n))
+
+    for ref in closing_refs:
+        _enqueue(ref.get("repo") or repo, ref["number"])
     for m in _BODY_LINK_RE.finditer(pr_body):
-        n = int(m.group(1))
-        if n not in queue:
-            queue.append(n)
+        _enqueue(m.group("repo") or repo, int(m.group("num")))
 
     out: list[dict] = []
-    for num in queue:
-        if num in seen:
+    for issue_repo, num in queue:
+        if (issue_repo, num) in seen:
             continue
-        seen.add(num)
-        raw = _fetch_issue(repo, num)
+        seen.add((issue_repo, num))
+        raw = _fetch_issue(issue_repo, num)
         comments = [
             {"author": (c.get("author") or {}).get("login", ""), "body": c.get("body", "")}
             for c in raw.get("comments", [])
@@ -139,17 +175,19 @@ def collect_issues(repo: str, pr_body: str, closing_refs: list[int]) -> list[dic
         ]
         out.append({
             "number": raw["number"],
+            "repo": issue_repo,
             "title": raw["title"],
             "body": raw.get("body") or "",
             "comments": comments,
             "is_sub_issue": False,
         })
-        for sub in _fetch_sub_issues(repo, num):
-            if sub["number"] in seen:
+        for sub in _fetch_sub_issues(issue_repo, num):
+            if (issue_repo, sub["number"]) in seen:
                 continue
-            seen.add(sub["number"])
+            seen.add((issue_repo, sub["number"]))
             out.append({
                 "number": sub["number"],
+                "repo": issue_repo,
                 "title": sub.get("title", ""),
                 "body": sub.get("body", ""),
                 "comments": [],
@@ -253,14 +291,15 @@ def merge_prs(prs: list[dict]) -> dict:
             entry["additions"] += f.get("additions", 0)
             entry["deletions"] += f.get("deletions", 0)
 
-    seen_issue_nums: set[int] = set()
+    seen_issue_keys: set[tuple] = set()
     linked_issues = []
     sub_issues = []
     for pr in prs:
         for iss in pr.get("linked_issues", []):
-            if iss["number"] in seen_issue_nums:
+            key = (iss.get("repo"), iss["number"])
+            if key in seen_issue_keys:
                 continue
-            seen_issue_nums.add(iss["number"])
+            seen_issue_keys.add(key)
             (sub_issues if iss.get("is_sub_issue") else linked_issues).append(iss)
 
     related_by_key: dict[tuple, dict] = {}
@@ -310,7 +349,7 @@ def build_bundle(refs: list[PrRef]) -> dict:
 
         related_by_key: dict[tuple, dict] = {}
         for iss in pr["linked_issues"]:
-            graph = fetch_issue_graph(impl_repo, iss["number"])
+            graph = fetch_issue_graph(iss.get("repo") or impl_repo, iss["number"])
             iss["parent"] = graph["parent"]
             iss["siblings"] = graph["siblings"]
             for rp in graph["related_prs"]:
