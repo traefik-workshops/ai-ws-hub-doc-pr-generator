@@ -127,20 +127,23 @@ Output: `pr-bundle.json` — a list of per-PR entries plus an aggregate view:
       "diff": "<unified patch, capped at 2000 lines>",
       "diff_truncated": false,
       "files_changed": [{ "path": "...", "status": "added", "additions": 42, "deletions": 3 }],
-      "linked_issues": [...], "sub_issues": [...] }
+      "linked_issues": [...], "sub_issues": [...],
+      "related_prs": [{ "number": 1240, "title": "...", "url": "...", "repo": "traefik/traefik-hub" }] }
   ],
   "merged": {
     "files_changed": [...],          // union, deduped
     "linked_issues": [...],          // union by issue number
     "sub_issues": [...],
+    "related_prs": [...],            // union of the feature's other PRs (refs only); source PRs excluded
     "primary_pr": 1234,              // for OSS multi-PR: largest by additions (suggestion)
     "title_synthesis": "..."         // LLM-friendly merged title hint
   },
   "existing_doc_pr": { ... }         // duplicate-detection query result (see §10)
 }
 ```
-- `linked_issues`: from `closingIssuesReferences` (GraphQL) + regex `(?:Closes|Fixes|Resolves)\s+#\d+` in body
+- `linked_issues`: from `closingIssuesReferences` (GraphQL) + regex `(?:Closes|Fixes|Resolves)\s+#\d+` in body. Each linked issue also carries `parent` (`{number,title,body}` or null) and `siblings` (`[{number,title}]`) — see §11
 - `sub_issues`: from `gh api repos/{owner}/{repo}/issues/{n}/sub_issues` (one level deep)
+- `related_prs`: from GraphQL `closedByPullRequestsReferences` on each linked issue and its siblings — references only (no diffs), see §11
 - For each issue: `{number, title, body, comments: [...]}` — comments filtered to drop `*[bot]*` authors and empty bodies
 - For multi-PR: each PR's diff is fetched independently, capped independently, then `merged.files_changed` is computed by file-path union
 
@@ -338,17 +341,27 @@ What now?
   [a] abort
 ```
 
-## 11. Issue + sub-issue traversal
+## 11. Issue traversal (downward + upward)
+
+The goal is the full decision-making picture for the feature, not just the one PR. Traversal goes **down** (to children) and **up** (to the parent epic and its siblings), bounded to keep context lean.
 
 | Source | Method | Depth |
 |---|---|---|
 | PR's "closes" links | `gh pr view --json closingIssuesReferences` | direct |
-| Body regex `(?:Closes|Fixes|Resolves)\s+#\d+` | regex on PR body | direct |
-| GitHub native sub-issues | `gh api repos/{owner}/{repo}/issues/{n}/sub_issues` | one level |
-| "Related to #X" in body | regex; **body-only**, no comments | direct |
+| Body regex `(?:Closes\|Fixes\|Resolves)\s+#\d+` | regex on PR body | direct |
+| GitHub native sub-issues (children) | `gh api repos/{owner}/{repo}/issues/{n}/sub_issues` | one level down |
+| **Parent epic** | GraphQL `issue.parent { number title body }` | one level up |
+| **Sibling issues** (parent's other sub-issues) | GraphQL `issue.parent.subIssues` | number + title only |
+| **Related PRs** (the feature's other PRs) | GraphQL `closedByPullRequestsReferences` on the issue + each sibling | number/title/url/repo only |
 | Issue comments | `gh issue view <n> --json comments` | direct issues only, **drop `[bot]` authors and empty bodies** |
 
-Deeper than one sub-issue level is dropped to keep context lean.
+Bounds (to keep context lean):
+- **Up:** parent only — no grandparent. Parent body capped at `PARENT_BODY_CAP` (4000 chars).
+- **Siblings:** number + title only — no bodies/comments. The generate step can pull a specific sibling if it looks load-bearing.
+- **Related PRs:** references only (no diffs), deduped, the source PR(s) excluded, capped at `RELATED_PR_CAP` (30). The generate step can re-run `fetch_pr --pr <related-N>` for one that matters.
+- Children: one sub-issue level (unchanged).
+
+Bundle additions: each linked issue gains `parent` (`{number,title,body}` or null) and `siblings` (`[{number,title}]`); each PR gains `related_prs` (`[{number,title,url,repo}]`), unioned into `merged.related_prs`. Degrades to empty when the repo doesn't use native sub-issues or GraphQL errors.
 
 ## 12. Top-level kind decision (user-guide vs reference)
 

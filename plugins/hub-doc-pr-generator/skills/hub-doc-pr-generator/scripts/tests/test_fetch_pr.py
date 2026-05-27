@@ -2,7 +2,7 @@ import unittest
 import json
 from pathlib import Path
 from unittest.mock import patch
-from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE, merge_prs, find_existing_doc_pr, build_bundle
+from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE, merge_prs, find_existing_doc_pr, build_bundle, fetch_issue_graph
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -98,6 +98,64 @@ class TestCollectIssues(unittest.TestCase):
         self.assertEqual(authors, ["alice"])
 
 
+def _graph_envelope(*, parent=None, issue_prs=None, sibling_specs=None, num=5678):
+    """Build a closedByPullRequestsReferences/parent GraphQL response."""
+    def pr_nodes(specs):
+        return {"nodes": [
+            {"number": n, "title": t, "url": f"https://x/{n}",
+             "repository": {"nameWithOwner": "traefik/traefik-hub"}}
+            for (n, t) in (specs or [])
+        ]}
+    parent_block = None
+    if parent is not None:
+        parent_block = {
+            "number": parent[0], "title": parent[1], "body": parent[2],
+            "subIssues": {"nodes": [
+                {"number": s_num, "title": s_title,
+                 "closedByPullRequestsReferences": pr_nodes(s_prs)}
+                for (s_num, s_title, s_prs) in (sibling_specs or [])
+            ]},
+        }
+    return {"data": {"repository": {"issue": {
+        "number": num,
+        "closedByPullRequestsReferences": pr_nodes(issue_prs),
+        "parent": parent_block,
+    }}}}
+
+
+class TestFetchIssueGraph(unittest.TestCase):
+    def test_parses_parent_siblings_and_related_prs(self):
+        env = _graph_envelope(
+            parent=(5000, "Epic: AI gateway rate limiting", "Decision context here."),
+            issue_prs=[(1234, "feat: token rate limit")],
+            sibling_specs=[
+                (5681, "sub: store backend", [(1240, "feat: redis store")]),
+                (5678, "this issue", [(1234, "feat: token rate limit")]),  # self, skipped
+            ],
+        )
+        with patch("scripts.fetch_pr._gh.run_json", return_value=env):
+            g = fetch_issue_graph("traefik/traefik-hub", 5678)
+        self.assertEqual(g["parent"]["number"], 5000)
+        self.assertIn("Decision context", g["parent"]["body"])
+        # self is excluded from siblings
+        self.assertEqual([s["number"] for s in g["siblings"]], [5681])
+        related_nums = {p["number"] for p in g["related_prs"]}
+        self.assertEqual(related_nums, {1234, 1240})
+
+    def test_no_parent_returns_empty_siblings(self):
+        env = _graph_envelope(parent=None, issue_prs=[(1234, "feat: x")])
+        with patch("scripts.fetch_pr._gh.run_json", return_value=env):
+            g = fetch_issue_graph("traefik/traefik-hub", 5678)
+        self.assertIsNone(g["parent"])
+        self.assertEqual(g["siblings"], [])
+
+    def test_graphql_error_is_graceful(self):
+        from scripts import _gh
+        with patch("scripts.fetch_pr._gh.run_json", side_effect=_gh.GhError("boom")):
+            g = fetch_issue_graph("traefik/traefik-hub", 5678)
+        self.assertEqual(g, {"parent": None, "siblings": [], "related_prs": []})
+
+
 class TestMergePrs(unittest.TestCase):
     def test_single_pr_primary_is_only_pr(self):
         prs = [{"number": 7, "files_changed": [{"path": "a.go", "additions": 3, "deletions": 0}],
@@ -154,10 +212,19 @@ class TestBuildBundle(unittest.TestCase):
         diff = (FIXTURES / "gh_pr_diff_hub_feat.patch").read_text()
         issue = json.loads((FIXTURES / "gh_issue_5678.json").read_text())
 
+        graph = _graph_envelope(
+            parent=(5000, "Epic", "context"),
+            issue_prs=[(1234, "feat: x"), (1240, "feat: sibling pr")],
+            sibling_specs=[(5681, "sub", [(1240, "feat: sibling pr")])],
+            num=5678,
+        )
+
         with patch("scripts.fetch_pr._gh.run_json") as mock_json, \
              patch("scripts.fetch_pr._gh.run_text", return_value=diff):
             def route(args):
                 joined = " ".join(args)
+                if args[:2] == ["api", "graphql"]:
+                    return graph
                 if "issues/" in joined and "sub_issues" in joined:
                     return []
                 if "pr list" in joined or args[:2] == ["pr", "list"]:
@@ -171,6 +238,14 @@ class TestBuildBundle(unittest.TestCase):
         self.assertEqual(len(bundle["prs"]), 1)
         self.assertEqual(bundle["merged"]["primary_pr"], 1234)
         self.assertIsNone(bundle["existing_doc_pr"])
+        # Parent/sibling context attached to the linked issue.
+        linked = bundle["prs"][0]["linked_issues"][0]
+        self.assertEqual(linked["parent"]["number"], 5000)
+        self.assertEqual([s["number"] for s in linked["siblings"]], [5681])
+        # related_prs excludes the source PR (1234) but keeps sibling PR 1240.
+        related_nums = {p["number"] for p in bundle["prs"][0]["related_prs"]}
+        self.assertEqual(related_nums, {1240})
+        self.assertEqual({p["number"] for p in bundle["merged"]["related_prs"]}, {1240})
 
 
 if __name__ == "__main__":
