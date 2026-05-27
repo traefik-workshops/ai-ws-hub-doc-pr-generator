@@ -247,7 +247,7 @@ On (2): the engineer types feedback ("make the intro shorter", "add a Kubernetes
 
 **OSS flow (single-PR):**
 1. Ensure PR branch is checked out (`gh pr checkout <N>` if cwd's HEAD ≠ PR head)
-2. Stage the doc files; commit with `docs: <feature title>` (Co-Authored-By: Claude line)
+2. Stage the doc files; commit with `docs: <feature title>`
 3. Print `git log -1 --stat`; prompt `[y]push to <branch> / [n]o`
 4. On y: `git push origin <branch>`; print updated `gh pr view` URL
 

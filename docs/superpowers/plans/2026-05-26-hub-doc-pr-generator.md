@@ -2832,11 +2832,10 @@ def commit_oss_docs(*, impl_repo_root: str, title: str,
                     doc_files: list[str], refs_other_prs: list[int]) -> None:
     if doc_files:
         _git.run(impl_repo_root, ["add", *doc_files])
-    msg_lines = [f"docs: {title}", ""]
+    msg_lines = [f"docs: {title}"]
     if refs_other_prs:
-        msg_lines.append("Refs: " + ", ".join(f"traefik#{n}" for n in refs_other_prs))
         msg_lines.append("")
-    msg_lines.append("Co-Authored-By: Claude <noreply@anthropic.com>")
+        msg_lines.append("Refs: " + ", ".join(f"traefik#{n}" for n in refs_other_prs))
     msg = "\n".join(msg_lines)
     _git.run(impl_repo_root, ["commit", "-m", msg])
 ```
