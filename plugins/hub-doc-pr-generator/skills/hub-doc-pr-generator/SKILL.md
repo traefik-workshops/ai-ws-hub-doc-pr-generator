@@ -97,7 +97,7 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    - `/tmp/classify.json` (release-note shape via `needs_release_note.proposed_shape`, target month via `needs_release_note.target_month`, screenshot verdict)
    - `/tmp/locate.json` (target path + neighbors)
    - Template files from `${CLAUDE_SKILL_DIR}/templates/` (Hub or OSS depending on impl repo)
-   - For Hub: last ~150 lines of `docs/api-gateway/release-notes.mdx`. Insert the entry under the `## <target_month>` heading from classify; if that heading doesn't exist, create it at the top of the post-header area. Don't just append to whatever the newest heading happens to be.
+   - For Hub: last ~150 lines of `docs/api-gateway/release-notes.mdx`. Insert the entry under the `## <target_month>` heading from classify; if that heading doesn't exist, create it at the top of the post-header area. The new entry is the latest change, so it goes **on top, never at the bottom**: a new feature subsection becomes the first `####` under that month's `### What's New` (after `#### Graduated to GA` if present, above other features and the Compatibility Matrix); a new GA bullet prepends to the top of the `#### Graduated to GA` list. See `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md` ("Insertion order").
    - Up to 3 neighbor pages in full (read with the Read tool)
    - `${CLAUDE_SKILL_DIR}/references/<convention>.md` files on demand
 

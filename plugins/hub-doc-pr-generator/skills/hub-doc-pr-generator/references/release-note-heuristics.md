@@ -67,6 +67,24 @@ Insert the entry under that `## <Month YYYY>` heading, creating it at the top of
 the post-header area if it doesn't exist yet. Do **not** simply append to whatever
 the newest heading happens to be.
 
+## Insertion order — newest on top
+
+The entry being added is the latest change, so it goes **at the top**, never
+appended at the bottom. Concretely:
+
+- **New month section:** create `## <Month YYYY>` at the very top of the
+  post-header area, above all existing month sections.
+- **New `#### <Feature>` subsection:** insert it as the **first** feature
+  subsection within that month's `### What's New` — immediately after
+  `#### Graduated to GA` if that block exists, otherwise at the very top of
+  `### What's New`. It must sit **above** the existing feature subsections and
+  **above** `#### Compatibility Matrix`.
+- **New `ga-bullet`:** prepend it to the **top** of the `#### Graduated to GA`
+  list, not the end.
+- `#### Graduated to GA` always stays first and `#### Compatibility Matrix`
+  always stays last within a month — only the relative order of feature
+  subsections changes (newest first).
+
 ## Links
 
 Use relative paths from `docs/api-gateway/` (e.g. `../api-management/api.md#anchor`). Matches the existing file convention even though there's a stale comment at the top saying "ALL LINKS … MUST BE COMPLETE URLS".
