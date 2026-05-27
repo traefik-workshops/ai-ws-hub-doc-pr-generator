@@ -63,7 +63,7 @@ The skill accepts N impl PRs in a single invocation provided **all N belong to t
 
 Claude Code plugin in this repo, with deterministic helper scripts in Python (stdlib only) so each step is testable and the LLM only does judgment-heavy work.
 
-> **Packaging note (post-scaffold):** this repo is a flat Claude Code plugin. `.claude-plugin/plugin.json` lives at the repo root and the skill (with its `scripts/`, `templates/`, `references/`) lives under `skills/hub-doc-pr-generator/`. The tree below shows the original skill-only layout for design context; the live files under `skills/hub-doc-pr-generator/` are authoritative. SKILL.md references its bundled scripts/templates via `${CLAUDE_SKILL_DIR}`.
+> **Packaging note (post-scaffold):** this repo is its own Claude Code plugin marketplace (`traefik-workshops`). `.claude-plugin/marketplace.json` lives at the repo root; the single plugin lives under `plugins/hub-doc-pr-generator/` with `.claude-plugin/plugin.json` and the skill (with its `scripts/`, `templates/`, `references/`) under `plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/`. Install with `/plugin marketplace add traefik-workshops/ai-ws-hub-doc-pr-generator` then `/plugin install hub-doc-pr-generator`. The tree below shows the original skill-only layout for design context; the live files are authoritative. SKILL.md references its bundled scripts/templates via `${CLAUDE_SKILL_DIR}`.
 
 ```
 ai-ws-hub-doc-pr-generator/

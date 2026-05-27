@@ -1,7 +1,7 @@
 .PHONY: test lint format help
 
 PYTHON ?= python3
-SKILL_DIR := skills/hub-doc-pr-generator
+SKILL_DIR := plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator
 
 help:
 	@echo "make test    - run unit tests"
