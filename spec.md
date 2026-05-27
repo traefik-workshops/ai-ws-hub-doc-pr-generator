@@ -210,12 +210,13 @@ The LLM produces, in one pass:
 - The new markdown page (front matter + body) — front matter exactly matches neighbor convention (`title`, `id`, `description`, `tags`, `toc_min_heading_level`, `toc_max_heading_level`)
 - A `sidebars.js` patch (a small block to insert with a unified-diff context, not a regex replace)
 - A `release-notes.mdx` patch — **Hub-only**, only when `needs_release_note=yes`. Patches `docs/api-gateway/release-notes.mdx` (never `docs/api-management/release-notes.md`, which is a re-import shim). The patch shape depends on classification:
-  - **New feature, Early Access**: insert a `#### <Feature Name>` subsection under the **current month**'s `### What's New`, prefixed with a `:::warning Early Access\n...\n:::` admonition, followed by 1-3 paragraphs of description, ending with `For configuration details, see the [<Feature Name>](<relative-link>) documentation.`
+  - **New feature, Early Access**: insert a `#### <Feature Name>` subsection under the **target month**'s `### What's New`, prefixed with a `:::warning Early Access\n...\n:::` admonition, followed by 1-3 paragraphs of description, ending with `For configuration details, see the [<Feature Name>](<relative-link>) documentation.`
   - **New feature, GA**: same shape but **without** the EA admonition
-  - **Graduated to GA**: append a bullet to the existing `#### Graduated to GA` list under the current month, in the form `- **<Feature name>** is now generally available. See the [<doc title>](<relative-link>) documentation.`
-  - **Breaking change**: add or append to a `#### Breaking Changes` subsection (the file currently doesn't have one — the patch creates it under the current month and flags the engineer to review the section heading choice)
-  - **Compatibility-matrix change** (component version bump): update or insert the `#### Compatibility Matrix` table under the current month
-  - If the current month section doesn't exist yet, create `## <Month YYYY>` at the top of the post-header area, populated with `### What's New` and the appropriate subsection
+  - **Graduated to GA**: prepend a bullet to the **top** of the existing `#### Graduated to GA` list under the target month, in the form `- **<Feature name>** is now generally available. See the [<doc title>](<relative-link>) documentation.`
+  - **Breaking change**: add or append to a `#### Breaking Changes` subsection (the file currently doesn't have one — the patch creates it under the target month and flags the engineer to review the section heading choice)
+  - **Compatibility-matrix change** (component version bump): update or insert the `#### Compatibility Matrix` table under the target month
+  - The target month is `classify`'s `target_month` (PR merge month, else current month). If that section doesn't exist yet, create `## <Month YYYY>` at the top of the post-header area, populated with `### What's New` and the appropriate subsection.
+  - **Insertion order (newest on top):** the entry is the latest change, so it never lands at the bottom. A new `#### <Feature>` subsection becomes the first feature subsection under that month's `### What's New` (after `#### Graduated to GA` if present, above other features and above `#### Compatibility Matrix`); new month sections go at the very top of the post-header area. `#### Graduated to GA` stays first and `#### Compatibility Matrix` stays last within a month.
   - Links MUST be relative paths from `docs/api-gateway/` (e.g. `../api-management/api.md#anchor`), matching the existing convention in the file
 - Screenshot placeholders inline in the page (if `needs_screenshots=yes`) using:
   ```mdx
