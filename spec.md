@@ -61,13 +61,16 @@ The skill accepts N impl PRs in a single invocation provided **all N belong to t
 
 ## 4. Architecture
 
-Claude Code skill in this repo, with deterministic helper scripts in Python (stdlib only) so each step is testable and the LLM only does judgment-heavy work.
+Claude Code plugin in this repo, with deterministic helper scripts in Python (stdlib only) so each step is testable and the LLM only does judgment-heavy work.
+
+> **Packaging note (post-scaffold):** this repo is a flat Claude Code plugin. `.claude-plugin/plugin.json` lives at the repo root and the skill (with its `scripts/`, `templates/`, `references/`) lives under `skills/hub-doc-pr-generator/`. The tree below shows the original skill-only layout for design context; the live files under `skills/hub-doc-pr-generator/` are authoritative. SKILL.md references its bundled scripts/templates via `${CLAUDE_SKILL_DIR}`.
 
 ```
 ai-ws-hub-doc-pr-generator/
-├── SKILL.md                       # entry point: orchestrator checklist (~250 lines)
-├── spec.md                        # this file (after we leave plan mode)
-├── scripts/
+├── .claude-plugin/plugin.json     # plugin manifest
+└── skills/hub-doc-pr-generator/
+    ├── SKILL.md                   # entry point: orchestrator checklist
+    ├── scripts/
 │   ├── fetch_pr.py                # gh → normalized PR/issue/diff bundle (JSON)
 │   ├── fetch_grounding.py         # traefik/reference via gh api (INDEX, DOC_INDEX, concepts)
 │   ├── classify.py                # heuristics: release-note? screenshot? user-guide vs reference?

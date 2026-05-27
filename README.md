@@ -1,14 +1,22 @@
 # ai-ws-hub-doc-pr-generator
 
-A Claude Code skill that drafts documentation PRs from implementation PRs in `traefik/traefik-hub` (→ `traefik/hub-doc`) and `traefik/traefik` (→ in-repo `docs/content/`).
+A Claude Code plugin that drafts documentation PRs from implementation PRs in `traefik/traefik-hub` (→ `traefik/hub-doc`) and `traefik/traefik` (→ in-repo `docs/content/`). It ships a single skill, `hub-doc-pr-generator`.
 
 ## Install
 
-Clone into the place Claude Code auto-discovers skills:
+This repo is a flat Claude Code plugin (`.claude-plugin/plugin.json` at the root, skill under `skills/`).
+
+Clone it and point Claude Code at the directory:
 
 ```bash
-mkdir -p ~/.claude/skills
-git clone <this-repo-url> ~/.claude/skills/hub-doc-pr-generator
+git clone https://github.com/traefik-workshops/ai-ws-hub-doc-pr-generator.git
+claude --plugin-dir ai-ws-hub-doc-pr-generator
+```
+
+Once the plugin is published to the TraefikLabs marketplace, install will be a single command:
+
+```text
+/plugin install hub-doc-pr-generator@traefiklabs-marketplace
 ```
 
 Ensure `gh` is authenticated:
@@ -46,8 +54,9 @@ See `spec.md` for the design rationale and `docs/superpowers/plans/2026-05-26-hu
 
 | Path | Purpose |
 |---|---|
-| `SKILL.md` | Orchestrator the LLM follows |
-| `scripts/` | Deterministic Python helpers (Python stdlib only) |
-| `templates/` | Markdown scaffolds the LLM fills in |
-| `references/` | Convention catalogs loaded on demand |
+| `.claude-plugin/plugin.json` | Plugin manifest |
+| `skills/hub-doc-pr-generator/SKILL.md` | Orchestrator the LLM follows |
+| `skills/hub-doc-pr-generator/scripts/` | Deterministic Python helpers (Python stdlib only) |
+| `skills/hub-doc-pr-generator/templates/` | Markdown scaffolds the LLM fills in |
+| `skills/hub-doc-pr-generator/references/` | Convention catalogs loaded on demand |
 | `spec.md` | Full design spec |
