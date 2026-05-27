@@ -1,17 +1,22 @@
-# Traefik Reference
+# Traefik configuration reference index
 
-## OSS Concepts
+> Configuration surface for Traefik and Traefik Hub, generated from the Go source code. OSS pages live under `reference/oss/`, Hub pages under `reference/hub/`. Each entry maps to a `reference/<source>/<path>.md` file.
 
-### http.routers
-- kind: router-http
-- source: oss
-- extracted_from:
-  - pkg/config/dynamic/http_config.go#L85
+Use this index to pick which concepts you need, then load their detailed pages.
 
-## Hub Concepts
+## HTTP middlewares
 
-### hub.middleware.tokenratelimit
-- kind: middleware-http
-- source: hub
-- extracted_from:
-  - hub/pkg/middleware/tokenratelimit/config.go
+Per-request transformations applied between routers and services.
+
+- `http.middlewares.ratelimit` , RateLimit , RateLimit holds the rate limit configuration. This middleware ensures that services receive a fair amount of requests.
+- `http.middlewares.stripprefix` , StripPrefix , StripPrefix removes the specified prefixes from the URL path.
+
+## Hub middlewares
+
+AI-gateway and Hub-specific middlewares.
+
+- `hub.middlewares.tokenratelimit` , TokenRateLimit , TokenRateLimit holds the token-based rate limit configuration for the AI gateway.
+
+## Hub CRDs
+
+- `crd.api` , API , API defines an HTTP interface that is exposed to external clients.

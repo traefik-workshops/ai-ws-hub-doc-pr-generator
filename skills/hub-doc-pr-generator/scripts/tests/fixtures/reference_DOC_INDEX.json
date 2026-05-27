@@ -1,4 +1,20 @@
 {
-  "http.routers": {"narrative_doc": "traefik/reference/routing-configuration/http/routing/rules-and-priority.md", "source": "oss"},
-  "hub.middleware.tokenratelimit": {"narrative_doc": "ai-gateway/middlewares/token-rate-limit.md", "source": "hub"}
+  "description": "Mapping of reference concept ids to narrative documentation paths. doc_path is relative to traefik/docs/content/ for source=oss, hub-doc/docs/ for source=hub.",
+  "entries": [
+    {
+      "concept_id": "http.middlewares.ratelimit",
+      "source": "oss",
+      "doc_path": "reference/routing-configuration/http/middlewares/ratelimit.md"
+    },
+    {
+      "concept_id": "hub.middlewares.tokenratelimit",
+      "source": "hub",
+      "doc_path": "ai-gateway/middlewares/token-rate-limit.md"
+    },
+    {
+      "concept_id": "crd.api",
+      "source": "hub",
+      "doc_path": "api-management/api.md"
+    }
+  ]
 }

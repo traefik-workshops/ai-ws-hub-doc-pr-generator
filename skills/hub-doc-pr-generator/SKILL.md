@@ -65,7 +65,7 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
 
 3. **Fetch grounding.**
    ```bash
-   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.fetch_grounding --touched-files $(jq -r '.merged.files_changed[].path' /tmp/bundle.json) > /tmp/grounding.json
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.fetch_grounding --impl-repo "$(jq -r '.impl_repo' /tmp/bundle.json)" --touched-files $(jq -r '.merged.files_changed[].path' /tmp/bundle.json) > /tmp/grounding.json
    ```
 
 4. **Compute neighbor paths for classification** by scanning a likely candidate directory in the doc repo. The neighbor list is also reused in step 6.
