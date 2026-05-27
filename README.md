@@ -4,19 +4,22 @@ A Claude Code plugin that drafts documentation PRs from implementation PRs in `t
 
 ## Install
 
-This repo is a flat Claude Code plugin (`.claude-plugin/plugin.json` at the root, skill under `skills/`).
+This repo is its own Claude Code plugin marketplace (`traefik-workshops`), containing one plugin: `hub-doc-pr-generator`.
 
-Clone it and point Claude Code at the directory:
+In Claude Code, add the marketplace then install the plugin:
+
+```text
+/plugin marketplace add traefik-workshops/ai-ws-hub-doc-pr-generator
+/plugin install hub-doc-pr-generator
+```
+
+(If the plugin name ever collides with another marketplace you have added, disambiguate with `/plugin install hub-doc-pr-generator@traefik-workshops`.)
+
+For local development, point Claude Code at a clone instead:
 
 ```bash
 git clone https://github.com/traefik-workshops/ai-ws-hub-doc-pr-generator.git
-claude --plugin-dir ai-ws-hub-doc-pr-generator
-```
-
-Once the plugin is published to the TraefikLabs marketplace, install will be a single command:
-
-```text
-/plugin install hub-doc-pr-generator@traefiklabs-marketplace
+claude --plugin-dir ai-ws-hub-doc-pr-generator/plugins/hub-doc-pr-generator
 ```
 
 Ensure `gh` is authenticated:
@@ -29,16 +32,16 @@ The skill auto-discovers your local `hub-doc` clone (env var → persisted confi
 
 ## Usage
 
-In Claude Code, on the impl PR branch:
+The skill auto-triggers when you ask Claude to open a documentation PR from an implementation PR. You can also invoke it explicitly, on the impl PR branch:
 
 ```
-/hub-doc-pr-generator
+/hub-doc-pr-generator:hub-doc-pr-generator
 ```
 
 Or with explicit PRs (multi-PR aggregation):
 
 ```
-/hub-doc-pr-generator https://github.com/traefik/traefik-hub/pull/1234 1235
+/hub-doc-pr-generator:hub-doc-pr-generator https://github.com/traefik/traefik-hub/pull/1234 1235
 ```
 
 ## Development
@@ -54,9 +57,10 @@ See `spec.md` for the design rationale and `docs/superpowers/plans/2026-05-26-hu
 
 | Path | Purpose |
 |---|---|
-| `.claude-plugin/plugin.json` | Plugin manifest |
-| `skills/hub-doc-pr-generator/SKILL.md` | Orchestrator the LLM follows |
-| `skills/hub-doc-pr-generator/scripts/` | Deterministic Python helpers (Python stdlib only) |
-| `skills/hub-doc-pr-generator/templates/` | Markdown scaffolds the LLM fills in |
-| `skills/hub-doc-pr-generator/references/` | Convention catalogs loaded on demand |
+| `.claude-plugin/marketplace.json` | Marketplace manifest (`traefik-workshops`) |
+| `plugins/hub-doc-pr-generator/.claude-plugin/plugin.json` | Plugin manifest |
+| `plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/SKILL.md` | Orchestrator the LLM follows |
+| `plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/scripts/` | Deterministic Python helpers (Python stdlib only) |
+| `plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/templates/` | Markdown scaffolds the LLM fills in |
+| `plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/references/` | Convention catalogs loaded on demand |
 | `spec.md` | Full design spec |
