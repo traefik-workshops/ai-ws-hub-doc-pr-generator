@@ -147,12 +147,17 @@ Output: `pr-bundle.json` — a list of per-PR entries plus an aggregate view:
 Single-PR mode produces `prs: [<one entry>]` and `merged.primary_pr = prs[0].number` — same downstream contract for both modes.
 
 ### 6.2 fetch_grounding.py
-Inputs: `--touched-files <list>` (from PR diff)
+Inputs: `--touched-files <list>` (from PR diff), `--impl-repo <owner/name>`
 Always uses `gh api`, no local clone required.
-- Fetches `repos/traefik/reference/contents/INDEX.md` (cached in `/tmp/ai-ws-grounding-<sha>/`)
-- Fetches `repos/traefik/reference/contents/DOC_INDEX.json`
-- For each Go file in the diff: scans `INDEX.md` for entries whose `extracted_from` includes that path; pulls those concept markdown files
-- Output: `grounding.json` with `{concepts: [{id, kind, source, fields, narrative_doc_path}], llms_txt_url}`
+
+> **Updated 2026-05-27 for traefik/reference generator 0.4.x.** The repo reorganized: the index and doc-index moved under `reference/`, and the per-concept Go-source mapping (`extracted_from`) moved out of the central index into each concept page's YAML front matter. There is no longer a central Go-file → concept index, so matching is token based. See `fetch_grounding.py` docstring (authoritative).
+
+- Fetches `repos/traefik/reference/contents/reference/INDEX.md` — a flat catalog: `## Section` headers, then bullets `` `concept.id` , TypeName , description``
+- Fetches `repos/traefik/reference/contents/reference/DOC_INDEX.json` — `{"entries": [{concept_id, source, doc_path}]}`
+- **Token matching:** derives tokens from the touched file paths (path segments minus a stoplist of generic terms) and matches them against each concept's last id segment or its TypeName. Substring matches are rejected (e.g. `tokenratelimit` ≠ `ratelimit`).
+- **Enrichment:** for each matched concept, fetches its page at `reference/<source>/<id>.md` (leading id segment dropped when it equals the source) and parses front matter for `kind`, `extracted_from`, `fields` (`{name, type}`), `summary`. The narrative link comes from the DOC_INDEX entry's `doc_path`.
+- Output: `grounding.json` with `{concepts: [{id, type_name, kind, source, summary, extracted_from, fields, narrative_doc}], llms_txt_url}`
+- `llms_txt_url` is chosen from `--impl-repo` (Hub → `…/traefik-hub/llms.txt`, OSS → `…/traefik/llms.txt`); the cross-product `https://doc.traefik.io/llms.txt` is never emitted (it does not exist yet)
 - If no concept matches: `concepts: []` and the skill falls back to neighbor-page-only grounding (never invents concept IDs)
 
 ### 6.3 classify.py
