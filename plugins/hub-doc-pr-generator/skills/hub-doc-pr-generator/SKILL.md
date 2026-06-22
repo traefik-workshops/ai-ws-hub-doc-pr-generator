@@ -45,11 +45,20 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
 
 ## Pipeline (the agent follows this checklist)
 
-0. **Preflight.** Run `gh auth status` via Bash. If it fails, stop and tell the engineer to run `gh auth login`.
+0. **Preflight.**
 
-   For the Hub flow: discover the hub-doc clone via `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts._discover hub-doc`. If it exits non-zero, ask the engineer via `AskUserQuestion` for the path (offer a "create a fresh clone in ~/code/hub-doc" option that runs `gh repo clone traefik/hub-doc`). Persist the answer with `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts._discover save-hub-doc <path>`. Confirm the working tree is clean (`git -C <path> status --porcelain`); if dirty, ask the engineer to stash/commit.
+   Run the setup check:
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.setup --check
+   ```
+   - If it exits non-zero: the error message tells the engineer exactly what to fix (`gh auth login`, missing hub-doc clone, etc.). Stop here.
+   - If `~/.config/hub-doc-pr-generator/config.json` does not exist (first run): instead run the full interactive setup:
+     ```bash
+     PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.setup
+     ```
+     This verifies Python, authenticates `gh`, discovers or clones the hub-doc repo, and persists the config. Only proceed once it exits 0.
 
-   For the OSS flow: discover the impl repo via `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts._discover oss` (uses cwd). Confirm clean working tree.
+   For the OSS flow: also discover the impl repo via `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts._discover oss` (uses cwd).
 
 1. **Parse inputs.** Resolve each argument to `{impl_repo, pr_number}`. Forms:
    - PR URL: `https://github.com/<owner>/<repo>/pull/<N>`
@@ -70,36 +79,80 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.fetch_grounding --impl-repo "$(jq -r '.impl_repo' /tmp/bundle.json)" --touched-files $(jq -r '.merged.files_changed[].path' /tmp/bundle.json) > /tmp/grounding.json
    ```
 
-4. **Compute neighbor paths for classification** by scanning a likely candidate directory in the doc repo. The neighbor list is also reused in step 6.
+4. **Compute neighbor paths and extract structural summaries.**
+
+   Find 3–5 neighbor pages by listing the likely target directory in the doc repo. Infer the sub-directory from the PR's touched file paths and title:
+
+   - **Hub** (`traefik/traefik-hub`): docs live under `<hub-doc-root>/docs/`. Common mappings:
+     - Middleware / config Go code → `docs/api-gateway/middlewares/`
+     - Dashboard / portal UI code → `docs/api-gateway/dashboard/` or `docs/api-gateway/portal/`
+     - Ingress / routing code → `docs/api-gateway/routing/`
+     - When unsure, list `docs/api-gateway/` and pick from there.
+   - **OSS** (`traefik/traefik`): docs live under `docs/content/`. Use the same category inference.
+
+   List the inferred directory:
+   ```bash
+   ls <doc-repo-root>/docs/<likely-category>/
+   ```
+   Pick the 3–5 `.md` / `.mdx` files closest in topic to the feature. Store their absolute paths in `neighbors`.
+
+   Extract structural summaries:
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.extract_neighbor_structure \
+     ${neighbors[@]} > /tmp/neighbor_structures.json
+   ```
+
+   The `neighbors` array is reused in step 5.
 
 5. **Classify.**
    ```bash
-   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.classify --bundle /tmp/bundle.json --grounding /tmp/grounding.json $(printf -- '--neighbor %s ' "${neighbors[@]}") > /tmp/classify.json
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.classify --bundle /tmp/bundle.json \
+     --grounding /tmp/grounding.json $(printf -- '--neighbor %s ' "${neighbors[@]}") \
+     --slim > /tmp/classify.json
    ```
+   The `--slim` flag strips the internal signals/rationale arrays — the LLM does not need them.
 
-6. **Ask the engineer for the doc kind.** Show `doc_kind_candidates[0]` with its rationale via `AskUserQuestion`:
-   - `[c]` confirm AI pick
-   - `[s]` swap (pick the other candidate)
-   - `[d]` you decide (pick higher confidence)
-   - `[p]` custom path
+6. **Confirm doc kind and target path (confidence-gated).**
 
-7. **Locate targets.**
+   Read `classify.json`:
+   - If `confidence >= 0.85`: auto-accept `doc_kind_candidates[0].kind` silently. Log: `Auto-selected doc kind: <kind> (confidence: <N>)`.
+   - If `confidence < 0.85`: confirmation required — see the `AskUserQuestion` prompt below.
+
+   Run locate_targets with the selected kind:
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.locate_targets \
      --impl-repo <repo> --doc-repo-root <path> --doc-kind <kind> \
      --feature-slug <slug> --touched-files ... > /tmp/locate.json
    ```
-   Show the top candidate; confirm or accept a custom path.
 
-8. **Generate.** This is the LLM step — no script. Read:
+   Read `locate.json`:
+   - If `candidates[0].confidence >= 0.75`: auto-accept silently. Log: `Auto-selected path: <path> (confidence: <N>)`.
+   - If `candidates[0].confidence < 0.75`: confirmation required — see the `AskUserQuestion` prompt below.
+
+   If either needs confirmation, ask once via `AskUserQuestion` covering both in a single prompt:
+   > "I'll create `<path>` as a `<kind>` page — confirm, change kind, or change path?"
+   - `[y]` confirm both
+   - `[k]` change kind (show the other candidate)
+   - `[p]` custom path
+
+7. **Generate.** This is the LLM step — no script. Read:
    - `/tmp/bundle.json` (the PR + diff, linked issues with their `parent`/`siblings`, and `merged.related_prs` — use the parent epic and sibling issues to understand the feature's intent and scope, not just the single PR's diff)
    - `/tmp/grounding.json` (concept fields)
    - `/tmp/classify.json` (release-note shape via `needs_release_note.proposed_shape`, target month via `needs_release_note.target_month`, screenshot verdict)
    - `/tmp/locate.json` (target path + neighbors)
    - Template files from `${CLAUDE_SKILL_DIR}/templates/` (Hub or OSS depending on impl repo)
-   - For Hub: last ~150 lines of `docs/api-gateway/release-notes.mdx`. Insert the entry under the `## <target_month>` heading from classify; if that heading doesn't exist, create it at the top of the post-header area. The new entry is the latest change, so it goes **on top, never at the bottom**: a new feature subsection becomes the first `####` under that month's `### What's New` (after `#### Graduated to GA` if present, above other features and the Compatibility Matrix); a new GA bullet prepends to the top of the `#### Graduated to GA` list. See `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md` ("Insertion order").
-   - Up to 3 neighbor pages in full (read with the Read tool)
-   - `${CLAUDE_SKILL_DIR}/references/<convention>.md` files on demand
+   - For Hub: locate the target month's section in `docs/api-gateway/release-notes.mdx` by running:
+     ```bash
+     grep -n "## <target_month>\|### What's New\|#### Graduated to GA" \
+       <doc-repo>/docs/api-gateway/release-notes.mdx | head -20
+     ```
+     Then read only that section (typically 30–60 lines) with the Read tool, not the full file. If the target month heading doesn't exist, read the first 30 lines to understand the file structure and create the heading. The new entry goes **on top, never at the bottom** — see `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md` ("Insertion order").
+   - `/tmp/neighbor_structures.json` (structural summaries of neighbor pages — headings and first sentences). Do NOT read full neighbor pages; the summaries are sufficient for matching structure and tone.
+   - `${CLAUDE_SKILL_DIR}/references/style-guide.md` **Tier 1 — Core rules** (always load). Additionally load on demand:
+     - `## Procedure pages` section — if doc kind is a how-to guide or tutorial
+     - `## Screenshots and media` section — if `classify.needs_screenshots.verdict == "yes"`
+     - `## Tables` section — only if the page will include a parameter table
+   - `${CLAUDE_SKILL_DIR}/references/<convention>.md` files on demand (hub-doc-conventions, oss-doc-conventions, release-note-heuristics)
 
    Produce a JSON file `/tmp/edits.json` shaped:
    ```json
@@ -111,7 +164,9 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    ```
    For each release-note shape (see `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md`), pick the right template and instantiate it. **Skip release notes entirely for OSS impl repos.**
 
-9. **Preview.**
+   Also render the PR body: read `${CLAUDE_SKILL_DIR}/templates/pr-body.md.tmpl`, fill in the feature title, source PR numbers (`bundle.json → prs[].number`), a one-paragraph summary of what the new or updated docs cover, the linked issue numbers, and the reviewer checklist from the template. Write the rendered result to `/tmp/pr-body.md`. (This file is consumed by `open_pr.py` in step 10.)
+
+8. **Preview.**
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.preview \
      --repo-path <doc-repo> --impl-repo <impl-repo> --branch <branch> \
@@ -119,12 +174,12 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    ```
    Print the `diff_stat` and `diff` to the engineer. If `lint_ok` is false, surface `lint_errors` and force a re-prompt.
 
-10. **Edit loop.** Use `AskUserQuestion`:
+9. **Edit loop.** Use `AskUserQuestion`:
     - `[1] push`
-    - `[2] re-prompt with notes` → engineer types feedback; regenerate affected files (step 8 again with the feedback in context); back to step 9
+    - `[2] re-prompt with notes` → engineer types feedback; regenerate affected files (step 7 again with the feedback in context); back to step 8
     - `[3] save and exit (no push)`
 
-11. **Push.**
+10. **Push.**
     - **Hub:**
       ```bash
       PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.open_pr hub --doc-repo-root <path> --branch <branch> \
@@ -146,4 +201,4 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
 
 ## When to use the AskUserQuestion tool
 
-Use it for: kind selection (step 6), candidate-path confirmation (step 7), edit-loop choices (step 10), push confirmation (step 11). Each renders a labelled option list instead of a free-form y/N.
+Use it for: combined kind/path confirmation when confidence is below threshold (step 6), edit-loop choices (step 9), push confirmation (step 10). Each renders a labelled option list instead of a free-form y/N. Do not ask when the classifier is confident — let the pipeline proceed automatically and log what was auto-selected.

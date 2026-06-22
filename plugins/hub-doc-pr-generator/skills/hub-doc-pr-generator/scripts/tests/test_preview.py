@@ -23,6 +23,18 @@ class TestApplyEdits(unittest.TestCase):
             self.assertEqual(written, ["docs/new.md"])
             self.assertTrue((d / "docs/new.md").is_file())
 
+    def test_new_file_appears_in_diff(self):
+        """New (previously untracked) files must be visible in git_diff output."""
+        from scripts.preview import git_diff
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            edits = [FileEdit(path="docs/new.md", content="# Hello\n", mode="create")]
+            apply_edits(repo_path=str(d), branch="docs/test", edits=edits)
+            diff = git_diff(str(d))
+            self.assertIn("docs/new.md", diff)
+            self.assertIn("Hello", diff)
+
     def test_updates_existing_file(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -34,6 +46,17 @@ class TestApplyEdits(unittest.TestCase):
             edits = [FileEdit(path="existing.md", content="new\n", mode="overwrite")]
             apply_edits(repo_path=str(d), branch="docs/test", edits=edits)
             self.assertEqual((d / "existing.md").read_text(), "new\n")
+
+
+class TestApplyEditsValidation(unittest.TestCase):
+    def test_patch_mode_raises(self):
+        """Mode 'patch' is not implemented and must raise, not silently overwrite."""
+        with self.assertRaises((ValueError, NotImplementedError)):
+            apply_edits(
+                repo_path="/irrelevant",
+                branch="docs/x",
+                edits=[FileEdit(path="docs/x.md", content="hi", mode="patch")],  # type: ignore[arg-type]
+            )
 
 
 class TestRunLinter(unittest.TestCase):

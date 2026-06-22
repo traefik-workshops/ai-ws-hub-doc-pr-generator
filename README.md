@@ -2,6 +2,26 @@
 
 A Claude Code plugin that drafts documentation PRs from implementation PRs in `traefik/traefik-hub` (→ `traefik/hub-doc`) and `traefik/traefik` (→ in-repo `docs/content/`). It ships a single skill, `hub-doc-pr-generator`.
 
+## Quick start
+
+New to the plugin? Three steps:
+
+1. **Install** (once):
+   ```text
+   /plugin marketplace add traefik-workshops/ai-ws-hub-doc-pr-generator
+   /plugin install hub-doc-pr-generator
+   ```
+
+2. **Run it** from your impl PR branch:
+   ```
+   /hub-doc-pr-generator:hub-doc-pr-generator
+   ```
+   On first run, the plugin checks your environment and walks you through any missing setup (gh auth, hub-doc clone location). It remembers the answers — you won't be asked again.
+
+3. **What to expect**: The plugin reads your PR, classifies the doc type, and generates a draft page. If it's confident about the doc kind and file location, it proceeds automatically. Otherwise it asks one combined question. You'll see a `git diff` preview before anything is pushed.
+
+---
+
 ## Install
 
 This repo is its own Claude Code plugin marketplace (`traefik-workshops`), containing one plugin: `hub-doc-pr-generator`.

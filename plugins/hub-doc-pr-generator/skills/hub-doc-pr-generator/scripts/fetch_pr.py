@@ -3,7 +3,7 @@
 Usage:
   python -m scripts.fetch_pr --repo traefik/traefik-hub --pr 1234 [--pr 1240 ...]
   python -m scripts.fetch_pr --auto-detect          # cwd must be a checked-out PR branch
-  python -m scripts.fetch_pr --url https://github.com/owner/repo/pull/N [...]
+  python -m scripts.fetch_pr --pr https://github.com/owner/repo/pull/N [...]
 
 Emits a single JSON document on stdout.
 """
@@ -18,6 +18,45 @@ from scripts import _gh
 
 
 DIFF_LINE_CAP = 2000
+
+# Patterns for file paths that carry no documentation value.
+_FILTER_PATH_RES = [
+    re.compile(r"_test\.go$"),
+    re.compile(r"/testdata/"),
+    re.compile(r"zz_generated.*\.go$"),
+    re.compile(r"\.pb\.go$"),
+    re.compile(r"_generated\.go$"),
+]
+
+
+def _filter_diff(diff_text: str) -> tuple[str, bool]:
+    """Remove hunks for test and generated files from a unified diff.
+
+    Returns (filtered_diff, was_filtered) where was_filtered is True if at
+    least one hunk was dropped.
+    """
+    if not diff_text:
+        return diff_text, False
+
+    # Split into per-file hunks on the "diff --git" boundary.
+    # Each element (except possibly a leading empty one) begins with that line.
+    raw_hunks = re.split(r"(?=^diff --git )", diff_text, flags=re.MULTILINE)
+
+    kept: list[str] = []
+    dropped = 0
+    for hunk in raw_hunks:
+        if not hunk:
+            continue
+        # Extract the path from the "--- a/<path>" line (or the diff header).
+        path_match = re.search(r"^(?:---|\+\+\+) [ab]/(.+)$", hunk, re.MULTILINE)
+        if path_match:
+            path = path_match.group(1)
+            if any(pat.search(path) for pat in _FILTER_PATH_RES):
+                dropped += 1
+                continue
+        kept.append(hunk)
+
+    return "".join(kept), dropped > 0
 
 
 _PR_URL_RE = re.compile(
@@ -65,6 +104,7 @@ def fetch_single(ref: PrRef) -> dict:
         "isDraft,mergeable,mergedAt,files,closingIssuesReferences",
     ])
     diff_text = _gh.run_text(["pr", "diff", str(ref.number), "--repo", owner_repo, "--patch"])
+    diff_text, diff_filtered = _filter_diff(diff_text)
     diff_lines = diff_text.splitlines()
     truncated = len(diff_lines) > DIFF_LINE_CAP
     diff_capped = "\n".join(diff_lines[:DIFF_LINE_CAP])
@@ -83,6 +123,7 @@ def fetch_single(ref: PrRef) -> dict:
         "merged_at": view.get("mergedAt"),
         "diff": diff_capped,
         "diff_truncated": truncated,
+        "diff_filtered": diff_filtered,
         "files_changed": [
             {"path": f["path"], "additions": f["additions"], "deletions": f["deletions"]}
             for f in view.get("files", [])
@@ -359,6 +400,9 @@ def build_bundle(refs: list[PrRef]) -> dict:
                 related_by_key[(rp["repo"], rp["number"])] = rp
         pr["related_prs"] = list(related_by_key.values())[:RELATED_PR_CAP]
         prs.append(pr)
+    # Duplicate detection only searches by the first PR number. For multi-PR
+    # invocations the search heuristic is less reliable, so we skip it and let
+    # the engineer decide whether to update or create.
     existing = find_existing_doc_pr(impl_repo, refs[0].number) if len(refs) == 1 else None
     return {
         "impl_repo": impl_repo,
@@ -385,9 +429,18 @@ def main(argv: list[str]) -> int:
                         help="PR number or full URL; repeat for multi-PR")
     parser.add_argument("--repo", default=None,
                         help="Override owner/name; otherwise inferred from cwd remote")
+    parser.add_argument("--auto-detect", action="store_true",
+                        help="detect PR number and repo from the current branch")
     args = parser.parse_args(argv)
     cwd_remote = args.repo or _cwd_remote()
-    refs = parse_pr_inputs(args.pr, cwd_remote)
+    pr_args = args.pr
+    if args.auto_detect or not pr_args:
+        view = _gh.run_json(["pr", "view", "--json", "number,headRepository"])
+        detected_repo = (view.get("headRepository") or {}).get("nameWithOwner")
+        if detected_repo:
+            cwd_remote = detected_repo
+        pr_args = [str(view["number"])]
+    refs = parse_pr_inputs(pr_args, cwd_remote)
     bundle = build_bundle(refs)
     print(_json.dumps(bundle, indent=2))
     return 0

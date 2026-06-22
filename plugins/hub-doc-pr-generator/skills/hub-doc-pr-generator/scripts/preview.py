@@ -4,6 +4,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -15,7 +16,7 @@ from scripts import _git
 class FileEdit:
     path: str
     content: str
-    mode: Literal["create", "overwrite", "patch"] = "create"
+    mode: Literal["create", "overwrite"] = "create"
 
 
 def _checkout_branch(repo_path: str, branch: str) -> None:
@@ -26,22 +27,32 @@ def _checkout_branch(repo_path: str, branch: str) -> None:
 
 
 def apply_edits(*, repo_path: str, branch: str, edits: list[FileEdit]) -> list[str]:
+    # Validate before touching the filesystem so we fail fast with a clear message.
+    for e in edits:
+        if e.mode not in ("create", "overwrite"):
+            raise ValueError(
+                f"unsupported mode {e.mode!r} for {e.path!r}; "
+                "emit full file content with mode='create' or mode='overwrite'"
+            )
     _checkout_branch(repo_path, branch)
     written: list[str] = []
     for e in edits:
         dest = Path(repo_path) / e.path
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(e.content)
+        dest.write_text(e.content, encoding="utf-8")
         written.append(e.path)
+    # Stage so git_diff / git_diff_stat can show new (untracked) files too.
+    if written:
+        _git.run(repo_path, ["add", "--", *written])
     return written
 
 
 def git_diff(repo_path: str) -> str:
-    return _git.run(repo_path, ["diff", "--no-color"])
+    return _git.run(repo_path, ["diff", "--cached", "--no-color"])
 
 
 def git_diff_stat(repo_path: str) -> str:
-    return _git.run(repo_path, ["diff", "--stat", "--no-color"])
+    return _git.run(repo_path, ["diff", "--cached", "--stat", "--no-color"])
 
 
 @dataclass
@@ -52,11 +63,15 @@ class LintResult:
 
 
 _HUB_LINT_COMMANDS = [["yarn", "docs:markdown"], ["yarn", "docs:alex"]]
-_OSS_LINT_COMMANDS = [["mkdocs", "build", "--strict", "-d", "/tmp/.mkdocs-preview"]]
 
 
 def run_linter(*, repo_path: str, impl_repo: str) -> LintResult:
-    commands = _HUB_LINT_COMMANDS if impl_repo == "traefik/traefik-hub" else _OSS_LINT_COMMANDS
+    if impl_repo == "traefik/traefik-hub":
+        commands = _HUB_LINT_COMMANDS
+    else:
+        # Use a per-invocation temp dir so concurrent OSS linting runs don't collide.
+        site_dir = tempfile.mkdtemp(prefix="mkdocs-preview-")
+        commands = [["mkdocs", "build", "--strict", "-d", site_dir]]
     all_errors: list[str] = []
     ran: list[str] = []
     for cmd in commands:

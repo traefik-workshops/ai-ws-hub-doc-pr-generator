@@ -46,6 +46,15 @@ class TestOpenHubPr(unittest.TestCase):
 
 
 class TestCommitOssDocs(unittest.TestCase):
+    def test_empty_doc_files_raises(self):
+        with self.assertRaises(ValueError, msg="should refuse to commit with no files"):
+            commit_oss_docs(
+                impl_repo_root="/traefik",
+                title="add X",
+                doc_files=[],
+                refs_other_prs=[],
+            )
+
     def test_single_pr_commit_no_refs(self):
         with patch("scripts.open_pr._git.run") as g:
             commit_oss_docs(
@@ -83,6 +92,15 @@ class TestBranchSlug(unittest.TestCase):
         title = "feat: " + "x" * 200
         slug = branch_slug_from_title(title)
         self.assertLessEqual(len(slug), 40 + len("docs/"))
+
+    def test_prefix_only_title_falls_back_to_feature(self):
+        self.assertEqual(branch_slug_from_title("feat:"), "docs/feature")
+
+    def test_scoped_prefix_stripped(self):
+        self.assertEqual(
+            branch_slug_from_title("feat(ai-gateway): add rate limiting"),
+            "docs/add-rate-limiting",
+        )
 
 
 if __name__ == "__main__":

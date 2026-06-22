@@ -2,9 +2,68 @@ import unittest
 import json
 from pathlib import Path
 from unittest.mock import patch
-from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE, merge_prs, find_existing_doc_pr, build_bundle, fetch_issue_graph
+from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE, merge_prs, find_existing_doc_pr, build_bundle, fetch_issue_graph, _filter_diff
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class TestFilterDiff(unittest.TestCase):
+    _PROD_HUNK = (
+        "diff --git a/hub/pkg/middleware/cors/config.go b/hub/pkg/middleware/cors/config.go\n"
+        "index abc..def 100644\n"
+        "--- a/hub/pkg/middleware/cors/config.go\n"
+        "+++ b/hub/pkg/middleware/cors/config.go\n"
+        "@@ -1,3 +1,4 @@\n"
+        " package cors\n"
+        "+// AllowOrigins lists the permitted origins.\n"
+    )
+    _TEST_HUNK = (
+        "diff --git a/hub/pkg/middleware/cors/config_test.go b/hub/pkg/middleware/cors/config_test.go\n"
+        "index 111..222 100644\n"
+        "--- a/hub/pkg/middleware/cors/config_test.go\n"
+        "+++ b/hub/pkg/middleware/cors/config_test.go\n"
+        "@@ -1,2 +1,3 @@\n"
+        " package cors\n"
+        "+// test\n"
+    )
+    _GENERATED_HUNK = (
+        "diff --git a/zz_generated.deepcopy.go b/zz_generated.deepcopy.go\n"
+        "index 333..444 100644\n"
+        "--- a/zz_generated.deepcopy.go\n"
+        "+++ b/zz_generated.deepcopy.go\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+
+    def test_keeps_production_hunk(self):
+        filtered, was_filtered = _filter_diff(self._PROD_HUNK)
+        self.assertFalse(was_filtered)
+        self.assertIn("cors/config.go", filtered)
+
+    def test_drops_test_file_hunk(self):
+        diff = self._PROD_HUNK + self._TEST_HUNK
+        filtered, was_filtered = _filter_diff(diff)
+        self.assertTrue(was_filtered)
+        self.assertIn("cors/config.go", filtered)
+        self.assertNotIn("config_test.go", filtered)
+
+    def test_drops_generated_file_hunk(self):
+        diff = self._PROD_HUNK + self._GENERATED_HUNK
+        filtered, was_filtered = _filter_diff(diff)
+        self.assertTrue(was_filtered)
+        self.assertNotIn("zz_generated", filtered)
+
+    def test_empty_diff_passthrough(self):
+        filtered, was_filtered = _filter_diff("")
+        self.assertEqual(filtered, "")
+        self.assertFalse(was_filtered)
+
+    def test_all_filtered_returns_empty(self):
+        diff = self._TEST_HUNK + self._GENERATED_HUNK
+        filtered, was_filtered = _filter_diff(diff)
+        self.assertTrue(was_filtered)
+        self.assertEqual(filtered.strip(), "")
 
 
 class TestParsePrInputs(unittest.TestCase):

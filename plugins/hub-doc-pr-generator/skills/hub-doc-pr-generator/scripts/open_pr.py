@@ -2,7 +2,9 @@
 from __future__ import annotations
 import argparse
 import json
+import re
 import sys
+from pathlib import Path
 from typing import Optional
 from scripts import _gh, _git
 
@@ -10,7 +12,7 @@ from scripts import _gh, _git
 def detect_fork(*, upstream: str) -> Optional[str]:
     user = _gh.current_user_login()
     repos = _gh.run_json([
-        "repo", "list", user, "--fork",
+        "repo", "list", user, "--fork", "--limit", "100",
         "--json", "name,parent",
     ])
     for r in repos:
@@ -46,8 +48,9 @@ def open_hub_pr(*, doc_repo_root: str, fork: str, branch: str,
 
 def commit_oss_docs(*, impl_repo_root: str, title: str,
                     doc_files: list[str], refs_other_prs: list[int]) -> None:
-    if doc_files:
-        _git.run(impl_repo_root, ["add", *doc_files])
+    if not doc_files:
+        raise ValueError("commit_oss_docs: no doc files specified; nothing to commit")
+    _git.run(impl_repo_root, ["add", *doc_files])
     msg_lines = [f"docs: {title}"]
     if refs_other_prs:
         msg_lines.append("")
@@ -56,14 +59,12 @@ def commit_oss_docs(*, impl_repo_root: str, title: str,
     _git.run(impl_repo_root, ["commit", "-m", msg])
 
 
-import re
-
 _NON_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 def branch_slug_from_title(title: str, *, prefix: str = "docs/") -> str:
     stripped = re.sub(r"^(feat|fix|chore|refactor|test|docs|style|perf|build|ci)(\([^)]+\))?:\s*", "", title, flags=re.IGNORECASE)
-    slug = _NON_SLUG_RE.sub("-", stripped.lower()).strip("-")
+    slug = _NON_SLUG_RE.sub("-", stripped.lower()).strip("-") or "feature"
     return prefix + slug[:40]
 
 
@@ -89,7 +90,7 @@ def main(argv: list[str]) -> int:
         if fork is None:
             print(json.dumps({"error": "no fork detected; manual fork required"}))
             return 2
-        body = open(args.body_file).read()
+        body = Path(args.body_file).read_text(encoding="utf-8")
         url = open_hub_pr(
             doc_repo_root=args.doc_repo_root,
             fork=fork, branch=args.branch,

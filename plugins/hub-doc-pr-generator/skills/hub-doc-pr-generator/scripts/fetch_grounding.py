@@ -166,6 +166,8 @@ def _llms_txt_url_for(impl_repo: str | None, sources: set[str]) -> str:
 def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -> dict:
     entries = parse_index(_fetch_raw(INDEX_PATH))
     matches = concepts_for_paths(entries, touched_paths)
+    total_matched = len(matches)
+    matches = matches[:3]
 
     doc_map: dict[str, dict] = {}
     if matches:
@@ -184,7 +186,6 @@ def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -
             "kind": "",
             "source": source,
             "summary": m["description"],
-            "extracted_from": [],
             "fields": [],
             "narrative_doc": di.get("doc_path") if di else None,
         }
@@ -192,7 +193,6 @@ def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -
             try:
                 fm = parse_front_matter(_fetch_raw(concept_page_path(cid, source)))
                 concept["kind"] = fm.get("kind", "")
-                concept["extracted_from"] = fm.get("extracted_from", [])
                 concept["fields"] = fm.get("fields", [])
                 if fm.get("summary"):
                     concept["summary"] = fm["summary"]
@@ -203,6 +203,7 @@ def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -
     sources = {c["source"] for c in enriched if c["source"]}
     return {
         "concepts": enriched,
+        "concepts_total_matched": total_matched,
         "llms_txt_url": _llms_txt_url_for(impl_repo, sources),
     }
 

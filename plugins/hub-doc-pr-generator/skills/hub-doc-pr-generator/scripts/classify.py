@@ -57,7 +57,11 @@ def needs_release_note(pr: dict, *, impl_repo: str, today: date | None = None) -
     labels = {l.lower() for l in pr.get("labels", [])}
 
     def _has_label(token: str) -> bool:
-        return any(token in l for l in labels)
+        # Use word-boundary matching: token must appear as a whole segment
+        # (at start, after "/", or followed by "-" or end-of-string) so that
+        # "kind/not-breaking-change" does NOT match _has_label("breaking").
+        pat = re.compile(rf"(?:^|/)(?:{re.escape(token)})(?:-|$)", re.IGNORECASE)
+        return any(pat.search(l) for l in labels)
 
     is_feat = feature_type(title) == "feat"
     signals: list[str] = []
@@ -106,9 +110,16 @@ def needs_release_note(pr: dict, *, impl_repo: str, today: date | None = None) -
     }
 
 
+_FULL_PREFIX_RE = re.compile(
+    r"^(?:feat|fix|chore|refactor|test|docs|style|perf|build|ci)"
+    r"(?:\([^)]*\))?:\s*",
+    re.IGNORECASE,
+)
+
+
 def _title_to_heading(title: str) -> str:
-    # Strip "feat: " / "fix: " etc.; Title-Case the remainder.
-    stripped = _PREFIX_RE.sub("", title, count=1).lstrip(":").strip()
+    # Strip "feat: " / "feat(scope): " / "fix: " etc.; capitalise the remainder.
+    stripped = _FULL_PREFIX_RE.sub("", title).strip()
     return stripped[:1].upper() + stripped[1:] if stripped else ""
 
 
@@ -166,8 +177,18 @@ def doc_kind_candidates(
         score_ref += 0.4
         rationale_ref.append("title mentions reference/CRD")
 
+    # When no signals fire at all, return a clear default rather than two 0.0 candidates
+    # that leave the LLM with no useful ordering.
+    if score_ref == 0.0 and score_guide == 0.0:
+        return [
+            {"kind": "user-guide", "confidence": 0.5,
+             "rationale": "no signal — defaulting to user-guide"},
+            {"kind": "reference", "confidence": 0.5,
+             "rationale": "no signal"},
+        ]
+
     # Normalise to [0,1]
-    total = max(score_ref + score_guide, 1.0)
+    total = score_ref + score_guide
     cands = [
         {"kind": "reference", "confidence": round(score_ref / total, 2),
          "rationale": "; ".join(rationale_ref) or "no signal"},
@@ -185,7 +206,12 @@ def classify(bundle: dict, *, grounding: dict, neighbor_paths: list[str],
         bundle["prs"][0],
     )
     touched = [f["path"] for f in bundle["merged"]["files_changed"]]
+    candidates = doc_kind_candidates(
+        title=primary["title"], touched_paths=touched, neighbor_paths=neighbor_paths
+    )
+    top_confidence = candidates[0]["confidence"] if candidates else 0.5
     return {
+        "confidence": top_confidence,
         "feature_type": feature_type(primary["title"]),
         "needs_release_note": needs_release_note(
             primary, impl_repo=bundle["impl_repo"], today=today
@@ -193,9 +219,7 @@ def classify(bundle: dict, *, grounding: dict, neighbor_paths: list[str],
         "needs_screenshots": needs_screenshots(
             neighbor_paths=neighbor_paths, touched_paths=touched
         ),
-        "doc_kind_candidates": doc_kind_candidates(
-            title=primary["title"], touched_paths=touched, neighbor_paths=neighbor_paths
-        ),
+        "doc_kind_candidates": candidates,
     }
 
 
@@ -205,10 +229,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--grounding", required=True, help="path to grounding.json")
     parser.add_argument("--neighbor", action="append", default=[],
                         help="path to a neighbor doc file; repeat")
+    parser.add_argument("--slim", action="store_true",
+                        help="strip signals/rationale arrays for LLM generation input")
     args = parser.parse_args(argv)
     bundle = json.loads(Path(args.bundle).read_text())
     grounding = json.loads(Path(args.grounding).read_text())
     out = classify(bundle, grounding=grounding, neighbor_paths=args.neighbor)
+    if args.slim:
+        out["needs_release_note"].pop("signals", None)
+        out["needs_screenshots"].pop("signals", None)
+        for cand in out["doc_kind_candidates"]:
+            cand.pop("rationale", None)
     print(json.dumps(out, indent=2))
     return 0
 
