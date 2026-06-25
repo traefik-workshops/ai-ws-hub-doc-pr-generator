@@ -45,26 +45,28 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
 
 ## Pipeline (the agent follows this checklist)
 
-0. **Preflight.**
-
-   Run the setup check:
+0. **Preflight (universal gate).** Verify Python and `gh` before anything else. This phase is flow-independent — it does **not** require a hub-doc clone (that's checked in step 1, once the impl repo is known) — and it must pass first because PR auto-detection in step 1 shells out to `gh`:
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.setup --check
    ```
-   - If it exits non-zero: the error message tells the engineer exactly what to fix (`gh auth login`, missing hub-doc clone, etc.). Stop here.
-   - If `~/.config/hub-doc-pr-generator/config.json` does not exist (first run): instead run the full interactive setup:
-     ```bash
-     PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.setup
-     ```
-     This verifies Python, authenticates `gh`, discovers or clones the hub-doc repo, and persists the config. Only proceed once it exits 0.
-
-   For the OSS flow: also discover the impl repo via `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts._discover oss` (uses cwd).
+   If it exits non-zero, the error message says exactly what to fix (`gh auth login`, etc.). Stop here.
 
 1. **Parse inputs.** Resolve each argument to `{impl_repo, pr_number}`. Forms:
    - PR URL: `https://github.com/<owner>/<repo>/pull/<N>`
    - PR number: requires being inside the impl repo, or `--repo` flag
    - No-arg: auto-detect from current branch (`gh pr view --json number,headRepository`)
    Validate all PRs share the same `impl_repo`. If not, refuse.
+
+   Once `impl_repo` is known, provision the flow's resources (only now is this knowable):
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.setup --check --impl-repo <impl_repo>
+   ```
+   - **Hub** (`traefik/traefik-hub`): verifies a local hub-doc clone (+ clean-tree advisory). If it exits non-zero because the clone is missing, run the interactive provisioner once to discover/clone/persist it, then re-run the check:
+     ```bash
+     PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.setup --impl-repo traefik/traefik-hub
+     ```
+   - **OSS** (`traefik/traefik`): confirms cwd is the impl repo (where the doc commit lands). No hub-doc clone is required, so an OSS-only engineer is never blocked on one.
+   Only proceed once it exits 0.
 
 2. **Fetch the PR bundle.**
    ```bash

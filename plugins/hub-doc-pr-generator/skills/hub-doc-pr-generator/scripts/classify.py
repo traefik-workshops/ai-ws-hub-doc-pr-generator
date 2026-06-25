@@ -178,7 +178,8 @@ def doc_kind_candidates(
         rationale_ref.append("title mentions reference/CRD")
 
     # When no signals fire at all, return a clear default rather than two 0.0 candidates
-    # that leave the LLM with no useful ordering.
+    # that leave the LLM with no useful ordering. 0.5 is below the auto-accept gate,
+    # so this correctly forces a confirmation prompt.
     if score_ref == 0.0 and score_guide == 0.0:
         return [
             {"kind": "user-guide", "confidence": 0.5,
@@ -187,8 +188,14 @@ def doc_kind_candidates(
              "rationale": "no signal"},
         ]
 
-    # Normalise to [0,1]
-    total = score_ref + score_guide
+    # Confidence is an ABSOLUTE measure of signal strength, not a normalised share.
+    # The 1.0 floor on the divisor means a lone weak signal (e.g. a single 0.4 title
+    # keyword) stays at 0.4 — below the auto-accept gate, so it asks — while
+    # corroborating signals add up toward 1.0 (auto-accept). Conflicting signals
+    # (total > 1.0) shrink each side, lowering confidence and forcing a prompt.
+    # Do NOT drop the floor: dividing by the raw total inflates a single weak
+    # signal to 1.0 and silently skips the confirmation prompt.
+    total = max(score_ref + score_guide, 1.0)
     cands = [
         {"kind": "reference", "confidence": round(score_ref / total, 2),
          "rationale": "; ".join(rationale_ref) or "no signal"},

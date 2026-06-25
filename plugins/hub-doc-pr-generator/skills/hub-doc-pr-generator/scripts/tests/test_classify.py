@@ -154,16 +154,26 @@ class TestDocKindCandidatesNoSignal(unittest.TestCase):
         self.assertEqual(cands[0]["kind"], "user-guide")
         self.assertEqual(cands[0]["confidence"], 0.5)
 
-    def test_confidence_at_boundary_values(self):
-        # Verify that when exactly one score fires, the result normalises correctly
-        # (score_ref=0.6, score_guide=0) → reference at 1.0, user-guide at 0.0.
+    def test_single_signal_stays_absolute_below_gate(self):
+        # A lone signal (score_ref=0.6, score_guide=0) must NOT be inflated to 1.0.
+        # Confidence stays at the absolute 0.6 — below the 0.85 auto-accept gate —
+        # so the skill still asks the engineer instead of silently picking.
         cands = doc_kind_candidates(
             title="",
             touched_paths=["hub/pkg/middleware/cors/config.go"],
             neighbor_paths=[],
         )
         self.assertEqual(cands[0]["kind"], "reference")
-        self.assertAlmostEqual(cands[0]["confidence"], 1.0)
+        self.assertAlmostEqual(cands[0]["confidence"], 0.6)
+
+    def test_lone_weak_title_keyword_does_not_auto_accept(self):
+        # The regression case: a single weak 0.4 title keyword must stay at 0.4,
+        # not normalise to 1.0.
+        cands = doc_kind_candidates(title="feat: setup guide", touched_paths=[],
+                                    neighbor_paths=[])
+        self.assertEqual(cands[0]["kind"], "user-guide")
+        self.assertAlmostEqual(cands[0]["confidence"], 0.4)
+        self.assertLess(cands[0]["confidence"], 0.85)
 
 
 class TestDocKindCandidates(unittest.TestCase):
@@ -195,7 +205,8 @@ class TestDocKindCandidates(unittest.TestCase):
 
 
 class TestClassifyConfidenceBoundary(unittest.TestCase):
-    """Verify that confidence at exactly the auto-accept threshold (0.85) is accepted."""
+    """Confidence drives the SKILL.md 0.85 auto-accept gate. Verify a lone signal
+    stays below it (asks) while corroborating signals cross it (auto-accept)."""
 
     def _bundle(self, title, paths):
         return {
@@ -207,10 +218,20 @@ class TestClassifyConfidenceBoundary(unittest.TestCase):
             },
         }
 
-    def test_single_signal_reference_confidence_is_100(self):
-        # Only reference signal fires → confidence == 1.0, well above 0.85 threshold.
+    def test_single_signal_below_gate_asks(self):
+        # One reference signal (0.6) is below 0.85 → the skill must still confirm.
         result = classify(
             self._bundle("feat: add X", ["hub/pkg/middleware/cors/config.go"]),
+            grounding={"concepts": []},
+            neighbor_paths=[],
+        )
+        self.assertEqual(result["doc_kind_candidates"][0]["kind"], "reference")
+        self.assertLess(result["confidence"], 0.85)
+
+    def test_corroborating_signals_cross_gate(self):
+        # Path signal (0.6) + title keyword (0.4) = 1.0 → above 0.85 → auto-accept.
+        result = classify(
+            self._bundle("feat: CRD reference", ["hub/pkg/middleware/cors/config.go"]),
             grounding={"concepts": []},
             neighbor_paths=[],
         )
