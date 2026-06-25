@@ -1,6 +1,6 @@
 import unittest
 from datetime import date
-from scripts.classify import feature_type, needs_release_note
+from scripts.classify import feature_type, needs_release_note, _title_to_heading
 from scripts.classify import needs_screenshots
 from scripts.classify import doc_kind_candidates
 from scripts.classify import classify
@@ -24,6 +24,23 @@ class TestFeatureType(unittest.TestCase):
         self.assertEqual(feature_type("Random text"), "other")
 
 
+class TestTitleToHeading(unittest.TestCase):
+    def test_simple_prefix_stripped(self):
+        self.assertEqual(_title_to_heading("feat: add rate limiting"), "Add rate limiting")
+
+    def test_scoped_prefix_stripped(self):
+        self.assertEqual(_title_to_heading("feat(ai-gateway): Rate limiting"), "Rate limiting")
+
+    def test_fix_scoped(self):
+        self.assertEqual(_title_to_heading("fix(middleware): handle empty body"), "Handle empty body")
+
+    def test_no_prefix(self):
+        self.assertEqual(_title_to_heading("Some feature"), "Some feature")
+
+    def test_empty_title(self):
+        self.assertEqual(_title_to_heading("feat:"), "")
+
+
 class TestReleaseNote(unittest.TestCase):
     def _pr(self, title="", labels=None, body="", merged_at=None):
         return {"title": title, "labels": labels or [], "body": body,
@@ -32,6 +49,21 @@ class TestReleaseNote(unittest.TestCase):
     def _note(self, **kw):
         return needs_release_note(self._pr(**kw), impl_repo="traefik/traefik-hub",
                                   today=TODAY)
+
+    def test_not_breaking_label_does_not_match(self):
+        # "not-breaking-change" must NOT trigger breaking-subsection.
+        result = self._note(title="feat: rename X", labels=["kind/not-breaking-change"])
+        self.assertNotEqual(result["proposed_shape"], "breaking-subsection")
+
+    def test_breaking_wins_over_ea_marker(self):
+        # A PR with both a breaking label and an EA marker in the body should
+        # produce breaking-subsection, not ea-subsection.
+        result = self._note(
+            title="feat: rename token API",
+            labels=["kind/breaking-change"],
+            body="This early access API is being renamed.",
+        )
+        self.assertEqual(result["proposed_shape"], "breaking-subsection")
 
     def test_oss_always_no(self):
         result = needs_release_note(self._pr(title="feat: add X"), impl_repo="traefik/traefik")
@@ -114,6 +146,36 @@ class TestScreenshots(unittest.TestCase):
         self.assertEqual(result["verdict"], "yes")
 
 
+class TestDocKindCandidatesNoSignal(unittest.TestCase):
+    def test_no_signal_returns_user_guide_default(self):
+        # When neither path nor title provides any signal, we should get a clear
+        # default (user-guide at 0.5) rather than two 0.0 candidates.
+        cands = doc_kind_candidates(title="", touched_paths=[], neighbor_paths=[])
+        self.assertEqual(cands[0]["kind"], "user-guide")
+        self.assertEqual(cands[0]["confidence"], 0.5)
+
+    def test_single_signal_stays_absolute_below_gate(self):
+        # A lone signal (score_ref=0.6, score_guide=0) must NOT be inflated to 1.0.
+        # Confidence stays at the absolute 0.6 — below the 0.85 auto-accept gate —
+        # so the skill still asks the engineer instead of silently picking.
+        cands = doc_kind_candidates(
+            title="",
+            touched_paths=["hub/pkg/middleware/cors/config.go"],
+            neighbor_paths=[],
+        )
+        self.assertEqual(cands[0]["kind"], "reference")
+        self.assertAlmostEqual(cands[0]["confidence"], 0.6)
+
+    def test_lone_weak_title_keyword_does_not_auto_accept(self):
+        # The regression case: a single weak 0.4 title keyword must stay at 0.4,
+        # not normalise to 1.0.
+        cands = doc_kind_candidates(title="feat: setup guide", touched_paths=[],
+                                    neighbor_paths=[])
+        self.assertEqual(cands[0]["kind"], "user-guide")
+        self.assertAlmostEqual(cands[0]["confidence"], 0.4)
+        self.assertLess(cands[0]["confidence"], 0.85)
+
+
 class TestDocKindCandidates(unittest.TestCase):
     def test_middleware_code_leans_reference(self):
         cands = doc_kind_candidates(
@@ -140,6 +202,51 @@ class TestDocKindCandidates(unittest.TestCase):
             neighbor_paths=[],
         )
         self.assertEqual(cands[0]["kind"], "user-guide")
+
+
+class TestClassifyConfidenceBoundary(unittest.TestCase):
+    """Confidence drives the SKILL.md 0.85 auto-accept gate. Verify a lone signal
+    stays below it (asks) while corroborating signals cross it (auto-accept)."""
+
+    def _bundle(self, title, paths):
+        return {
+            "impl_repo": "traefik/traefik-hub",
+            "prs": [{"number": 1, "title": title, "labels": [], "body": ""}],
+            "merged": {
+                "files_changed": [{"path": p} for p in paths],
+                "primary_pr": 1,
+            },
+        }
+
+    def test_single_signal_below_gate_asks(self):
+        # One reference signal (0.6) is below 0.85 → the skill must still confirm.
+        result = classify(
+            self._bundle("feat: add X", ["hub/pkg/middleware/cors/config.go"]),
+            grounding={"concepts": []},
+            neighbor_paths=[],
+        )
+        self.assertEqual(result["doc_kind_candidates"][0]["kind"], "reference")
+        self.assertLess(result["confidence"], 0.85)
+
+    def test_corroborating_signals_cross_gate(self):
+        # Path signal (0.6) + title keyword (0.4) = 1.0 → above 0.85 → auto-accept.
+        result = classify(
+            self._bundle("feat: CRD reference", ["hub/pkg/middleware/cors/config.go"]),
+            grounding={"concepts": []},
+            neighbor_paths=[],
+        )
+        self.assertEqual(result["doc_kind_candidates"][0]["kind"], "reference")
+        self.assertGreaterEqual(result["confidence"], 0.85)
+
+    def test_no_signal_confidence_is_0_5(self):
+        # No signals → default 0.5 confidence, which is below 0.85, forcing confirmation.
+        result = classify(
+            self._bundle("", []),
+            grounding={"concepts": []},
+            neighbor_paths=[],
+        )
+        self.assertEqual(result["confidence"], 0.5)
+        self.assertLess(result["confidence"], 0.85)
 
 
 class TestClassify(unittest.TestCase):

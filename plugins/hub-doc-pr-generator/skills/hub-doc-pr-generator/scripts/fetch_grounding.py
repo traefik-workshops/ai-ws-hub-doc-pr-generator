@@ -11,7 +11,8 @@ traefik/reference layout (as of generator 0.4.x):
 There is no central Go-file -> concept index, so matching is token based:
 tokens from the touched file paths are matched against each concept's last id
 segment or its TypeName. Matched concepts are then enriched by fetching their
-own page for fields/extracted_from, and cross-linked via DOC_INDEX.
+own page for `kind`, `fields`, and `summary`, and cross-linked via DOC_INDEX.
+(The page's `extracted_from` list is parsed but not surfaced in the output.)
 """
 from __future__ import annotations
 import argparse
@@ -166,6 +167,8 @@ def _llms_txt_url_for(impl_repo: str | None, sources: set[str]) -> str:
 def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -> dict:
     entries = parse_index(_fetch_raw(INDEX_PATH))
     matches = concepts_for_paths(entries, touched_paths)
+    total_matched = len(matches)
+    matches = matches[:3]
 
     doc_map: dict[str, dict] = {}
     if matches:
@@ -184,7 +187,6 @@ def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -
             "kind": "",
             "source": source,
             "summary": m["description"],
-            "extracted_from": [],
             "fields": [],
             "narrative_doc": di.get("doc_path") if di else None,
         }
@@ -192,7 +194,6 @@ def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -
             try:
                 fm = parse_front_matter(_fetch_raw(concept_page_path(cid, source)))
                 concept["kind"] = fm.get("kind", "")
-                concept["extracted_from"] = fm.get("extracted_from", [])
                 concept["fields"] = fm.get("fields", [])
                 if fm.get("summary"):
                     concept["summary"] = fm["summary"]
@@ -203,13 +204,18 @@ def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -
     sources = {c["source"] for c in enriched if c["source"]}
     return {
         "concepts": enriched,
+        "concepts_total_matched": total_matched,
         "llms_txt_url": _llms_txt_url_for(impl_repo, sources),
     }
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--touched-files", nargs="+", required=True)
+    # nargs="*" (not "+"): the caller expands this from a `jq` of the PR's
+    # changed files, which can legitimately be empty (e.g. a PR touching only
+    # test/generated files, which fetch_pr filters out). Empty → no concepts,
+    # and the skill falls back to neighbor-only grounding.
+    parser.add_argument("--touched-files", nargs="*", default=[])
     parser.add_argument("--impl-repo", default=None)
     args = parser.parse_args(argv)
     print(json.dumps(build_grounding(args.touched_files, impl_repo=args.impl_repo), indent=2))
