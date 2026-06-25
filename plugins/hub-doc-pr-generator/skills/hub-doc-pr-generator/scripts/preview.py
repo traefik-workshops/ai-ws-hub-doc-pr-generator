@@ -56,6 +56,56 @@ def git_diff_stat(repo_path: str) -> str:
     return _git.run(repo_path, ["diff", "--cached", "--stat", "--no-color"])
 
 
+# --- Optional pretty rendering ----------------------------------------------
+# The JSON contract above stays plain (ANSI-free) so the orchestrator can parse
+# it. Beautification is a *separate*, human-facing concern handled by `--render`,
+# which uses external CLIs when present and degrades to plain text otherwise — no
+# hard dependency, in keeping with the stdlib-only rule.
+
+def _which(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+def detect_pretty_tools() -> dict:
+    """Which optional renderers are available on PATH (None when absent)."""
+    page = "glow" if _which("glow") else ("bat" if _which("bat") else None)
+    return {"diff": "delta" if _which("delta") else None, "page": page}
+
+
+def render_diff_to_stdout(repo_path: str) -> None:
+    """Stream the staged diff, piped through `delta` when available."""
+    diff = git_diff(repo_path)
+    if not diff.strip():
+        print("(no changes staged)")
+        return
+    if _which("delta"):
+        # Inherit stdout so delta colorizes for the terminal; never page.
+        # Flush first: child writes straight to the fd, so unflushed parent
+        # output would otherwise appear after it.
+        sys.stdout.flush()
+        subprocess.run(["delta", "--paging", "never"], input=diff, text=True, check=False)
+    else:
+        sys.stdout.write(diff)
+
+
+def render_pages_to_stdout(edits: list[FileEdit]) -> None:
+    """Render each generated markdown page, via glow/bat when available."""
+    tool = detect_pretty_tools()["page"]
+    for e in edits:
+        if not (e.path.endswith(".md") or e.path.endswith(".mdx")):
+            continue
+        print(f"\n===== {e.path} =====", flush=True)
+        if tool == "glow":
+            subprocess.run(["glow", "--style", "auto", "-"], input=e.content, text=True, check=False)
+        elif tool == "bat":
+            subprocess.run(
+                ["bat", "--style", "plain", "--paging", "never", "--language", "markdown"],
+                input=e.content, text=True, check=False,
+            )
+        else:
+            sys.stdout.write(e.content)
+
+
 @dataclass
 class LintResult:
     ok: bool
@@ -96,9 +146,22 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--branch", required=True)
     parser.add_argument("--edits", required=True,
                         help="path to JSON file with [{path, content, mode}, ...]")
+    parser.add_argument("--render", action="store_true",
+                        help="human-facing display mode: stream a pretty diff + rendered "
+                             "pages to stdout (uses delta/glow/bat if installed). Does not "
+                             "re-apply edits or emit JSON; run the default mode first.")
     args = parser.parse_args(argv)
     raw_edits = json.loads(Path(args.edits).read_text())
     edits = [FileEdit(**e) for e in raw_edits]
+
+    # Display mode: render what the default run already staged. Kept separate so
+    # the JSON contract below never carries ANSI.
+    if args.render:
+        print("===== DIFF =====", flush=True)
+        render_diff_to_stdout(args.repo_path)
+        render_pages_to_stdout(edits)
+        return 0
+
     written = apply_edits(repo_path=args.repo_path, branch=args.branch, edits=edits)
     stat = git_diff_stat(args.repo_path)
     diff = git_diff(args.repo_path)
@@ -110,6 +173,7 @@ def main(argv: list[str]) -> int:
         "lint_ok": lint.ok,
         "lint_errors": lint.errors,
         "lint_commands": lint.commands,
+        "pretty_tools": detect_pretty_tools(),
     }, indent=2))
     return 0
 

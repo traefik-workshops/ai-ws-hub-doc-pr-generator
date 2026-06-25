@@ -1,10 +1,15 @@
+import io
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from scripts.preview import apply_edits, FileEdit
 from unittest.mock import patch
-from scripts.preview import run_linter, LintResult
+from scripts.preview import (
+    run_linter, LintResult, detect_pretty_tools,
+    render_diff_to_stdout, render_pages_to_stdout,
+)
 
 
 def _init_git(d: Path) -> None:
@@ -88,6 +93,58 @@ class TestRunLinter(unittest.TestCase):
             result = run_linter(repo_path="/hub-doc", impl_repo="traefik/traefik-hub")
         self.assertFalse(result.ok)
         self.assertIn("MD013", result.errors)
+
+
+class TestPrettyRendering(unittest.TestCase):
+    def test_detect_pretty_tools(self):
+        def which(name):
+            return f"/usr/bin/{name}" if name in ("delta", "glow") else None
+        with patch("scripts.preview.shutil.which", side_effect=which):
+            tools = detect_pretty_tools()
+        self.assertEqual(tools, {"diff": "delta", "page": "glow"})
+
+    def test_detect_prefers_glow_over_bat(self):
+        with patch("scripts.preview.shutil.which",
+                   side_effect=lambda n: "/x" if n in ("bat", "glow") else None):
+            self.assertEqual(detect_pretty_tools()["page"], "glow")
+
+    def test_detect_none_when_absent(self):
+        with patch("scripts.preview.shutil.which", return_value=None):
+            self.assertEqual(detect_pretty_tools(), {"diff": None, "page": None})
+
+    def test_render_diff_falls_back_to_plain(self):
+        # No delta on PATH → emit the raw diff, no subprocess.
+        with patch("scripts.preview.shutil.which", return_value=None), \
+             patch("scripts.preview.git_diff", return_value="diff --git a/x b/x\n+hi\n"), \
+             patch("scripts.preview.subprocess.run") as run:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                render_diff_to_stdout("/repo")
+        run.assert_not_called()
+        self.assertIn("+hi", buf.getvalue())
+
+    def test_render_diff_uses_delta_when_present(self):
+        with patch("scripts.preview.shutil.which", side_effect=lambda n: "/x" if n == "delta" else None), \
+             patch("scripts.preview.git_diff", return_value="diff --git a/x b/x\n+hi\n"), \
+             patch("scripts.preview.subprocess.run") as run:
+            render_diff_to_stdout("/repo")
+        self.assertEqual(run.call_args[0][0][0], "delta")
+
+    def test_render_pages_plain_skips_non_markdown(self):
+        edits = [
+            FileEdit(path="docs/page.md", content="# Title\n", mode="create"),
+            FileEdit(path="sidebars.js", content="module.exports={}\n", mode="overwrite"),
+        ]
+        with patch("scripts.preview.shutil.which", return_value=None), \
+             patch("scripts.preview.subprocess.run") as run:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                render_pages_to_stdout(edits)
+        run.assert_not_called()
+        out = buf.getvalue()
+        self.assertIn("docs/page.md", out)
+        self.assertIn("# Title", out)
+        self.assertNotIn("sidebars.js", out)  # non-markdown skipped
 
 
 if __name__ == "__main__":

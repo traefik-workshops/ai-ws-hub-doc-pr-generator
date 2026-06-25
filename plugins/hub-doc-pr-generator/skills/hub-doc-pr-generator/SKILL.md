@@ -174,7 +174,16 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
      --repo-path <doc-repo> --impl-repo <impl-repo> --branch <branch> \
      --edits /tmp/edits.json > /tmp/preview.json
    ```
-   Print the `diff_stat` and `diff` to the engineer. If `lint_ok` is false, surface `lint_errors` and force a re-prompt.
+   If `lint_ok` is false, surface `lint_errors` and force a re-prompt.
+
+   Present the result to the engineer (the default run above stages the files; this is display-only):
+   - **If `preview.json`'s `pretty_tools.diff` or `pretty_tools.page` is non-null**, the engineer has `delta`/`glow`/`bat` installed — run the render mode so its colorized output shows directly in the terminal:
+     ```bash
+     PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.preview \
+       --repo-path <doc-repo> --impl-repo <impl-repo> --branch <branch> \
+       --edits /tmp/edits.json --render
+     ```
+   - **Otherwise** (no tools), present it yourself with no dependency: show `diff_stat` and `diff` inside a ` ```diff ` fenced block (Claude Code highlights +/− lines), then show each new/changed `.md`/`.mdx` page's content as rendered markdown (not fenced) so the engineer sees the formatted page.
 
 9. **Edit loop.** Use `AskUserQuestion`:
     - `[1] push`
