@@ -443,12 +443,32 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     cwd_remote = args.repo or _cwd_remote()
     pr_args = args.pr
-    if args.auto_detect or not pr_args:
-        view = _gh.run_json(["pr", "view", "--json", "number,headRepository"])
+
+    # Explicit --pr always wins; --auto-detect with explicit PRs is contradictory.
+    if pr_args and args.auto_detect:
+        print("[fetch_pr] --pr given; ignoring --auto-detect.", file=sys.stderr)
+
+    # No PRs passed (or --auto-detect alone): resolve from the current branch.
+    if not pr_args:
+        try:
+            view = _gh.run_json(["pr", "view", "--json", "number,headRepository"])
+        except _gh.GhError:
+            print(
+                "[fetch_pr] could not detect a PR for the current branch. Pass a PR "
+                "number or URL with --pr, or run from a branch that has an open PR.",
+                file=sys.stderr,
+            )
+            return 2
+        number = view.get("number")
+        if not number:
+            print("[fetch_pr] `gh pr view` returned no PR for this branch; "
+                  "pass --pr <number|url>.", file=sys.stderr)
+            return 2
         detected_repo = (view.get("headRepository") or {}).get("nameWithOwner")
         if detected_repo:
             cwd_remote = detected_repo
-        pr_args = [str(view["number"])]
+        pr_args = [str(number)]
+
     refs = parse_pr_inputs(pr_args, cwd_remote)
     bundle = build_bundle(refs)
     print(_json.dumps(bundle, indent=2))

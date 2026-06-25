@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 from scripts.fetch_pr import parse_pr_inputs, PrRef, fetch_single, collect_issues, _BODY_LINK_RE, merge_prs, find_existing_doc_pr, build_bundle, fetch_issue_graph, _filter_diff
+from scripts.fetch_pr import main as fetch_pr_main
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -368,6 +369,40 @@ class TestBuildBundle(unittest.TestCase):
         related_nums = {p["number"] for p in bundle["prs"][0]["related_prs"]}
         self.assertEqual(related_nums, {1240})
         self.assertEqual({p["number"] for p in bundle["merged"]["related_prs"]}, {1240})
+
+
+class TestMainAutoDetect(unittest.TestCase):
+    def test_no_pr_and_detect_fails_returns_2(self):
+        from scripts import _gh
+        with patch("scripts.fetch_pr._gh.run_json", side_effect=_gh.GhError("no pr")), \
+             patch("scripts.fetch_pr._cwd_remote", return_value="traefik/traefik-hub"):
+            rc = fetch_pr_main([])
+        self.assertEqual(rc, 2)
+
+    def test_detect_without_number_returns_2(self):
+        with patch("scripts.fetch_pr._gh.run_json", return_value={}), \
+             patch("scripts.fetch_pr._cwd_remote", return_value="traefik/traefik-hub"):
+            rc = fetch_pr_main([])
+        self.assertEqual(rc, 2)
+
+    def test_explicit_pr_skips_autodetection(self):
+        # With an explicit --pr, `gh pr view` must not be consulted for detection,
+        # even when --auto-detect is also passed.
+        seen = {"pr_view": 0}
+
+        def fake_json(args):
+            if args[:2] == ["pr", "view"]:
+                seen["pr_view"] += 1
+            return {}
+
+        with patch("scripts.fetch_pr._gh.run_json", side_effect=fake_json), \
+             patch("scripts.fetch_pr._cwd_remote", return_value="traefik/traefik-hub"), \
+             patch("scripts.fetch_pr.build_bundle", return_value={"ok": True}) as bb:
+            rc = fetch_pr_main(["--pr", "1234", "--auto-detect"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["pr_view"], 0)
+        refs = bb.call_args[0][0]
+        self.assertEqual(refs[0], PrRef("traefik/traefik-hub", 1234))
 
 
 if __name__ == "__main__":
