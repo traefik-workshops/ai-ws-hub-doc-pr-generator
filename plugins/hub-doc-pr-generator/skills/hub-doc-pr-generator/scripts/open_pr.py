@@ -9,6 +9,23 @@ from typing import Optional
 from scripts import _gh, _git
 
 
+def _parent_full_name(parent: dict) -> str:
+    """Return the parent repo's ``owner/name`` from a `gh repo list --json parent` entry.
+
+    The embedded parent object exposes ``name`` and ``owner.login`` but, unlike a
+    top-level repo, no ``nameWithOwner`` field — so reading ``nameWithOwner`` always
+    came back empty and no fork ever matched. Build the slug from owner+name, and
+    still honor ``nameWithOwner`` when present for forward-compatibility.
+    """
+    if not parent:
+        return ""
+    if parent.get("nameWithOwner"):
+        return parent["nameWithOwner"]
+    owner = (parent.get("owner") or {}).get("login", "")
+    name = parent.get("name", "")
+    return f"{owner}/{name}" if owner and name else ""
+
+
 def detect_fork(*, upstream: str) -> Optional[str]:
     user = _gh.current_user_login()
     repos = _gh.run_json([
@@ -16,8 +33,7 @@ def detect_fork(*, upstream: str) -> Optional[str]:
         "--json", "name,parent",
     ])
     for r in repos:
-        parent = (r.get("parent") or {}).get("nameWithOwner", "")
-        if parent == upstream:
+        if _parent_full_name(r.get("parent") or {}) == upstream:
             return f"{user}/{r['name']}"
     return None
 

@@ -7,6 +7,15 @@ from scripts.open_pr import (
 
 class TestDetectFork(unittest.TestCase):
     def test_returns_fork_when_match(self):
+        # Real `gh repo list --json parent` shape: name + owner.login, no nameWithOwner.
+        forks = [{"name": "hub-doc", "parent": {"name": "hub-doc", "owner": {"login": "traefik"}}}]
+        with patch("scripts.open_pr._gh.run_json", return_value=forks), \
+             patch("scripts.open_pr._gh.current_user_login", return_value="alice"):
+            fork = detect_fork(upstream="traefik/hub-doc")
+        self.assertEqual(fork, "alice/hub-doc")
+
+    def test_matches_via_nameWithOwner_fallback(self):
+        # Forward-compatible: if a future gh exposes nameWithOwner, still match.
         forks = [{"name": "hub-doc", "parent": {"nameWithOwner": "traefik/hub-doc"}}]
         with patch("scripts.open_pr._gh.run_json", return_value=forks), \
              patch("scripts.open_pr._gh.current_user_login", return_value="alice"):
@@ -15,6 +24,13 @@ class TestDetectFork(unittest.TestCase):
 
     def test_returns_none_when_no_match(self):
         with patch("scripts.open_pr._gh.run_json", return_value=[]), \
+             patch("scripts.open_pr._gh.current_user_login", return_value="alice"):
+            fork = detect_fork(upstream="traefik/hub-doc")
+        self.assertIsNone(fork)
+
+    def test_returns_none_when_parent_is_different_repo(self):
+        forks = [{"name": "hub-doc", "parent": {"name": "hub-doc", "owner": {"login": "someoneelse"}}}]
+        with patch("scripts.open_pr._gh.run_json", return_value=forks), \
              patch("scripts.open_pr._gh.current_user_login", return_value="alice"):
             fork = detect_fork(upstream="traefik/hub-doc")
         self.assertIsNone(fork)
