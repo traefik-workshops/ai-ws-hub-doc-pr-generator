@@ -1,5 +1,5 @@
 {
   "name": "hub-doc-pr-generator",
   "description": "Draft documentation PRs in traefik/hub-doc (or amend a traefik/traefik PR with docs) from implementation PRs. Supports multi-PR aggregation, release-notes drafting, and grounding against traefik/reference.",
-  "version": "1.2.0"
+  "version": "1.3.0"
 }
