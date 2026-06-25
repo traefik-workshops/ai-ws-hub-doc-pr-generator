@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -66,19 +67,25 @@ _HUB_LINT_COMMANDS = [["yarn", "docs:markdown"], ["yarn", "docs:alex"]]
 
 
 def run_linter(*, repo_path: str, impl_repo: str) -> LintResult:
+    site_dir: str | None = None
     if impl_repo == "traefik/traefik-hub":
         commands = _HUB_LINT_COMMANDS
     else:
-        # Use a per-invocation temp dir so concurrent OSS linting runs don't collide.
+        # Per-invocation temp dir so concurrent OSS lint runs don't collide; removed
+        # in the finally below so repeated edit-loop previews don't leak build output.
         site_dir = tempfile.mkdtemp(prefix="mkdocs-preview-")
         commands = [["mkdocs", "build", "--strict", "-d", site_dir]]
     all_errors: list[str] = []
     ran: list[str] = []
-    for cmd in commands:
-        ran.append(" ".join(cmd))
-        proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
-        if proc.returncode != 0:
-            all_errors.append(f"$ {' '.join(cmd)}\n{proc.stdout}\n{proc.stderr}")
+    try:
+        for cmd in commands:
+            ran.append(" ".join(cmd))
+            proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
+            if proc.returncode != 0:
+                all_errors.append(f"$ {' '.join(cmd)}\n{proc.stdout}\n{proc.stderr}")
+    finally:
+        if site_dir:
+            shutil.rmtree(site_dir, ignore_errors=True)
     return LintResult(ok=not all_errors, errors="\n".join(all_errors), commands=ran)
 
 

@@ -80,6 +80,23 @@ _HTML_TAG_RE = re.compile(r"^\s*<[a-zA-Z/!]")
 _IMPORT_RE = re.compile(r"^\s*import\s+")
 _HEADING_RE = re.compile(r"^#{1,6}\s")
 
+# A sentence ends at . ! ? only when followed by whitespace or end-of-string.
+# The lookahead alone avoids splitting "v3.20" or "1.2.3" (period followed by a
+# digit, not a space). Common abbreviations are skipped separately.
+_SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$)")
+_ABBREVIATIONS = {"e.g.", "i.e.", "etc.", "vs.", "cf.", "fig.", "no.", "approx."}
+
+
+def _first_sentence_end(text: str) -> int | None:
+    """Index just past the first real sentence terminator, or None if none."""
+    for m in _SENTENCE_END_RE.finditer(text):
+        end = m.start() + 1
+        words = text[:end].split()
+        if words and words[-1].lower() in _ABBREVIATIONS:
+            continue  # period belongs to an abbreviation, not a sentence end
+        return end
+    return None
+
 
 def _first_sentence(lines: list[str], start: int) -> str:
     """Return the first meaningful sentence starting at or after *start*.
@@ -122,12 +139,12 @@ def _first_sentence(lines: list[str], start: int) -> str:
 
     combined = " ".join(text_parts)
 
-    # Find first sentence-ending punctuation
-    match = re.search(r"[.!?]", combined)
-    if match:
-        return combined[: match.start() + 1].strip()
+    # Find the first real sentence end (ignores version numbers and abbreviations).
+    end = _first_sentence_end(combined)
+    if end is not None:
+        return combined[:end].strip()
 
-    # No punctuation found — truncate at 200 chars
+    # No sentence terminator found — truncate at 200 chars
     if len(combined) > 200:
         return combined[:200].rstrip() + "…"
     return combined

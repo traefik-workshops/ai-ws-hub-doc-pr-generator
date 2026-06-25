@@ -29,6 +29,11 @@ _FILTER_PATH_RES = [
 ]
 
 
+def _is_noise_path(path: str) -> bool:
+    """True for test/generated files that carry no documentation value."""
+    return any(pat.search(path) for pat in _FILTER_PATH_RES)
+
+
 def _filter_diff(diff_text: str) -> tuple[str, bool]:
     """Remove hunks for test and generated files from a unified diff.
 
@@ -51,7 +56,7 @@ def _filter_diff(diff_text: str) -> tuple[str, bool]:
         path_match = re.search(r"^(?:---|\+\+\+) [ab]/(.+)$", hunk, re.MULTILINE)
         if path_match:
             path = path_match.group(1)
-            if any(pat.search(path) for pat in _FILTER_PATH_RES):
+            if _is_noise_path(path):
                 dropped += 1
                 continue
         kept.append(hunk)
@@ -124,9 +129,13 @@ def fetch_single(ref: PrRef) -> dict:
         "diff": diff_capped,
         "diff_truncated": truncated,
         "diff_filtered": diff_filtered,
+        # Filter the structured file list with the same rule as the diff text, so
+        # downstream heuristics (grounding, doc-kind, screenshots) don't key off
+        # test/generated paths either.
         "files_changed": [
             {"path": f["path"], "additions": f["additions"], "deletions": f["deletions"]}
             for f in view.get("files", [])
+            if not _is_noise_path(f["path"])
         ],
         "closingIssuesReferences": [
             {"number": n["number"], "repo": _node_repo(n, owner_repo)}

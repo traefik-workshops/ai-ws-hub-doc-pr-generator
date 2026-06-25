@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
-from scripts.open_pr import detect_fork, open_hub_pr, commit_oss_docs, branch_slug_from_title
+from scripts.open_pr import (
+    detect_fork, open_hub_pr, commit_hub_docs, commit_oss_docs, branch_slug_from_title
+)
 
 
 class TestDetectFork(unittest.TestCase):
@@ -18,16 +20,29 @@ class TestDetectFork(unittest.TestCase):
         self.assertIsNone(fork)
 
 
+def _fake_git_on_branch(calls, branch, *, staged="docs/foo.md\n", ahead=0):
+    """git stub: HEAD on *branch*, with *staged* files staged and *ahead* commits
+    beyond base (for the push-retry path)."""
+    def fake_git_run(*a, **kw):
+        calls.append(("git", a, kw))
+        args = a[1]
+        if args[:2] == ["rev-parse", "--abbrev-ref"]:
+            return f"{branch}\n"
+        if args[:2] == ["diff", "--cached"]:
+            return staged
+        if args[:2] == ["rev-list", "--count"]:
+            return f"{ahead}\n"
+        return ""
+    return fake_git_run
+
+
 class TestOpenHubPr(unittest.TestCase):
     def test_pushes_to_fork_and_calls_gh_pr_create(self):
         calls = []
-        def fake_git_run(*a, **kw):
-            calls.append(("git", a, kw))
-            return ""
         def fake_gh_run_text(args):
             calls.append(("gh-text", args))
             return "https://github.com/traefik/hub-doc/pull/999"
-        with patch("scripts.open_pr._git.run", side_effect=fake_git_run), \
+        with patch("scripts.open_pr._git.run", side_effect=_fake_git_on_branch(calls, "docs/x")), \
              patch("scripts.open_pr._gh.run_text", side_effect=fake_gh_run_text):
             url = open_hub_pr(
                 doc_repo_root="/hub-doc",
@@ -36,6 +51,12 @@ class TestOpenHubPr(unittest.TestCase):
                 title="docs: add X",
                 body="...",
             )
+        # A commit must happen before the push (otherwise the PR is empty)...
+        commit_call = next(c for c in calls if c[0] == "git" and c[1][1][:1] == ["commit"])
+        self.assertIn("docs: add X", " ".join(commit_call[1][1]))
+        # ...and it must precede the push.
+        kinds = [c[1][1][0] for c in calls if c[0] == "git"]
+        self.assertLess(kinds.index("commit"), kinds.index("push"))
         # The fork URL should flow through the remote-add call.
         remote_call = next(c for c in calls if c[0] == "git" and c[1][1][:2] == ["remote", "add"])
         self.assertIn("alice/hub-doc", " ".join(remote_call[1][1]))
@@ -43,6 +64,40 @@ class TestOpenHubPr(unittest.TestCase):
         gh_call = next(c for c in calls if c[0] == "gh-text")
         self.assertIn("alice:docs/x", gh_call[1])
         self.assertEqual(url, "https://github.com/traefik/hub-doc/pull/999")
+
+
+class TestCommitHubDocs(unittest.TestCase):
+    def test_commits_staged_changes_with_title(self):
+        calls = []
+        with patch("scripts.open_pr._git.run", side_effect=_fake_git_on_branch(calls, "docs/x")):
+            commit_hub_docs(doc_repo_root="/hub-doc", branch="docs/x", title="docs: add X")
+        commit_call = next(c for c in calls if c[1][1][:1] == ["commit"])
+        self.assertEqual(commit_call[1][1], ["commit", "-m", "docs: add X"])
+
+    def test_wrong_branch_raises(self):
+        calls = []
+        with patch("scripts.open_pr._git.run", side_effect=_fake_git_on_branch(calls, "main")):
+            with self.assertRaises(ValueError):
+                commit_hub_docs(doc_repo_root="/hub-doc", branch="docs/x", title="docs: add X")
+        # Must refuse before committing.
+        self.assertNotIn("commit", [c[1][1][0] for c in calls])
+
+    def test_no_staged_changes_raises(self):
+        calls = []
+        with patch("scripts.open_pr._git.run",
+                   side_effect=_fake_git_on_branch(calls, "docs/x", staged="", ahead=0)):
+            with self.assertRaises(ValueError):
+                commit_hub_docs(doc_repo_root="/hub-doc", branch="docs/x", title="docs: add X")
+        self.assertNotIn("commit", [c[1][1][0] for c in calls])
+
+    def test_nothing_staged_but_already_committed_is_ok(self):
+        # Push-retry path: a prior run committed (branch ahead of base) but the
+        # push failed. Re-running must not raise and must not double-commit.
+        calls = []
+        with patch("scripts.open_pr._git.run",
+                   side_effect=_fake_git_on_branch(calls, "docs/x", staged="", ahead=1)):
+            commit_hub_docs(doc_repo_root="/hub-doc", branch="docs/x", title="docs: add X")
+        self.assertNotIn("commit", [c[1][1][0] for c in calls])
 
 
 class TestCommitOssDocs(unittest.TestCase):

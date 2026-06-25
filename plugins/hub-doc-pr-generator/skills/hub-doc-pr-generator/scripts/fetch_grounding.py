@@ -11,7 +11,8 @@ traefik/reference layout (as of generator 0.4.x):
 There is no central Go-file -> concept index, so matching is token based:
 tokens from the touched file paths are matched against each concept's last id
 segment or its TypeName. Matched concepts are then enriched by fetching their
-own page for fields/extracted_from, and cross-linked via DOC_INDEX.
+own page for `kind`, `fields`, and `summary`, and cross-linked via DOC_INDEX.
+(The page's `extracted_from` list is parsed but not surfaced in the output.)
 """
 from __future__ import annotations
 import argparse

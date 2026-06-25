@@ -25,8 +25,54 @@ def detect_fork(*, upstream: str) -> Optional[str]:
 UPSTREAM_HUB_DOC = "traefik/hub-doc"
 
 
+def _branch_has_commits_to_push(doc_repo_root: str, branch: str) -> bool:
+    """True if *branch* already has commits beyond its base (e.g. a prior run
+    committed but the push failed). Returns False when the base can't be found."""
+    for base in ("origin/main", "origin/master", "main", "master"):
+        try:
+            n = _git.run(doc_repo_root, ["rev-list", "--count", f"{base}..{branch}"]).strip()
+        except _git.GitError:
+            continue
+        if n.isdigit():
+            return int(n) > 0
+    return False
+
+
+def commit_hub_docs(*, doc_repo_root: str, branch: str, title: str) -> None:
+    """Turn the staged doc edits into a commit on the feature branch.
+
+    preview.apply_edits writes and *stages* the generated files but never commits
+    them. Without this step `git push` ships a branch identical to base and the
+    draft PR is empty. `title` already carries the "docs: " prefix from the
+    caller, so it's used verbatim as the commit subject.
+
+    Refuses if the repo isn't on the expected branch. If nothing is staged, that's
+    only an error when the branch also has no commits ahead of base — otherwise a
+    prior run already committed (e.g. the push failed and we're retrying), so there
+    is nothing to do and we let the push proceed."""
+    current = _git.head_branch(doc_repo_root)
+    if current != branch:
+        raise ValueError(
+            f"hub-doc repo is on {current!r}, not the doc branch {branch!r}; "
+            "run preview first so the generated files are staged on that branch"
+        )
+    staged = _git.run(doc_repo_root, ["diff", "--cached", "--name-only"]).strip()
+    if staged:
+        _git.run(doc_repo_root, ["commit", "-m", title])
+        return
+    if _branch_has_commits_to_push(doc_repo_root, branch):
+        return  # already committed by a previous run; nothing to stage
+    raise ValueError(
+        "no staged doc changes and the branch has no commits to push; "
+        "run preview before pushing (it stages the generated files)"
+    )
+
+
 def open_hub_pr(*, doc_repo_root: str, fork: str, branch: str,
                 title: str, body: str) -> str:
+    # Commit the staged doc edits first — pushing without this would open an
+    # empty draft PR.
+    commit_hub_docs(doc_repo_root=doc_repo_root, branch=branch, title=title)
     fork_url = f"https://github.com/{fork}.git"
     # Add fork remote if missing; ignore failure if it already exists.
     try:
