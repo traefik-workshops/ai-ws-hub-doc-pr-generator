@@ -114,6 +114,14 @@ class TestBuildGrounding(unittest.TestCase):
             g = build_grounding(["pkg/server/router.go"], impl_repo=None)
         self.assertNotEqual(g["llms_txt_url"], "https://doc.traefik.io/llms.txt")
 
+    def test_empty_touched_paths_yields_no_concepts(self):
+        # An all-test/generated PR leaves no touched paths after fetch_pr's filter;
+        # grounding must degrade to empty concepts, not crash.
+        with patch("scripts.fetch_grounding._fetch_raw", side_effect=self._raw):
+            g = build_grounding([], impl_repo="traefik/traefik-hub")
+        self.assertEqual(g["concepts"], [])
+        self.assertEqual(g["concepts_total_matched"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

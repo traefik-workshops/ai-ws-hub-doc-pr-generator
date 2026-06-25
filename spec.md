@@ -419,7 +419,7 @@ AI suggests: reference (confidence 0.78)
 | Unit | Each script's pure logic (classify rules, target ranking, regex extraction) | Python `unittest`, fixtures under `scripts/tests/fixtures/` |
 | Contract | `fetch_pr.py` / `fetch_grounding.py` output shape | JSON schema validation against captured `gh` output |
 | Integration | End-to-end against a recorded PR (no live gh calls) | Replay-style fixture: PR JSON + diff + sub-issues frozen; run pipeline; diff generated docs against golden files |
-| Smoke | Real recent merged PR with `--dry-run` (no push) | Manual; document the recipe in `references/smoke-test.md` |
+| Smoke | Real recent merged PR with `--dry-run` (no push) | Manual; run `scripts.setup --check` for preflight, then the pipeline against a real PR and save/exit before push |
 
 The skill itself is tested by running it against real recent PRs (see §17 verification) — golden-file tests catch regressions during iteration.
 

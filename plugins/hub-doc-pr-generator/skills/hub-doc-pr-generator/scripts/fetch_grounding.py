@@ -211,7 +211,11 @@ def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--touched-files", nargs="+", required=True)
+    # nargs="*" (not "+"): the caller expands this from a `jq` of the PR's
+    # changed files, which can legitimately be empty (e.g. a PR touching only
+    # test/generated files, which fetch_pr filters out). Empty → no concepts,
+    # and the skill falls back to neighbor-only grounding.
+    parser.add_argument("--touched-files", nargs="*", default=[])
     parser.add_argument("--impl-repo", default=None)
     args = parser.parse_args(argv)
     print(json.dumps(build_grounding(args.touched_files, impl_repo=args.impl_repo), indent=2))
