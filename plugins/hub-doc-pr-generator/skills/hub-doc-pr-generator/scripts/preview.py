@@ -107,36 +107,92 @@ def render_pages_to_stdout(edits: list[FileEdit]) -> None:
 
 
 @dataclass
-class LintResult:
-    ok: bool
-    errors: str
+class LintFixResult:
+    fixed: list[str]
+    unresolved: list[str]
     commands: list[str]
 
 
-_HUB_LINT_COMMANDS = [["yarn", "docs:markdown"], ["yarn", "docs:alex"]]
+_HUB_AUTOFIX_COMMANDS = [["yarn", "docs:markdown", "--fix"]]
+_HUB_CHECK_COMMANDS = [["yarn", "docs:markdown"], ["yarn", "docs:alex"]]
+_CHECK_LABELS = {"yarn docs:markdown": "markdownlint", "yarn docs:alex": "alex (inclusive language)"}
 
 
-def run_linter(*, repo_path: str, impl_repo: str) -> LintResult:
-    site_dir: str | None = None
+def _fix_file_permissions(repo_path: str, written: list[str]) -> list[str]:
+    """Doc pages are never executable; clear stray +x bits picked up from generation."""
+    fixed: list[str] = []
+    for rel in written:
+        p = Path(repo_path) / rel
+        try:
+            mode = p.stat().st_mode
+        except OSError:
+            continue
+        if mode & 0o111:
+            p.chmod(0o644)
+            fixed.append(f"Fixed file permissions: {rel} (was executable, set to 644)")
+    return fixed
+
+
+def run_lint_fix(*, repo_path: str, impl_repo: str, written: list[str]) -> LintFixResult:
+    """Auto-fix what's mechanical; never block on what isn't.
+
+    Hub: `yarn docs:markdown --fix` fixes what markdownlint-cli can fix in place.
+    `yarn docs:alex` (inclusive language) has no --fix — flags are always unresolved.
+    OSS: `mkdocs build --strict` is a structural check with nothing to auto-fix.
+    Either way, whatever remains goes to `unresolved` for the PR body, not a blocker.
+    """
+    fixed = _fix_file_permissions(repo_path, written)
+    unresolved: list[str] = []
+    commands: list[str] = []
+
     if impl_repo == "traefik/traefik-hub":
-        commands = _HUB_LINT_COMMANDS
-    else:
-        # Per-invocation temp dir so concurrent OSS lint runs don't collide; removed
-        # in the finally below so repeated edit-loop previews don't leak build output.
-        site_dir = tempfile.mkdtemp(prefix="mkdocs-preview-")
-        commands = [["mkdocs", "build", "--strict", "-d", site_dir]]
-    all_errors: list[str] = []
-    ran: list[str] = []
-    try:
-        for cmd in commands:
-            ran.append(" ".join(cmd))
+        for cmd in _HUB_AUTOFIX_COMMANDS:
+            commands.append(" ".join(cmd))
+            proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
+            if proc.returncode == 0:
+                fixed.append(f"Ran `{' '.join(cmd)}` — auto-fixed mechanical markdown issues")
+        for cmd in _HUB_CHECK_COMMANDS:
+            commands.append(" ".join(cmd))
             proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
             if proc.returncode != 0:
-                all_errors.append(f"$ {' '.join(cmd)}\n{proc.stdout}\n{proc.stderr}")
-    finally:
-        if site_dir:
+                label = _CHECK_LABELS[" ".join(cmd)]
+                unresolved.append(f"{label}: {(proc.stdout + proc.stderr).strip()}")
+    else:
+        site_dir = tempfile.mkdtemp(prefix="mkdocs-preview-")
+        try:
+            cmd = ["mkdocs", "build", "--strict", "-d", site_dir]
+            commands.append(" ".join(cmd))
+            proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
+            if proc.returncode != 0:
+                unresolved.append(f"mkdocs build --strict: {(proc.stdout + proc.stderr).strip()}")
+        finally:
             shutil.rmtree(site_dir, ignore_errors=True)
-    return LintResult(ok=not all_errors, errors="\n".join(all_errors), commands=ran)
+
+    return LintFixResult(fixed=fixed, unresolved=unresolved, commands=commands)
+
+
+def apply_edits_with_lint_fix(
+    *, repo_path: str, branch: str, impl_repo: str, edits: list[FileEdit],
+) -> tuple[list[str], LintFixResult]:
+    """apply_edits + run_lint_fix, re-staging afterward so auto-fixed content and
+    permissions actually show up in the staged diff apply_edits already prepared."""
+    written = apply_edits(repo_path=repo_path, branch=branch, edits=edits)
+    lint = run_lint_fix(repo_path=repo_path, impl_repo=impl_repo, written=written)
+    if lint.fixed and written:
+        _git.run(repo_path, ["add", "--", *written])
+    return written, lint
+
+
+def render_manual_checks_section(unresolved: list[str]) -> str:
+    """Markdown for the doc PR body; empty string when there's nothing to flag."""
+    if not unresolved:
+        return ""
+    bullets = "\n".join(f"- [ ] {item}" for item in unresolved)
+    return (
+        "\n## Manual checks required\n\n"
+        "The lint auto-fixer could not resolve these automatically:\n\n"
+        f"{bullets}\n"
+    )
 
 
 def main(argv: list[str]) -> int:
@@ -162,17 +218,20 @@ def main(argv: list[str]) -> int:
         render_pages_to_stdout(edits)
         return 0
 
-    written = apply_edits(repo_path=args.repo_path, branch=args.branch, edits=edits)
+    written, lint = apply_edits_with_lint_fix(
+        repo_path=args.repo_path, branch=args.branch,
+        impl_repo=args.impl_repo, edits=edits,
+    )
     stat = git_diff_stat(args.repo_path)
     diff = git_diff(args.repo_path)
-    lint = run_linter(repo_path=args.repo_path, impl_repo=args.impl_repo)
     print(json.dumps({
         "written": written,
         "diff_stat": stat,
         "diff": diff,
-        "lint_ok": lint.ok,
-        "lint_errors": lint.errors,
+        "lint_fixed": lint.fixed,
+        "lint_unresolved": lint.unresolved,
         "lint_commands": lint.commands,
+        "manual_checks_md": render_manual_checks_section(lint.unresolved),
         "pretty_tools": detect_pretty_tools(),
     }, indent=2))
     return 0

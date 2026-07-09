@@ -7,8 +7,10 @@ from pathlib import Path
 from scripts.preview import apply_edits, FileEdit
 from unittest.mock import patch
 from scripts.preview import (
-    run_linter, LintResult, detect_pretty_tools,
+    detect_pretty_tools,
     render_diff_to_stdout, render_pages_to_stdout,
+    _fix_file_permissions, run_lint_fix, LintFixResult, render_manual_checks_section,
+    apply_edits_with_lint_fix,
 )
 
 
@@ -64,35 +66,130 @@ class TestApplyEditsValidation(unittest.TestCase):
             )
 
 
-class TestRunLinter(unittest.TestCase):
-    def test_hub_invokes_yarn(self):
+class TestFixFilePermissions(unittest.TestCase):
+    def test_fixes_executable_doc_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            f = d / "docs" / "new.md"
+            f.parent.mkdir(parents=True)
+            f.write_text("hello\n")
+            f.chmod(0o755)
+            fixed = _fix_file_permissions(str(d), ["docs/new.md"])
+            self.assertEqual(f.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(len(fixed), 1)
+
+    def test_leaves_non_executable_file_untouched(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            f = d / "docs" / "new.md"
+            f.parent.mkdir(parents=True)
+            f.write_text("hello\n")
+            f.chmod(0o644)
+            fixed = _fix_file_permissions(str(d), ["docs/new.md"])
+        self.assertEqual(fixed, [])
+
+
+class TestRunLintFix(unittest.TestCase):
+    def test_hub_runs_autofix_then_checks(self):
         with patch("scripts.preview.subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = ""
             mock_run.return_value.stderr = ""
-            result = run_linter(repo_path="/hub-doc", impl_repo="traefik/traefik-hub")
-        self.assertIsInstance(result, LintResult)
-        self.assertTrue(result.ok)
-        first_call_args = mock_run.call_args_list[0][0][0]
-        self.assertIn("yarn", first_call_args[0])
+            result = run_lint_fix(repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=[])
+        self.assertIsInstance(result, LintFixResult)
+        self.assertEqual(result.unresolved, [])
+        commands_joined = " ".join(result.commands)
+        self.assertIn("docs:markdown --fix", commands_joined)
+        self.assertIn("docs:alex", commands_joined)
 
-    def test_oss_invokes_mkdocs(self):
+    def test_hub_captures_unfixable_markdownlint_errors(self):
+        def fake_run(cmd, **kwargs):
+            r = type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
+            if cmd[:2] == ["yarn", "docs:markdown"] and "--fix" not in cmd:
+                r.returncode, r.stderr = 1, "MD013 line too long"
+            return r
+        with patch("scripts.preview.subprocess.run", side_effect=fake_run):
+            result = run_lint_fix(repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=[])
+        self.assertTrue(any("MD013" in u for u in result.unresolved))
+
+    def test_hub_captures_alex_flags_as_unresolved_never_autofixed(self):
+        def fake_run(cmd, **kwargs):
+            r = type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
+            if cmd == ["yarn", "docs:alex"]:
+                r.returncode, r.stdout = 1, "warning: `guys` may be insensitive"
+            return r
+        with patch("scripts.preview.subprocess.run", side_effect=fake_run):
+            result = run_lint_fix(repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=[])
+        self.assertTrue(any("guys" in u for u in result.unresolved))
+        # alex has no --fix flag anywhere in the commands we run
+        self.assertTrue(all("alex --fix" not in c for c in result.commands))
+
+    def test_oss_runs_mkdocs_build_strict(self):
         with patch("scripts.preview.subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = ""
             mock_run.return_value.stderr = ""
-            run_linter(repo_path="/traefik", impl_repo="traefik/traefik")
-        call_args = mock_run.call_args_list[0][0][0]
-        self.assertIn("mkdocs", " ".join(call_args))
+            result = run_lint_fix(repo_path="/traefik", impl_repo="traefik/traefik", written=[])
+        self.assertEqual(result.unresolved, [])
+        self.assertIn("mkdocs", " ".join(result.commands))
 
-    def test_failure_captures_stderr(self):
+    def test_oss_failure_is_unresolved_not_raised(self):
         with patch("scripts.preview.subprocess.run") as mock_run:
             mock_run.return_value.returncode = 1
             mock_run.return_value.stdout = ""
-            mock_run.return_value.stderr = "MD013 line too long"
-            result = run_linter(repo_path="/hub-doc", impl_repo="traefik/traefik-hub")
-        self.assertFalse(result.ok)
-        self.assertIn("MD013", result.errors)
+            mock_run.return_value.stderr = "broken link"
+            result = run_lint_fix(repo_path="/traefik", impl_repo="traefik/traefik", written=[])
+        self.assertTrue(any("broken link" in u for u in result.unresolved))
+
+
+class TestApplyEditsWithLintFix(unittest.TestCase):
+    def test_permission_fix_is_visible_in_staged_diff(self):
+        """apply_edits stages the pre-fix mode; the permission fix must be re-staged
+        or the diff engineers see would silently omit it."""
+        from scripts.preview import git_diff
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            existing = d / "docs" / "existing.md"
+            existing.parent.mkdir(parents=True)
+            existing.write_text("old\n")
+            existing.chmod(0o755)
+            subprocess.run(["git", "add", "docs/existing.md"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                            "commit", "-qm", "add"], cwd=d, check=True)
+
+            edits = [FileEdit(path="docs/existing.md", content="new\n", mode="overwrite")]
+            # Patching subprocess.run patches the module globally, which would also
+            # silently no-op _git.run's real `git` calls (same subprocess module
+            # object) — fake only the yarn/mkdocs commands, let git through for real.
+            real_run = subprocess.run
+
+            def fake_run(cmd, **kwargs):
+                if cmd[0] == "git":
+                    return real_run(cmd, **kwargs)
+                return type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
+
+            with patch("scripts.preview.subprocess.run", side_effect=fake_run):
+                written, lint = apply_edits_with_lint_fix(
+                    repo_path=str(d), branch="docs/test",
+                    impl_repo="traefik/traefik-hub", edits=edits,
+                )
+            diff = git_diff(str(d))
+            self.assertEqual(existing.stat().st_mode & 0o777, 0o644)
+            self.assertIn("old mode 100755", diff)
+            self.assertIn("new mode 100644", diff)
+            self.assertEqual(written, ["docs/existing.md"])
+            self.assertIsInstance(lint, LintFixResult)
+
+
+class TestRenderManualChecksSection(unittest.TestCase):
+    def test_empty_when_nothing_unresolved(self):
+        self.assertEqual(render_manual_checks_section([]), "")
+
+    def test_renders_checklist_for_unresolved_items(self):
+        md = render_manual_checks_section(["alex: flagged `guys`"])
+        self.assertIn("## Manual checks required", md)
+        self.assertIn("- [ ] alex: flagged `guys`", md)
 
 
 class TestPrettyRendering(unittest.TestCase):

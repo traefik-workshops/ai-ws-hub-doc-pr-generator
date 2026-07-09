@@ -174,7 +174,18 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
      --repo-path <doc-repo> --impl-repo <impl-repo> --branch <branch> \
      --edits /tmp/edits.json > /tmp/preview.json
    ```
-   If `lint_ok` is false, surface `lint_errors` and force a re-prompt.
+   `preview.py` runs a lint auto-fix pass before computing the diff: file permissions are
+   corrected and (Hub only) `yarn docs:markdown --fix` resolves what's mechanical, fully
+   automatically — never asks the engineer to confirm a fix. Whatever it can't fix
+   locally (alex inclusive-language flags, remaining markdownlint errors, `mkdocs build
+   --strict` failures for OSS) comes back in `lint_unresolved` and never blocks the
+   pipeline — there is no re-prompt on lint state.
+
+   If `preview.json`'s `manual_checks_md` is non-empty, append it to `/tmp/pr-body.md`
+   now, before step 10 — a plain string append, not an LLM step:
+   ```bash
+   python3 -c "import json; d=json.load(open('/tmp/preview.json')); open('/tmp/pr-body.md','a').write(d['manual_checks_md'])"
+   ```
 
    Present the result to the engineer (the default run above stages the files; this is display-only):
    - **If `preview.json`'s `pretty_tools.diff` or `pretty_tools.page` is non-null**, the engineer has `delta`/`glow`/`bat` installed — run the render mode so its colorized output shows directly in the terminal:
