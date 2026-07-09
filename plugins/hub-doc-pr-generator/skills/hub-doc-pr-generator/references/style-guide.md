@@ -16,6 +16,7 @@ Existing documentation may not follow these rules. Do not mirror patterns from n
 - Write "click this button", not "click on this button".
 - Use simple, universally understood words; avoid jargon.
 - Do not attribute human characteristics to inanimate objects.
+- Never carry over customer names or customer-specific details from the source PR or issue — generalize the use case, or omit it entirely.
 
 ### Numbers
 - Spell out numbers one through ten; use numerals for 11 and above.
@@ -66,6 +67,7 @@ Existing documentation may not follow these rules. Do not mirror patterns from n
 - "As mentioned above" / "As described earlier" → omit or restructure
 - "Could potentially" → "can" or "might"
 - Rhetorical questions ("But what if you need X?") → rewrite as a statement
+- "Prior to this release" / "From this release" → use the specific version number ("Before v3.20" / "Starting in v3.21") — outside the PR/release-note context, "this" has no referent
 
 **Voice principles:**
 
