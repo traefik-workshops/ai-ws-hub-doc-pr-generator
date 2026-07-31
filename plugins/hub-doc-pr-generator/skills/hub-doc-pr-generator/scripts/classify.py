@@ -8,7 +8,6 @@ import argparse
 import json
 import re
 import sys
-from datetime import date, datetime
 from pathlib import Path
 
 _PREFIX_RE = re.compile(r"^(?P<type>feat|fix|chore|refactor|test|docs|style|perf|build|ci)\b")
@@ -28,27 +27,18 @@ def feature_type(title: str) -> str:
     return m["type"] if m else "other"
 
 
-def _release_month(pr: dict, *, today: date) -> str:
-    """Target month for the release-notes entry: the PR's merge month when known
-    (open PRs have none), otherwise the current month."""
-    iso = pr.get("merged_at")
-    if iso:
-        try:
-            return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%B %Y")
-        except ValueError:
-            pass
-    return today.strftime("%B %Y")
-
-
-def needs_release_note(pr: dict, *, impl_repo: str, today: date | None = None) -> dict:
-    today = today or date.today()
+def needs_release_note(pr: dict, *, impl_repo: str) -> dict:
+    # No target_month/target_version field here: since release-notes.mdx moved to
+    # per-version (semver) sections (traefik/hub-doc#953), the target section can
+    # no longer be derived from the PR's merge date — it depends on which Hub
+    # release the change actually ships in, which isn't knowable from the PR
+    # alone. SKILL.md asks the engineer/tech writer for it explicitly instead.
     if impl_repo != "traefik/traefik-hub":
         return {
             "verdict": "no",
             "signals": ["oss-short-circuit"],
             "proposed_shape": None,
             "proposed_section_heading": None,
-            "target_month": None,
         }
 
     title = (pr.get("title") or "").lower()
@@ -90,7 +80,6 @@ def needs_release_note(pr: dict, *, impl_repo: str, today: date | None = None) -
             "signals": [f"{feature_type(title)}-prefix"],
             "proposed_shape": None,
             "proposed_section_heading": None,
-            "target_month": None,
         }
     else:
         return {
@@ -98,7 +87,6 @@ def needs_release_note(pr: dict, *, impl_repo: str, today: date | None = None) -
             "signals": ["no-conclusive-signal"],
             "proposed_shape": None,
             "proposed_section_heading": None,
-            "target_month": _release_month(pr, today=today),
         }
 
     return {
@@ -106,7 +94,6 @@ def needs_release_note(pr: dict, *, impl_repo: str, today: date | None = None) -
         "signals": signals,
         "proposed_shape": shape,
         "proposed_section_heading": _title_to_heading(pr.get("title", "")),
-        "target_month": _release_month(pr, today=today),
     }
 
 
@@ -204,8 +191,7 @@ def doc_kind_candidates(*, title: str, touched_paths: list[str]) -> list[dict]:
     return cands
 
 
-def classify(bundle: dict, *, grounding: dict, neighbor_paths: list[str],
-             today: date | None = None) -> dict:
+def classify(bundle: dict, *, grounding: dict, neighbor_paths: list[str]) -> dict:
     primary = next(
         (p for p in bundle["prs"] if p["number"] == bundle["merged"]["primary_pr"]),
         bundle["prs"][0],
@@ -216,9 +202,7 @@ def classify(bundle: dict, *, grounding: dict, neighbor_paths: list[str],
     return {
         "confidence": top_confidence,
         "feature_type": feature_type(primary["title"]),
-        "needs_release_note": needs_release_note(
-            primary, impl_repo=bundle["impl_repo"], today=today
-        ),
+        "needs_release_note": needs_release_note(primary, impl_repo=bundle["impl_repo"]),
         "needs_screenshots": needs_screenshots(
             neighbor_paths=neighbor_paths, touched_paths=touched
         ),

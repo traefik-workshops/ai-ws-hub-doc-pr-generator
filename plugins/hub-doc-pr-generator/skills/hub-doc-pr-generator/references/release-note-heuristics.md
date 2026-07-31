@@ -8,8 +8,12 @@ Always `docs/api-gateway/release-notes.mdx`. The `docs/api-management/release-no
 
 ## Structure of the target file
 
+Reorganized to per-version (semver) sections in [traefik/hub-doc#953](https://github.com/traefik/hub-doc/pull/953) — no longer month-based. Versions from before that change (November 2025 and earlier) are collapsed into an `## Earlier releases` archive and don't concern this skill; it only ever inserts new sections at the top.
+
 ```mdx
-## <Month YYYY>
+## Gateway v<X.Y.Z>
+
+**<YYYY-MM-DD>**
 
 ### What's New
 
@@ -27,10 +31,23 @@ Body...
 
 For configuration details, see the [...](...) documentation.
 
-#### Compatibility Matrix
+<Collapse title="Compatibility matrix">
 
 | Component | Version |
+
+</Collapse>
 ```
+
+Early Access versions get an `<EarlyAccessBadge />` right after the version in the
+heading: `## Gateway v3.20.0-ea.8 <EarlyAccessBadge />`. Some sections cover more than
+one simultaneous patch release, e.g. `## Gateway v3.19.4 & v3.18.8` with a combined date
+line (`**2026-04-02 & 2026-04-01**`) and one `**v3.x.x**`-labeled compatibility table per
+version inside the same `<Collapse>` — this skill never constructs a combined heading
+itself (see "Which version" below); it's a hub-doc-team curation step for when multiple
+patch tags land close together.
+
+The `#### Compatibility Matrix` heading from the old format is gone — the table is
+wrapped directly in `<Collapse title="Compatibility matrix">`, no heading of its own.
 
 ## Shape selection
 
@@ -59,31 +76,38 @@ New-GA (#4, a feature shipping straight to GA) vs graduation (#2, an existing EA
 feature promoted) is a fuzzy call from text alone; when both readings are
 plausible the engineer corrects it in the edit loop.
 
-## Which month
+## Which version
 
-`needs_release_note()` returns `target_month` (e.g. `May 2026`): the PR's **merge
-month** (`merged_at`) when known, else the current month for an open/unmerged PR.
-Insert the entry under that `## <Month YYYY>` heading, creating it at the top of
-the post-header area if it doesn't exist yet. Do **not** simply append to whatever
-the newest heading happens to be.
+Unlike the old month-based layout, the target section can't be derived from the
+PR's merge date — it depends on which Hub release the change actually ships in,
+which isn't knowable from the PR alone. `classify.py::needs_release_note()` no
+longer returns a target field at all; when its `verdict` is `yes`, SKILL.md step
+6c asks the engineer/tech writer directly ("Which Hub release is this release
+note for? e.g. v3.20.7") and the answer becomes `target_version`. Insert the
+entry under `## Gateway v<target_version>` (plus `<EarlyAccessBadge />` if it's
+an EA version), creating that heading at the top of the post-header area if it
+doesn't exist yet. Do **not** simply append to whatever the newest heading
+happens to be, and do not guess a version from the date.
 
 ## Insertion order — newest on top
 
 The entry being added is the latest change, so it goes **at the top**, never
 appended at the bottom. Concretely:
 
-- **New month section:** create `## <Month YYYY>` at the very top of the
-  post-header area, above all existing month sections.
+- **New version section:** create `## Gateway v<target_version>` (with the
+  `**<YYYY-MM-DD>**` date line right below it) at the very top of the
+  post-header area, above all existing version sections — never inside
+  `## Earlier releases`.
 - **New `#### <Feature>` subsection:** insert it as the **first** feature
-  subsection within that month's `### What's New` — immediately after
+  subsection within that version's `### What's New` — immediately after
   `#### Graduated to GA` if that block exists, otherwise at the very top of
   `### What's New`. It must sit **above** the existing feature subsections and
-  **above** `#### Compatibility Matrix`.
+  **above** the `<Collapse title="Compatibility matrix">` block.
 - **New `ga-bullet`:** prepend it to the **top** of the `#### Graduated to GA`
   list, not the end.
-- `#### Graduated to GA` always stays first and `#### Compatibility Matrix`
-  always stays last within a month — only the relative order of feature
-  subsections changes (newest first).
+- `#### Graduated to GA` always stays first and the compatibility-matrix
+  `<Collapse>` always stays last within a version — only the relative order of
+  feature subsections changes (newest first).
 
 ## Links
 

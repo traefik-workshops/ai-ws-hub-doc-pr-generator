@@ -1,5 +1,4 @@
 import unittest
-from datetime import date
 from scripts.classify import feature_type, needs_release_note, _title_to_heading
 from scripts.classify import needs_screenshots
 from scripts.classify import doc_kind_candidates
@@ -7,7 +6,6 @@ from scripts.classify import classify
 from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures"
-TODAY = date(2026, 5, 27)
 
 
 class TestFeatureType(unittest.TestCase):
@@ -47,8 +45,7 @@ class TestReleaseNote(unittest.TestCase):
                 "merged_at": merged_at}
 
     def _note(self, **kw):
-        return needs_release_note(self._pr(**kw), impl_repo="traefik/traefik-hub",
-                                  today=TODAY)
+        return needs_release_note(self._pr(**kw), impl_repo="traefik/traefik-hub")
 
     def test_not_breaking_label_does_not_match(self):
         # "not-breaking-change" must NOT trigger breaking-subsection.
@@ -112,13 +109,12 @@ class TestReleaseNote(unittest.TestCase):
         result = self._note(title="chore(deps): bump")
         self.assertEqual(result["verdict"], "no")
 
-    def test_target_month_from_merge_date(self):
+    def test_no_target_month_field(self):
+        # Removed: release-notes.mdx moved to per-version (semver) sections
+        # (traefik/hub-doc#953), so a merge-date-derived month no longer maps to
+        # anything in the file. SKILL.md asks for the target version explicitly.
         result = self._note(title="feat: add X", merged_at="2026-05-27T15:05:06Z")
-        self.assertEqual(result["target_month"], "May 2026")
-
-    def test_target_month_falls_back_to_today_when_open(self):
-        result = self._note(title="feat: add X", merged_at=None)
-        self.assertEqual(result["target_month"], "May 2026")
+        self.assertNotIn("target_month", result)
 
 
 class TestScreenshots(unittest.TestCase):
