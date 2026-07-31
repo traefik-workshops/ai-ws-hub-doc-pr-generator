@@ -159,10 +159,22 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
      $(jq -r '.candidates[0].neighbors[]' /tmp/locate.json) > /tmp/neighbor_structures.json
    ```
 
+6c. **Ask for the target release version (Hub only, when a release note is needed).**
+
+   `docs/api-gateway/release-notes.mdx` is organized into per-version (semver) sections,
+   not monthly ones (see `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md`) —
+   there is no way to derive which Hub release this change ships in from the PR alone (no
+   merge-date shortcut like the old month-based layout had). If `classify_full.json`'s
+   `needs_release_note.verdict` is `yes`, ask once via `AskUserQuestion`:
+   > "Which Hub release is this release note for? (e.g. v3.20.7)"
+
+   Store the answer as `target_version`. Unlike step 6's picks, this is a genuinely
+   unknowable fact rather than a confidence-gated guess, so it stays a real prompt.
+
 7. **Generate.** This is the LLM step — no script. Read:
    - `/tmp/bundle.json` (the PR + diff, linked issues with their `parent`/`siblings`, and `merged.related_prs` — use the parent epic and sibling issues to understand the feature's intent and scope, not just the single PR's diff)
    - `/tmp/grounding.json` (concept fields)
-   - `/tmp/classify.json` (release-note shape via `needs_release_note.proposed_shape`, target month via `needs_release_note.target_month`, screenshot verdict)
+   - `/tmp/classify.json` (release-note shape via `needs_release_note.proposed_shape`, target release version from step 6c's `target_version`, screenshot verdict)
    - `/tmp/locate.json` (target path + neighbors). **If `target_exists` is `true`**, the
      target path is an EXISTING page being extended, not a fresh create — Read its full
      current content before generating the `overwrite` edit. It is the file being changed,
@@ -170,12 +182,12 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
      does not apply to it: dropping existing rows/sections because they were never read is
      exactly the failure this guards against.
    - Template files from `${CLAUDE_SKILL_DIR}/templates/` (Hub or OSS depending on impl repo)
-   - For Hub: locate the target month's section in `docs/api-gateway/release-notes.mdx` by running:
+   - For Hub: locate the target version's section in `docs/api-gateway/release-notes.mdx` by running:
      ```bash
-     grep -n "## <target_month>\|### What's New\|#### Graduated to GA" \
+     grep -n "## Gateway v<target_version>\|### What's New\|#### Graduated to GA" \
        <doc-repo>/docs/api-gateway/release-notes.mdx | head -20
      ```
-     Then read only that section (typically 30–60 lines) with the Read tool, not the full file. If the target month heading doesn't exist, read the first 30 lines to understand the file structure and create the heading. The new entry goes **on top, never at the bottom** — see `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md` ("Insertion order").
+     Then read only that section (typically 30–60 lines) with the Read tool, not the full file. If the target version heading doesn't exist, read the first 30 lines to understand the file structure and create the heading. The new entry goes **on top, never at the bottom** — see `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md` ("Insertion order").
    - `/tmp/neighbor_structures.json` (structural summaries of neighbor pages — headings and first sentences). Do NOT read full neighbor pages; the summaries are sufficient for matching structure and tone. (This is about OTHER pages consulted for tone — see the `target_exists` carve-out above for the page actually being edited.)
    - `${CLAUDE_SKILL_DIR}/references/style-guide.md` **Tier 1 — Core rules** (always load). Additionally load on demand:
      - `## Procedure pages` section — if doc kind is a how-to guide or tutorial
