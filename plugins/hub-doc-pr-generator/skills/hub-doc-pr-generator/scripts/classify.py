@@ -155,9 +155,7 @@ def needs_screenshots(*, neighbor_paths: list[str], touched_paths: list[str]) ->
     return {"verdict": "no", "signals": signals}
 
 
-def doc_kind_candidates(
-    *, title: str, touched_paths: list[str], neighbor_paths: list[str]
-) -> list[dict]:
+def doc_kind_candidates(*, title: str, touched_paths: list[str]) -> list[dict]:
     title_l = title.lower()
     score_ref = 0.0
     score_guide = 0.0
@@ -213,9 +211,7 @@ def classify(bundle: dict, *, grounding: dict, neighbor_paths: list[str],
         bundle["prs"][0],
     )
     touched = [f["path"] for f in bundle["merged"]["files_changed"]]
-    candidates = doc_kind_candidates(
-        title=primary["title"], touched_paths=touched, neighbor_paths=neighbor_paths
-    )
+    candidates = doc_kind_candidates(title=primary["title"], touched_paths=touched)
     top_confidence = candidates[0]["confidence"] if candidates else 0.5
     return {
         "confidence": top_confidence,

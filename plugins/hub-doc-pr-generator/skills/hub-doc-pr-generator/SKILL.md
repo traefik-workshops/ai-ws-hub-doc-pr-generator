@@ -110,15 +110,22 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.classify --bundle /tmp/bundle.json \
      --grounding /tmp/grounding.json $(printf -- '--neighbor %s ' "${neighbors[@]}") \
+     > /tmp/classify_full.json
+
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.classify --bundle /tmp/bundle.json \
+     --grounding /tmp/grounding.json $(printf -- '--neighbor %s ' "${neighbors[@]}") \
      --slim > /tmp/classify.json
    ```
-   The `--slim` flag strips the internal signals/rationale arrays — the LLM does not need them.
+   Run twice: `classify_full.json` keeps signals/rationale (step 6 needs them to explain a
+   low-confidence pick); the `--slim` copy strips them for the LLM generation step, which
+   doesn't need them. Both are otherwise identical and cheap to recompute.
 
-6. **Confirm doc kind and target path (confidence-gated).**
+6. **Confirm doc kind and target path (confidence-gated, never blocks).**
 
-   Read `classify.json`:
-   - If `confidence >= 0.85`: auto-accept `doc_kind_candidates[0].kind` silently. Log: `Auto-selected doc kind: <kind> (confidence: <N>)`.
-   - If `confidence < 0.85`: confirmation required — see the `AskUserQuestion` prompt below.
+   Always auto-accept `doc_kind_candidates[0].kind` from `classify_full.json`. Log:
+   `Auto-selected doc kind: <kind> (confidence: <N>)` — unconditional, not just when
+   confident. The 0.85 threshold still exists, but only decides whether the pick gets
+   flagged (below), never whether it blocks.
 
    Run locate_targets with the selected kind:
    ```bash
@@ -127,21 +134,41 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
      --feature-slug <slug> --touched-files ... > /tmp/locate.json
    ```
 
-   Read `locate.json`:
-   - If `candidates[0].confidence >= 0.75`: auto-accept silently. Log: `Auto-selected path: <path> (confidence: <N>)`.
-   - If `candidates[0].confidence < 0.75`: confirmation required — see the `AskUserQuestion` prompt below.
+   Always auto-accept `candidates[0]`. Log: `Auto-selected path: <path> (confidence: <N>)`
+   — same, unconditional. The 0.75 threshold likewise only gates the flag below.
 
-   If either needs confirmation, ask once via `AskUserQuestion` covering both in a single prompt:
-   > "I'll create `<path>` as a `<kind>` page — confirm, change kind, or change path?"
-   - `[y]` confirm both
-   - `[k]` change kind (show the other candidate)
-   - `[p]` custom path
+   Write the low-confidence paper trail:
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.write_flags \
+     --classify /tmp/classify_full.json --locate /tmp/locate.json > /tmp/flags.json
+   ```
+   `flags.json`'s `needs_verification_md` names what was picked below threshold, the
+   runner-up that was passed over, and why — it's appended to `/tmp/pr-body.md` in step 8,
+   alongside `preview.json`'s `manual_checks_md`.
+
+6b. **Re-sync neighbors if locate_targets disagreed with step 4's guess.**
+
+   `locate.json`'s `candidates[0].neighbors` is computed from the CONFIRMED target
+   directory (`propose_paths`/`select_neighbors`), which can differ from step 4's early
+   guess — that one was made before `doc_kind` was even known, purely to give
+   `classify.py`'s screenshot heuristic something to look at. If the two lists differ,
+   re-extract structures from the confirmed list so step 7 never reads structural
+   summaries for a different set of files than `locate.json` names:
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.extract_neighbor_structure \
+     $(jq -r '.candidates[0].neighbors[]' /tmp/locate.json) > /tmp/neighbor_structures.json
+   ```
 
 7. **Generate.** This is the LLM step — no script. Read:
    - `/tmp/bundle.json` (the PR + diff, linked issues with their `parent`/`siblings`, and `merged.related_prs` — use the parent epic and sibling issues to understand the feature's intent and scope, not just the single PR's diff)
    - `/tmp/grounding.json` (concept fields)
    - `/tmp/classify.json` (release-note shape via `needs_release_note.proposed_shape`, target month via `needs_release_note.target_month`, screenshot verdict)
-   - `/tmp/locate.json` (target path + neighbors)
+   - `/tmp/locate.json` (target path + neighbors). **If `target_exists` is `true`**, the
+     target path is an EXISTING page being extended, not a fresh create — Read its full
+     current content before generating the `overwrite` edit. It is the file being changed,
+     not a tone/structure reference, so the "don't read full neighbor pages" rule below
+     does not apply to it: dropping existing rows/sections because they were never read is
+     exactly the failure this guards against.
    - Template files from `${CLAUDE_SKILL_DIR}/templates/` (Hub or OSS depending on impl repo)
    - For Hub: locate the target month's section in `docs/api-gateway/release-notes.mdx` by running:
      ```bash
@@ -149,11 +176,11 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
        <doc-repo>/docs/api-gateway/release-notes.mdx | head -20
      ```
      Then read only that section (typically 30–60 lines) with the Read tool, not the full file. If the target month heading doesn't exist, read the first 30 lines to understand the file structure and create the heading. The new entry goes **on top, never at the bottom** — see `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md` ("Insertion order").
-   - `/tmp/neighbor_structures.json` (structural summaries of neighbor pages — headings and first sentences). Do NOT read full neighbor pages; the summaries are sufficient for matching structure and tone.
+   - `/tmp/neighbor_structures.json` (structural summaries of neighbor pages — headings and first sentences). Do NOT read full neighbor pages; the summaries are sufficient for matching structure and tone. (This is about OTHER pages consulted for tone — see the `target_exists` carve-out above for the page actually being edited.)
    - `${CLAUDE_SKILL_DIR}/references/style-guide.md` **Tier 1 — Core rules** (always load). Additionally load on demand:
      - `## Procedure pages` section — if doc kind is a how-to guide or tutorial
      - `## Screenshots and media` section — if `classify.needs_screenshots.verdict == "yes"`
-     - `## Tables` section — only if the page will include a parameter table
+     - `## Tables` section — if the page will include a parameter table, **or** `target_exists` is `true` and the existing page has one being extended (enumerate every row — see that section's completeness rule; `preview.py` also mechanically flags "…"/"etc." placeholders in step 8)
    - `${CLAUDE_SKILL_DIR}/references/<convention>.md` files on demand (hub-doc-conventions, oss-doc-conventions, release-note-heuristics)
 
    Produce a JSON file `/tmp/edits.json` shaped:
@@ -181,10 +208,27 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    --strict` failures for OSS) comes back in `lint_unresolved` and never blocks the
    pipeline — there is no re-prompt on lint state.
 
-   If `preview.json`'s `manual_checks_md` is non-empty, append it to `/tmp/pr-body.md`
-   now, before step 10 — a plain string append, not an LLM step:
+   `preview.py` also mechanically flags table rows abbreviated with "…"/"etc." (see the
+   Tables completeness rule) — those surface in `lint_unresolved`/`manual_checks_md` too,
+   no separate check needed.
+
+   Append `flags.json`'s `needs_verification_md` (from step 6) and `preview.json`'s
+   `manual_checks_md` to `/tmp/pr-body.md` now, before step 10 — both are plain string
+   appends, not an LLM step, so these sections never depend on the generation step
+   remembering to include them:
    ```bash
-   python3 -c "import json; d=json.load(open('/tmp/preview.json')); open('/tmp/pr-body.md','a').write(d['manual_checks_md'])"
+   python3 -c "
+   import json
+   parts = []
+   flags = json.load(open('/tmp/flags.json'))
+   if flags.get('needs_verification_md'):
+       parts.append(flags['needs_verification_md'])
+   preview = json.load(open('/tmp/preview.json'))
+   if preview.get('manual_checks_md'):
+       parts.append(preview['manual_checks_md'])
+   if parts:
+       open('/tmp/pr-body.md', 'a').write(''.join(parts))
+   "
    ```
 
    Present the result to the engineer (the default run above stages the files; this is display-only):
@@ -223,4 +267,4 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
 
 ## When to use the AskUserQuestion tool
 
-Use it for: combined kind/path confirmation when confidence is below threshold (step 6), edit-loop choices (step 9), push confirmation (step 10). Each renders a labelled option list instead of a free-form y/N. Do not ask when the classifier is confident — let the pipeline proceed automatically and log what was auto-selected.
+Use it for: edit-loop choices (step 9), push confirmation (step 10). Each renders a labelled option list instead of a free-form y/N. Step 6 (doc kind / target path) never asks anymore — it always auto-accepts the top candidate and, when confidence is below threshold, records the pick in the PR body's "Needs verification" section instead of prompting.

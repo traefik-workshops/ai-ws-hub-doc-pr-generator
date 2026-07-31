@@ -150,7 +150,7 @@ class TestDocKindCandidatesNoSignal(unittest.TestCase):
     def test_no_signal_returns_user_guide_default(self):
         # When neither path nor title provides any signal, we should get a clear
         # default (user-guide at 0.5) rather than two 0.0 candidates.
-        cands = doc_kind_candidates(title="", touched_paths=[], neighbor_paths=[])
+        cands = doc_kind_candidates(title="", touched_paths=[])
         self.assertEqual(cands[0]["kind"], "user-guide")
         self.assertEqual(cands[0]["confidence"], 0.5)
 
@@ -160,8 +160,7 @@ class TestDocKindCandidatesNoSignal(unittest.TestCase):
         # so the skill still asks the engineer instead of silently picking.
         cands = doc_kind_candidates(
             title="",
-            touched_paths=["hub/pkg/middleware/cors/config.go"],
-            neighbor_paths=[],
+            touched_paths=["hub/pkg/middleware/cors/config.go"]
         )
         self.assertEqual(cands[0]["kind"], "reference")
         self.assertAlmostEqual(cands[0]["confidence"], 0.6)
@@ -169,8 +168,7 @@ class TestDocKindCandidatesNoSignal(unittest.TestCase):
     def test_lone_weak_title_keyword_does_not_auto_accept(self):
         # The regression case: a single weak 0.4 title keyword must stay at 0.4,
         # not normalise to 1.0.
-        cands = doc_kind_candidates(title="feat: setup guide", touched_paths=[],
-                                    neighbor_paths=[])
+        cands = doc_kind_candidates(title="feat: setup guide", touched_paths=[])
         self.assertEqual(cands[0]["kind"], "user-guide")
         self.assertAlmostEqual(cands[0]["confidence"], 0.4)
         self.assertLess(cands[0]["confidence"], 0.85)
@@ -180,8 +178,7 @@ class TestDocKindCandidates(unittest.TestCase):
     def test_middleware_code_leans_reference(self):
         cands = doc_kind_candidates(
             title="feat: add onDenyResponse to token ratelimit middleware",
-            touched_paths=["hub/pkg/middleware/tokenratelimit/config.go"],
-            neighbor_paths=[],
+            touched_paths=["hub/pkg/middleware/tokenratelimit/config.go"]
         )
         top = cands[0]
         self.assertEqual(top["kind"], "reference")
@@ -190,16 +187,14 @@ class TestDocKindCandidates(unittest.TestCase):
     def test_dashboard_code_leans_user_guide(self):
         cands = doc_kind_candidates(
             title="feat: add quota panel",
-            touched_paths=["hub/dashboard/src/QuotaPanel.tsx"],
-            neighbor_paths=[],
+            touched_paths=["hub/dashboard/src/QuotaPanel.tsx"]
         )
         self.assertEqual(cands[0]["kind"], "user-guide")
 
     def test_title_hint_guide(self):
         cands = doc_kind_candidates(
             title="feat: guide for setting up X",
-            touched_paths=[],
-            neighbor_paths=[],
+            touched_paths=[]
         )
         self.assertEqual(cands[0]["kind"], "user-guide")
 
