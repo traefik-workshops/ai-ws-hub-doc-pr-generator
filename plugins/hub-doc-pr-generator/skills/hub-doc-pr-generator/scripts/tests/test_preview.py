@@ -10,7 +10,7 @@ from scripts.preview import (
     detect_pretty_tools,
     render_diff_to_stdout, render_pages_to_stdout,
     _fix_file_permissions, run_lint_fix, LintFixResult, render_manual_checks_section,
-    apply_edits_with_lint_fix,
+    apply_edits_with_lint_fix, check_table_completeness,
 )
 
 
@@ -180,6 +180,71 @@ class TestApplyEditsWithLintFix(unittest.TestCase):
             self.assertIn("new mode 100644", diff)
             self.assertEqual(written, ["docs/existing.md"])
             self.assertIsInstance(lint, LintFixResult)
+
+
+class TestCheckTableCompleteness(unittest.TestCase):
+    def test_flags_ellipsis_placeholder_in_table_row(self):
+        edits = [FileEdit(
+            path="docs/reference.md",
+            content="| Format | Description |\n| --- | --- |\n| json, xml, … | formats |\n",
+            mode="overwrite",
+        )]
+        findings = check_table_completeness(edits)
+        self.assertTrue(any("docs/reference.md" in f for f in findings))
+
+    def test_flags_etc_placeholder_in_table_row(self):
+        edits = [FileEdit(
+            path="docs/reference.md",
+            content="| Format | Description |\n| --- | --- |\n| json, xml, etc. | formats |\n",
+            mode="overwrite",
+        )]
+        findings = check_table_completeness(edits)
+        self.assertEqual(len(findings), 1)
+
+    def test_complete_table_is_not_flagged(self):
+        edits = [FileEdit(
+            path="docs/reference.md",
+            content="| Format | Description |\n| --- | --- |\n| json | JSON format |\n| xml | XML format |\n",
+            mode="overwrite",
+        )]
+        self.assertEqual(check_table_completeness(edits), [])
+
+    def test_non_table_prose_with_ellipsis_is_not_flagged(self):
+        edits = [FileEdit(
+            path="docs/reference.md",
+            content="This is prose that trails off…\n",
+            mode="create",
+        )]
+        self.assertEqual(check_table_completeness(edits), [])
+
+    def test_non_markdown_files_are_skipped(self):
+        edits = [FileEdit(
+            path="sidebars.js",
+            content="| json, xml, … |\n",
+            mode="overwrite",
+        )]
+        self.assertEqual(check_table_completeness(edits), [])
+
+    def test_wired_into_manual_checks_via_apply_edits_with_lint_fix(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            edits = [FileEdit(
+                path="docs/new.md",
+                content="| Format | Description |\n| --- | --- |\n| json, xml, … | formats |\n",
+                mode="create",
+            )]
+            with patch("scripts.preview.subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                mock_run.return_value.stdout = ""
+                mock_run.return_value.stderr = ""
+                _, lint = apply_edits_with_lint_fix(
+                    repo_path=str(d), branch="docs/test",
+                    impl_repo="traefik/traefik-hub", edits=edits,
+                )
+        self.assertTrue(any("docs/new.md" in u for u in lint.unresolved))
+        md = render_manual_checks_section(lint.unresolved)
+        self.assertIn("## Manual checks required", md)
 
 
 class TestRenderManualChecksSection(unittest.TestCase):

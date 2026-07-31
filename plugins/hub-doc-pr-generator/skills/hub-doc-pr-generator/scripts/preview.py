@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -171,6 +172,28 @@ def run_lint_fix(*, repo_path: str, impl_repo: str, written: list[str]) -> LintF
     return LintFixResult(fixed=fixed, unresolved=unresolved, commands=commands)
 
 
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_PLACEHOLDER_RE = re.compile(r"…|\.\.\.|\betc\.?\b", re.IGNORECASE)
+
+
+def check_table_completeness(edits: list[FileEdit]) -> list[str]:
+    """Flag markdown table rows that look truncated (an ellipsis or 'etc.'
+    placeholder standing in for values) instead of enumerating every row — see
+    style-guide.md's Tables section. Purely mechanical: no LLM judgment, so it
+    can't itself introduce a false confirmation prompt."""
+    findings: list[str] = []
+    for e in edits:
+        if not (e.path.endswith(".md") or e.path.endswith(".mdx")):
+            continue
+        for line in e.content.splitlines():
+            if _TABLE_ROW_RE.match(line) and _PLACEHOLDER_RE.search(line):
+                findings.append(
+                    f"{e.path}: table row looks truncated (ellipsis/'etc.' placeholder "
+                    f"instead of an enumerated value): {line.strip()}"
+                )
+    return findings
+
+
 def apply_edits_with_lint_fix(
     *, repo_path: str, branch: str, impl_repo: str, edits: list[FileEdit],
 ) -> tuple[list[str], LintFixResult]:
@@ -178,6 +201,7 @@ def apply_edits_with_lint_fix(
     permissions actually show up in the staged diff apply_edits already prepared."""
     written = apply_edits(repo_path=repo_path, branch=branch, edits=edits)
     lint = run_lint_fix(repo_path=repo_path, impl_repo=impl_repo, written=written)
+    lint.unresolved.extend(check_table_completeness(edits))
     if lint.fixed and written:
         _git.run(repo_path, ["add", "--", *written])
     return written, lint

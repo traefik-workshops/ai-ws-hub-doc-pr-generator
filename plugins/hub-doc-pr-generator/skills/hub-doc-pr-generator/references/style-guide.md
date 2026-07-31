@@ -152,3 +152,8 @@ import BrowserWindow from '@site/src/components/BrowserWindow';
 - Use sentence case for row headings.
 - Sort alphabetically when a table contains a long parameter list.
 - Avoid tables that require horizontal scrolling; break into smaller tables or use lists instead.
+- When extending an existing table (adding a row for a new enum value, parameter, format,
+  etc.), enumerate every row explicitly. Never abbreviate existing rows with "…" or "etc."
+  to save space — that silently drops content a reader depends on. If unsure of another
+  row's exact values, look them up in the touched source or `grounding.json` rather than
+  guessing or omitting it.

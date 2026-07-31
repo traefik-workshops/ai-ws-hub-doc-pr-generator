@@ -24,33 +24,55 @@ _OSS_REF_MAP = {
 }
 
 
-def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> list[str]:
+def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tuple[list[str], int]:
+    """Returns (dirs, matched_prefix_count). matched_prefix_count == 0 means no
+    touched-path prefix matched and the generic single-dir fallback was used."""
     if impl_repo == "traefik/traefik-hub":
         m = _HUB_REF_MAP if doc_kind == "reference" else _HUB_GUIDE_MAP
     else:
         m = _OSS_REF_MAP
     dirs: list[str] = []
+    matched_prefixes = 0
     for prefix, sections in m.items():
         if any(p.startswith(prefix) for p in touched_paths):
             dirs.extend(sections)
+            matched_prefixes += 1
     # Generic fallback for Hub if nothing matched
     if not dirs and impl_repo == "traefik/traefik-hub":
         dirs = ["docs/ai-gateway/middlewares/"] if doc_kind == "reference" else ["docs/ai-gateway/guides/"]
     if not dirs and impl_repo == "traefik/traefik":
         dirs = ["docs/content/reference/"]
-    return dirs
+    return dirs, matched_prefixes
 
 
 def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
                   touched_paths: list[str]) -> list[dict]:
-    section_dirs = _section_dirs(impl_repo, doc_kind, touched_paths)
-    base = max(0.4, 1.0 / max(len(section_dirs), 1))
+    section_dirs, matched_prefixes = _section_dirs(impl_repo, doc_kind, touched_paths)
+    # Confidence reflects how GROUNDED the match is, not how many directories a
+    # single matched prefix happens to map to. Directory count alone is the wrong
+    # denominator: one matched prefix that fans out to two candidate dirs (e.g.
+    # middleware reference pages living in two places) is still one solid signal,
+    # not two competing guesses.
+    #  - 0 prefixes matched -> generic single-dir fallback, the LEAST grounded
+    #    guess -> low confidence (must clear the 0.75 auto-accept gate honestly).
+    #  - 1 prefix matched -> specific, well-grounded match -> high confidence.
+    #  - >1 distinct prefixes matched -> touched paths span unrelated sections,
+    #    a genuinely ambiguous signal -> confidence split across them.
+    if matched_prefixes == 0:
+        base = 0.3
+        rationale = "No touched-path prefix matched — generic fallback directory"
+    elif matched_prefixes == 1:
+        base = 0.9
+        rationale = None
+    else:
+        base = round(0.9 / matched_prefixes, 2)
+        rationale = None
     out = []
     for i, d in enumerate(section_dirs):
         out.append({
             "path": f"{d}{feature_slug}.md",
             "confidence": round(base if i == 0 else base * 0.8, 2),
-            "rationale": f"Inferred section dir {d} from touched paths",
+            "rationale": rationale or f"Inferred section dir {d} from touched paths",
         })
     return out
 
@@ -92,6 +114,7 @@ def build_locate(*, impl_repo: str, doc_repo_root: str, doc_kind: str,
     target = candidates[0]["path"] if candidates else ""
     neighbors = select_neighbors(doc_repo_root=doc_repo_root, target_path=target)
     candidates[0]["neighbors"] = neighbors
+    target_exists = bool(target) and (Path(doc_repo_root) / target).is_file()
     ins = None
     if impl_repo == "traefik/traefik-hub":
         sidebars = Path(doc_repo_root) / "sidebars.js"
@@ -99,7 +122,11 @@ def build_locate(*, impl_repo: str, doc_repo_root: str, doc_kind: str,
             ins = sidebar_insertion_point(
                 sidebars.read_text(), target_path=target
             )
-    return {"candidates": candidates, "sidebar_insertion_point": ins}
+    return {
+        "candidates": candidates,
+        "sidebar_insertion_point": ins,
+        "target_exists": target_exists,
+    }
 
 
 def main(argv: list[str]) -> int:

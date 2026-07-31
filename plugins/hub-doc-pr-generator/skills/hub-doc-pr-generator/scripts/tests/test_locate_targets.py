@@ -17,6 +17,45 @@ class TestProposePaths(unittest.TestCase):
         paths = [c["path"] for c in cands]
         self.assertIn("docs/ai-gateway/middlewares/token-ratelimit-deny-response.md", paths)
 
+    def test_specific_prefix_match_is_high_confidence(self):
+        # Regression: one matched prefix fanning out to two candidate dirs must NOT
+        # be read as "two competing guesses" and score low. It's one solid signal.
+        cands = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="reference",
+            feature_slug="token-ratelimit-deny-response",
+            touched_paths=["hub/pkg/middleware/tokenratelimit/config.go"],
+        )
+        self.assertGreaterEqual(cands[0]["confidence"], 0.85)
+
+    def test_fallback_with_no_matched_prefix_is_low_confidence(self):
+        # Regression for the confidence-formula bug: previously the generic
+        # single-dir fallback (len(section_dirs) == 1) scored 1.0 -- the highest
+        # possible score for the LEAST grounded guess. Must now score low enough
+        # to fail both the 0.85 (kind) and 0.75 (path) auto-accept gates.
+        cands = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="reference",
+            feature_slug="mystery-feature",
+            touched_paths=["hub/something/totally/unmapped.go"],
+        )
+        self.assertEqual(len(cands), 1)
+        self.assertLess(cands[0]["confidence"], 0.75)
+
+    def test_conflicting_prefixes_lower_confidence(self):
+        # Touched paths spanning two unrelated mapped prefixes is a genuinely
+        # ambiguous signal and must score below the auto-accept gates too.
+        cands = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="reference",
+            feature_slug="cross-cutting-feature",
+            touched_paths=[
+                "hub/pkg/middleware/tokenratelimit/config.go",
+                "hub/dashboard/src/App.tsx",
+            ],
+        )
+        self.assertLess(cands[0]["confidence"], 0.75)
+
     def test_hub_user_guide(self):
         cands = propose_paths(
             impl_repo="traefik/traefik-hub",
@@ -97,6 +136,34 @@ class TestBuildLocate(unittest.TestCase):
             )
         self.assertTrue(out["candidates"][0]["path"].endswith("new-thing.md"))
         self.assertEqual(out["sidebar_insertion_point"]["file"], "sidebars.js")
+
+    def test_target_exists_false_for_new_page(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "docs/ai-gateway/middlewares").mkdir(parents=True)
+            out = build_locate(
+                impl_repo="traefik/traefik-hub",
+                doc_repo_root=td,
+                doc_kind="reference",
+                feature_slug="new-thing",
+                touched_paths=["hub/pkg/middleware/newthing/config.go"],
+            )
+        self.assertFalse(out["target_exists"])
+
+    def test_target_exists_true_when_page_already_present(self):
+        # The in-place-edit case (extending an existing page): the LLM step needs
+        # this flag to know it must Read the full current file, not just summaries.
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway/middlewares"
+            d.mkdir(parents=True)
+            (d / "new-thing.md").write_text("existing content\n")
+            out = build_locate(
+                impl_repo="traefik/traefik-hub",
+                doc_repo_root=td,
+                doc_kind="reference",
+                feature_slug="new-thing",
+                touched_paths=["hub/pkg/middleware/newthing/config.go"],
+            )
+        self.assertTrue(out["target_exists"])
 
 
 if __name__ == "__main__":
