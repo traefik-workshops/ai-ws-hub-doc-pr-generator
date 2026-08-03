@@ -8,16 +8,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        skill: [hub-doc-pr-generator, release-notes-generator]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Run tests
-        run: python -m unittest discover -s plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/scripts/tests -t plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator -v
+        run: python -m unittest discover -s plugins/hub-doc-pr-generator/skills/${{ matrix.skill }}/scripts/tests -t plugins/hub-doc-pr-generator/skills/${{ matrix.skill }} -v
 
   lint:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        skill: [hub-doc-pr-generator, release-notes-generator]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,4 +32,4 @@ jobs:
       - name: Install pyflakes
         run: pip install pyflakes
       - name: Run pyflakes
-        run: python -m pyflakes plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/scripts/
+        run: python -m pyflakes plugins/hub-doc-pr-generator/skills/${{ matrix.skill }}/scripts/

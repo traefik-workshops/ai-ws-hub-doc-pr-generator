@@ -1,0 +1,141 @@
+import unittest
+from unittest.mock import patch
+from scripts.compat_matrix import (
+    go_mod_deps, traefik_proxy_version, helm_chart_for, static_analyzer_version, build_matrix,
+)
+
+# Real snippets (trimmed) verified live against traefik/traefik-hub@main and
+# traefik/traefik-helm-chart@v41.1.0 while reviewing this skill.
+GO_MOD_SNIPPET = """
+module github.com/traefik/traefik-hub/v3
+
+go 1.26.0
+
+require (
+\tgithub.com/corazawaf/coraza-coreruleset/v4 v4.25.0
+\tgithub.com/corazawaf/coraza/v3 v3.7.0
+\tgithub.com/traefik/traefik/v3 v3.7.10-0.20260730153609-e80aaab074b4
+\tsigs.k8s.io/gateway-api v1.6.1
+)
+
+replace github.com/corazawaf/coraza/v3 => github.com/traefik/coraza/v3 v3.0.0-20260603201638-0ab7cb557911
+"""
+
+CHART_YAML_SNIPPET = """
+apiVersion: v2
+name: traefik
+version: 41.1.0
+annotations:
+  traefik.io/hub-min-version: v3.19.3
+  traefik.io/hub-max-version: v3.20.7
+"""
+
+
+class TestGoModDeps(unittest.TestCase):
+    def test_extracts_real_dependency_lines(self):
+        with patch("scripts.compat_matrix._file_at_ref", return_value=GO_MOD_SNIPPET):
+            deps = go_mod_deps("v3.20.8")
+        self.assertEqual(deps["coraza_waf"], "v3.7.0")
+        self.assertEqual(deps["owasp_crs"], "v4.25.0")
+        self.assertEqual(deps["kubernetes_gateway_api"], "v1.6.1")
+
+    def test_replace_directive_does_not_shadow_require_line(self):
+        # The replace directive also contains "github.com/corazawaf/coraza/v3"
+        # followed by "=>", not a version — must not be mistaken for a match.
+        with patch("scripts.compat_matrix._file_at_ref", return_value=GO_MOD_SNIPPET):
+            deps = go_mod_deps("v3.20.8")
+        self.assertEqual(deps["coraza_waf"], "v3.7.0")
+
+    def test_missing_go_mod_returns_all_none(self):
+        with patch("scripts.compat_matrix._file_at_ref", return_value=None):
+            deps = go_mod_deps("v3.20.8")
+        self.assertEqual(deps, {"coraza_waf": None, "owasp_crs": None, "kubernetes_gateway_api": None})
+
+
+class TestTraefikProxyVersion(unittest.TestCase):
+    def test_extracts_pseudo_version_prefix(self):
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else "v3.7.9\n"):
+            result = traefik_proxy_version("v3.20.8")
+        self.assertEqual(result["version"], "v3.7.10")
+
+    def test_notes_disagreement_between_go_mod_and_version_file(self):
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else "v3.7.9\n"):
+            result = traefik_proxy_version("v3.20.8")
+        self.assertIsNotNone(result["note"])
+        self.assertIn("disagree", result["note"])
+
+    def test_no_note_when_sources_agree(self):
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else "v3.7.10\n"):
+            result = traefik_proxy_version("v3.20.8")
+        self.assertIsNone(result["note"])
+
+    def test_falls_back_to_version_file_when_go_mod_has_no_traefik_pin(self):
+        no_traefik = "module x\n\nrequire (\n\tsigs.k8s.io/gateway-api v1.6.1\n)\n"
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: no_traefik if "go.mod" in path else "v3.7.9\n"):
+            result = traefik_proxy_version("v3.20.8")
+        self.assertEqual(result["version"], "v3.7.9")
+        self.assertIn("fell back", result["note"])
+
+    def test_returns_none_with_note_when_neither_source_available(self):
+        with patch("scripts.compat_matrix._file_at_ref", return_value=None):
+            result = traefik_proxy_version("v3.20.8")
+        self.assertIsNone(result["version"])
+        self.assertIsNotNone(result["note"])
+
+
+class TestHelmChartFor(unittest.TestCase):
+    def test_finds_chart_bracketing_target_tag(self):
+        with patch("scripts.compat_matrix._chart_tag_names", return_value=["v41.1.0"]), \
+             patch("scripts.compat_matrix._file_at_ref", return_value=CHART_YAML_SNIPPET):
+            result = helm_chart_for("v3.20.7", max_chart_tags=25)
+        self.assertEqual(result["version"], "41.1.0")
+        self.assertIn("v41.1.0", result["note"])
+
+    def test_target_outside_bracket_range_is_skipped(self):
+        with patch("scripts.compat_matrix._chart_tag_names", return_value=["v41.1.0"]), \
+             patch("scripts.compat_matrix._file_at_ref", return_value=CHART_YAML_SNIPPET):
+            result = helm_chart_for("v3.21.0", max_chart_tags=25)
+        self.assertIsNone(result["version"])
+        self.assertIn("no chart release", result["note"])
+
+    def test_unparseable_target_tag_returns_none(self):
+        result = helm_chart_for("not-a-tag", max_chart_tags=25)
+        self.assertIsNone(result["version"])
+
+    def test_chart_missing_annotations_is_skipped(self):
+        no_annotations = "apiVersion: v2\nname: traefik\nversion: 40.0.0\n"
+        with patch("scripts.compat_matrix._chart_tag_names", return_value=["v40.0.0"]), \
+             patch("scripts.compat_matrix._file_at_ref", return_value=no_annotations):
+            result = helm_chart_for("v3.20.7", max_chart_tags=25)
+        self.assertIsNone(result["version"])
+
+
+class TestStaticAnalyzerVersion(unittest.TestCase):
+    def test_always_returns_null_with_explanatory_note(self):
+        result = static_analyzer_version()
+        self.assertIsNone(result["version"])
+        self.assertIn("not yet identified", result["note"])
+
+
+class TestBuildMatrix(unittest.TestCase):
+    def test_assembles_all_rows(self):
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: (
+                       GO_MOD_SNIPPET if "go.mod" in path else
+                       "v3.7.10\n" if "traefik.version" in path else
+                       CHART_YAML_SNIPPET
+                   )), \
+             patch("scripts.compat_matrix._chart_tag_names", return_value=["v41.1.0"]):
+            matrix = build_matrix("v3.20.8", max_chart_tags=25)
+        self.assertEqual(matrix["tag"], "v3.20.8")
+        self.assertEqual(matrix["traefik_hub"], "v3.20.8")
+        self.assertEqual(matrix["coraza_waf"], "v3.7.0")
+        self.assertIsNone(matrix["static_analyzer"]["version"])
+
+
+if __name__ == "__main__":
+    unittest.main()

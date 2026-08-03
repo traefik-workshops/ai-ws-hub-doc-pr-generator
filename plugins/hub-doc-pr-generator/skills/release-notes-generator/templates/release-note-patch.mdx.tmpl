@@ -1,0 +1,62 @@
+<!--
+Combined-entry shape (2+ tags sharing commits, tagged close together) — the
+common case this skill targets. Real precedent: traefik/hub-doc's
+"## Gateway v3.20.6 & v3.19.11" entry (2026-07-01).
+
+For a SINGLE tag, drop this down to: one version in the heading (no " & "),
+one date, no "vX.Y.Z only:"/"vX.Y.Z:" prefixes on any bullet (every bullet is
+shared by definition), one Traefik Proxy line in Misc, and one table in the
+Collapse instead of two. Don't leave prefixes in when there's nothing to
+disambiguate.
+
+No sub-headings inside "### Bug fixes" (no bolded "API management" / "LLM
+Guard" / etc. categories, no separate "### Security" section) — that's the
+feature-template shape (ga-bullet / ga-subsection / breaking / ea), not what
+any real patch entry uses. Security-relevant fixes are just bullets in the
+same flat list.
+-->
+
+## Gateway {{newer_version}} & {{older_version}}
+
+**{{newer_date}} & {{older_date}}**
+
+### Bug fixes
+
+- {{shared_bullet}}
+- {{shared_bullet}}
+- {{newer_version}} only: {{version_specific_bullet}}
+- {{older_version}}: {{version_specific_bullet}}
+
+### Misc
+
+- {{newer_version}}: Update Traefik Proxy to [{{newer_traefik_version}}]({{newer_traefik_release_url}}).
+- {{older_version}}: Update Traefik Proxy to [{{older_traefik_version}}]({{older_traefik_release_url}}).
+- {{shared_dependency_bullet}}
+
+<Collapse title="Compatibility matrix">
+
+**{{newer_version}}**
+
+| Component       | Version  |
+| --------------- | -------- |
+| Traefik Hub     | {{newer_version}} |
+| Helm Chart      | {{newer_helm_chart_version}} |
+| Traefik Proxy   | {{newer_traefik_version}}  |
+| Coraza WAF      | {{newer_coraza_waf_version}}   |
+| OWASP CRS       | {{newer_owasp_crs_version}}  |
+| Static Analyzer | {{newer_static_analyzer_version}}   |
+| Kubernetes Gateway API | {{newer_gateway_api_version}} |
+
+**{{older_version}}**
+
+| Component       | Version  |
+| --------------- | -------- |
+| Traefik Hub     | {{older_version}} |
+| Helm Chart      | {{older_helm_chart_version}} |
+| Traefik Proxy   | {{older_traefik_version}}  |
+| Coraza WAF      | {{older_coraza_waf_version}}   |
+| OWASP CRS       | {{older_owasp_crs_version}}  |
+| Static Analyzer | {{older_static_analyzer_version}}   |
+| Kubernetes Gateway API | {{older_gateway_api_version}} |
+
+</Collapse>

@@ -1,0 +1,22 @@
+## Summary
+
+Release notes for {{versions}} ({{date}}).
+
+- Source tags: {{tag_list}}
+- {{n_shared}} shared fix(es) across the bundled tags, {{n_only}} version-specific fix(es)
+- Diffed against: {{prev_tag_list}}
+
+## Compatibility matrix
+
+Auto-filled from `go.mod`, `hub/pkg/version/traefik.version` (traefik/traefik-hub),
+and `traefik-helm-chart`'s `Chart.yaml` annotations — not carried forward from the
+previous entry. Any row reported as TBD still needs a human to fill in before merging:
+
+{{tbd_checklist}}
+
+## Reviewer checklist
+
+- [ ] Each bug-fix bullet matches the underlying commit's actual behavior, not just its subject line
+- [ ] Version-specific ("vX.Y.Z only:" / "vX.Y.Z:") bullets are correctly scoped to just that line
+- [ ] Compatibility matrix TBDs above are resolved (or intentionally left for hub-doc team follow-up)
+- [ ] Commits classify_commits.py flagged at confidence < 1.0 were reviewed (see "Needs verification" below, if present)
