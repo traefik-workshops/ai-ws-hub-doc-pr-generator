@@ -4,6 +4,7 @@ from pathlib import Path
 from scripts.locate_targets import propose_paths
 from scripts.locate_targets import select_neighbors
 from scripts.locate_targets import sidebar_insertion_point, build_locate
+from scripts.locate_targets import existing_doc_refs, issue_texts_from_bundle
 
 
 class TestProposePaths(unittest.TestCase):
@@ -119,7 +120,108 @@ const sidebars = {
         self.assertEqual(ins["after_id"], "ai-gateway/middlewares/content-guard")
 
 
+class TestIssueTextsFromBundle(unittest.TestCase):
+    def test_collects_issue_and_comment_bodies(self):
+        bundle = {
+            "merged": {
+                "linked_issues": [
+                    {"body": "See docs/api-management/api-auth for context",
+                     "comments": [{"body": "also check https://doc.traefik.io/traefik-hub/api-management/api-auth"}]},
+                ]
+            }
+        }
+        texts = issue_texts_from_bundle(bundle)
+        self.assertEqual(len(texts), 2)
+
+    def test_no_linked_issues_returns_empty(self):
+        self.assertEqual(issue_texts_from_bundle({"merged": {}}), [])
+
+
+class TestExistingDocRefs(unittest.TestCase):
+    def test_finds_literal_repo_path_if_file_exists(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-management"
+            d.mkdir(parents=True)
+            (d / "api-auth.md").write_text("existing page")
+            refs = existing_doc_refs(
+                ["The real place for this is docs/api-management/api-auth.md, please use it."],
+                doc_repo_root=td,
+            )
+        self.assertEqual(refs, ["docs/api-management/api-auth.md"])
+
+    def test_finds_doc_url_and_resolves_to_existing_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-management"
+            d.mkdir(parents=True)
+            (d / "api-auth.md").write_text("existing page")
+            refs = existing_doc_refs(
+                ["See https://doc.traefik.io/traefik-hub/api-management/api-auth for details."],
+                doc_repo_root=td,
+            )
+        self.assertEqual(refs, ["docs/api-management/api-auth.md"])
+
+    def test_ignores_path_or_url_that_does_not_exist(self):
+        with tempfile.TemporaryDirectory() as td:
+            refs = existing_doc_refs(
+                ["Should live at docs/nope/does-not-exist.md",
+                 "or maybe https://doc.traefik.io/traefik-hub/nope/does-not-exist"],
+                doc_repo_root=td,
+            )
+        self.assertEqual(refs, [])
+
+    def test_no_issue_text_returns_empty(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(existing_doc_refs([], doc_repo_root=td), [])
+
+    def test_dedupes_same_path_mentioned_twice(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-management"
+            d.mkdir(parents=True)
+            (d / "api-auth.md").write_text("x")
+            refs = existing_doc_refs(
+                ["docs/api-management/api-auth.md",
+                 "as mentioned, docs/api-management/api-auth.md is the place"],
+                doc_repo_root=td,
+            )
+        self.assertEqual(refs, ["docs/api-management/api-auth.md"])
+
+
 class TestBuildLocate(unittest.TestCase):
+    def test_issue_referenced_existing_page_outranks_heuristic(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-management"
+            d.mkdir(parents=True)
+            (d / "api-auth.md").write_text("existing page")
+            out = build_locate(
+                impl_repo="traefik/traefik-hub",
+                doc_repo_root=td,
+                doc_kind="reference",
+                feature_slug="keyless-authentication",
+                touched_paths=["hub/pkg/middleware/keylessauth/config.go"],
+                issue_texts=["The doc for this already exists: docs/api-management/api-auth.md"],
+            )
+        self.assertEqual(out["candidates"][0]["path"], "docs/api-management/api-auth.md")
+        self.assertGreaterEqual(out["candidates"][0]["confidence"], 0.9)
+        self.assertTrue(out["target_exists"])
+        # Heuristic candidate is still present, just no longer first.
+        self.assertGreater(len(out["candidates"]), 1)
+
+    def test_ambiguous_multiple_issue_refs_falls_back_to_heuristic(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-management"
+            d.mkdir(parents=True)
+            (d / "api-auth.md").write_text("x")
+            (d / "api-key.md").write_text("y")
+            out = build_locate(
+                impl_repo="traefik/traefik-hub",
+                doc_repo_root=td,
+                doc_kind="reference",
+                feature_slug="keyless-authentication",
+                touched_paths=["hub/pkg/middleware/keylessauth/config.go"],
+                issue_texts=["Could go in docs/api-management/api-auth.md or docs/api-management/api-key.md"],
+            )
+        self.assertTrue(out["candidates"][0]["path"].endswith("keyless-authentication.md"))
+
     def test_envelope(self):
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "docs/ai-gateway/middlewares").mkdir(parents=True)

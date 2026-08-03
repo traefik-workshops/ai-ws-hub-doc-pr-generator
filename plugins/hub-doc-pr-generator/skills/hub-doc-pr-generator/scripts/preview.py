@@ -7,9 +7,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 from scripts import _git
 
@@ -22,10 +23,24 @@ class FileEdit:
 
 
 def _checkout_branch(repo_path: str, branch: str) -> None:
+    """Check out `branch`, creating it fresh from `origin/main` if it doesn't
+    exist locally yet.
+
+    A NEW branch must never be cut from whatever happens to be checked out in
+    the working tree: if a stale, already-merged feature branch was left
+    checked out, the new branch would silently inherit all of its commits,
+    producing a huge, unrelated diff on the resulting PR. Always fetch and
+    branch from `origin/main` instead. An already-existing local branch (the
+    update-existing-doc-PR flow) is left as-is — it has its own legitimate
+    history diverging from main, which isn't this bug.
+    """
     try:
-        _git.run(repo_path, ["checkout", "-q", branch])
+        _git.run(repo_path, ["rev-parse", "--verify", f"refs/heads/{branch}"])
     except _git.GitError:
-        _git.run(repo_path, ["checkout", "-q", "-b", branch])
+        _git.run(repo_path, ["fetch", "-q", "origin", "main"])
+        _git.run(repo_path, ["checkout", "-q", "-b", branch, "origin/main"])
+        return
+    _git.run(repo_path, ["checkout", "-q", branch])
 
 
 def apply_edits(*, repo_path: str, branch: str, edits: list[FileEdit]) -> list[str]:
@@ -134,6 +149,65 @@ def _fix_file_permissions(repo_path: str, written: list[str]) -> list[str]:
     return fixed
 
 
+def _dirty_paths(repo_path: str) -> list[str]:
+    """Paths with uncommitted changes (tracked or untracked), from porcelain
+    status. Empty (not raised) if git status itself fails — this is a best-
+    effort safety net, and shouldn't be able to take down the whole lint-fix
+    pipeline over it."""
+    try:
+        out = _git.run(repo_path, ["status", "--porcelain"])
+    except _git.GitError:
+        return []
+    paths: list[str] = []
+    for line in out.splitlines():
+        if not line:
+            continue
+        path = line[3:]
+        if " -> " in path:  # rename: "old -> new"
+            path = path.split(" -> ", 1)[1]
+        paths.append(path)
+    return paths
+
+
+@contextmanager
+def _stash_unrelated_changes(repo_path: str, keep: list[str]) -> Iterator[None]:
+    """Temporarily stash any working-tree changes NOT in `keep` (our own written
+    files) before running a repo-wide lint tool. `yarn docs:markdown --fix` and
+    friends operate on the whole tree, not a file list — without this, a hub-doc
+    clone left dirty from unrelated in-progress work gets reformatted and left
+    dirty by the fixer, twice over if the run is ever redone. Best-effort: a
+    failed stash push just means we proceed without this protection, same as
+    before this existed, rather than blocking doc generation over it. Restored
+    unconditionally on exit whenever the push did succeed, even if the lint
+    step itself raises."""
+    keep_set = set(keep)
+    unrelated = [p for p in _dirty_paths(repo_path) if p not in keep_set]
+    stashed = False
+    if unrelated:
+        try:
+            _git.run(repo_path, ["stash", "push", "-u", "--", *unrelated])
+            stashed = True
+        except _git.GitError:
+            pass
+    try:
+        yield
+    finally:
+        if stashed:
+            _git.run(repo_path, ["stash", "pop"])
+
+
+def _filter_to_written_paths(output: str, written: list[str]) -> str:
+    """Repo-wide lint commands report on the whole tree; keep only the lines
+    that mention one of our own written files, so pre-existing, unrelated
+    lint noise elsewhere in the repo never reaches the PR body. If nothing in
+    the output mentions a written file, the whole thing is dropped rather than
+    surfaced as ours to fix."""
+    if not written:
+        return output
+    kept = [line for line in output.splitlines() if any(w in line for w in written)]
+    return "\n".join(kept)
+
+
 def run_lint_fix(*, repo_path: str, impl_repo: str, written: list[str]) -> LintFixResult:
     """Auto-fix what's mechanical; never block on what isn't.
 
@@ -146,28 +220,33 @@ def run_lint_fix(*, repo_path: str, impl_repo: str, written: list[str]) -> LintF
     unresolved: list[str] = []
     commands: list[str] = []
 
-    if impl_repo == "traefik/traefik-hub":
-        for cmd in _HUB_AUTOFIX_COMMANDS:
-            commands.append(" ".join(cmd))
-            proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
-            if proc.returncode == 0:
-                fixed.append(f"Ran `{' '.join(cmd)}` — auto-fixed mechanical markdown issues")
-        for cmd in _HUB_CHECK_COMMANDS:
-            commands.append(" ".join(cmd))
-            proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
-            if proc.returncode != 0:
-                label = _CHECK_LABELS[" ".join(cmd)]
-                unresolved.append(f"{label}: {(proc.stdout + proc.stderr).strip()}")
-    else:
-        site_dir = tempfile.mkdtemp(prefix="mkdocs-preview-")
-        try:
-            cmd = ["mkdocs", "build", "--strict", "-d", site_dir]
-            commands.append(" ".join(cmd))
-            proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
-            if proc.returncode != 0:
-                unresolved.append(f"mkdocs build --strict: {(proc.stdout + proc.stderr).strip()}")
-        finally:
-            shutil.rmtree(site_dir, ignore_errors=True)
+    with _stash_unrelated_changes(repo_path, written):
+        if impl_repo == "traefik/traefik-hub":
+            for cmd in _HUB_AUTOFIX_COMMANDS:
+                commands.append(" ".join(cmd))
+                proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
+                if proc.returncode == 0:
+                    fixed.append(f"Ran `{' '.join(cmd)}` — auto-fixed mechanical markdown issues")
+            for cmd in _HUB_CHECK_COMMANDS:
+                commands.append(" ".join(cmd))
+                proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
+                if proc.returncode != 0:
+                    label = _CHECK_LABELS[" ".join(cmd)]
+                    filtered = _filter_to_written_paths((proc.stdout + proc.stderr).strip(), written)
+                    if filtered.strip():
+                        unresolved.append(f"{label}: {filtered}")
+        else:
+            site_dir = tempfile.mkdtemp(prefix="mkdocs-preview-")
+            try:
+                cmd = ["mkdocs", "build", "--strict", "-d", site_dir]
+                commands.append(" ".join(cmd))
+                proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
+                if proc.returncode != 0:
+                    filtered = _filter_to_written_paths((proc.stdout + proc.stderr).strip(), written)
+                    if filtered.strip():
+                        unresolved.append(f"mkdocs build --strict: {filtered}")
+            finally:
+                shutil.rmtree(site_dir, ignore_errors=True)
 
     return LintFixResult(fixed=fixed, unresolved=unresolved, commands=commands)
 
@@ -194,6 +273,26 @@ def check_table_completeness(edits: list[FileEdit]) -> list[str]:
     return findings
 
 
+_VNEXT_RE = re.compile(r"\bvNEXT\b")
+
+
+def check_placeholder_version(edits: list[FileEdit]) -> list[str]:
+    """Flag the vNEXT release-version placeholder (see release-note-heuristics.md
+    "Which version") left in generated content, so it can't merge un-replaced
+    without at least one visible flag in the PR body."""
+    findings: list[str] = []
+    for e in edits:
+        if not (e.path.endswith(".md") or e.path.endswith(".mdx")):
+            continue
+        for line in e.content.splitlines():
+            if _VNEXT_RE.search(line):
+                findings.append(
+                    f"{e.path}: contains the vNEXT placeholder — replace with the real "
+                    f"Hub release version before merging: {line.strip()}"
+                )
+    return findings
+
+
 def apply_edits_with_lint_fix(
     *, repo_path: str, branch: str, impl_repo: str, edits: list[FileEdit],
 ) -> tuple[list[str], LintFixResult]:
@@ -202,6 +301,7 @@ def apply_edits_with_lint_fix(
     written = apply_edits(repo_path=repo_path, branch=branch, edits=edits)
     lint = run_lint_fix(repo_path=repo_path, impl_repo=impl_repo, written=written)
     lint.unresolved.extend(check_table_completeness(edits))
+    lint.unresolved.extend(check_placeholder_version(edits))
     if lint.fixed and written:
         _git.run(repo_path, ["add", "--", *written])
     return written, lint

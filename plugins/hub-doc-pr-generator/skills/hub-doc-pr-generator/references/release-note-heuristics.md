@@ -89,6 +89,15 @@ an EA version), creating that heading at the top of the post-header area if it
 doesn't exist yet. Do **not** simply append to whatever the newest heading
 happens to be, and do not guess a version from the date.
 
+**If the engineer/tech writer genuinely doesn't know the version yet** (common —
+release cuts often land after the doc PR is drafted), use the literal placeholder
+`## Gateway vNEXT` with a `**(version TBD)**` date line, instead of improvising
+something like `vTBD` or leaving the version blank. `vNEXT` is a fixed, grep-able
+token specifically so it's consistent across runs and can't be mistaken for a real
+version number if it ever slipped into `main` unreplaced — `preview.py`
+mechanically flags any `vNEXT` occurrence in written files under "Manual checks
+required" for exactly this reason (see `preview.py`'s `check_placeholder_version`).
+
 ## Insertion order — newest on top
 
 The entry being added is the latest change, so it goes **at the top**, never

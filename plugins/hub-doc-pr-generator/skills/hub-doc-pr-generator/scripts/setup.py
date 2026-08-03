@@ -75,10 +75,70 @@ def _import_discover():
 # Universal gate — required for every flow
 # ---------------------------------------------------------------------------
 
+_PYTHON_CANDIDATE_NAMES = ["python3.14", "python3.13", "python3.12", "python3.11"]
+_PYTHON_CANDIDATE_ABS_PATHS = [
+    f"{prefix}/bin/{name}"
+    for prefix in ("/opt/homebrew", "/usr/local", "/usr")
+    for name in _PYTHON_CANDIDATE_NAMES
+]
+
+
+def _python_version_at(path: str) -> tuple[int, int] | None:
+    result = _run([path, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"])
+    if result.returncode != 0:
+        return None
+    try:
+        major_s, minor_s = result.stdout.strip().split(".")
+        return int(major_s), int(minor_s)
+    except (ValueError, AttributeError):
+        return None
+
+
+def find_compatible_python() -> str | None:
+    """Search common locations for a Python 3.11+ interpreter when the default
+    `python3` on PATH is too old — instead of leaving the engineer to manually
+    `which -a python3`/`brew list` and then remember to prefix every subsequent
+    command with the discovered path for the rest of the session. Returns the
+    first candidate's resolved absolute path, or None if nothing qualifies."""
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for name in _PYTHON_CANDIDATE_NAMES:
+        which = _run(["which", name])
+        resolved = which.stdout.strip() if which.returncode == 0 else ""
+        if resolved and resolved not in seen:
+            seen.add(resolved)
+            candidates.append(resolved)
+    for abs_path in _PYTHON_CANDIDATE_ABS_PATHS:
+        if abs_path not in seen and Path(abs_path).is_file():
+            seen.add(abs_path)
+            candidates.append(abs_path)
+
+    for candidate in candidates:
+        version = _python_version_at(candidate)
+        if version and version >= (3, 11):
+            return candidate
+    return None
+
+
 def check_python_version() -> bool:
     major, minor = sys.version_info[:2]
     if (major, minor) < (3, 11):
         _print_error(f"Python 3.11 or newer is required (found {major}.{minor}).")
+        found = find_compatible_python()
+        if found:
+            _discover = _import_discover()
+            _discover.persist_python_path(found)
+            _print_info(f"Found a compatible interpreter: {found}")
+            _print_info(
+                f"Saved to {_discover.CONFIG_PATH} as 'python_path' — use it in place of "
+                f"the literal `python3` for every subsequent command in this run, e.g.:"
+            )
+            _print_info(f'  PYTHONPATH="${{CLAUDE_SKILL_DIR}}" {found} -m scripts.X')
+        else:
+            _print_error(
+                "No Python 3.11+ interpreter found in common locations either. "
+                "Install one (e.g. `brew install python@3.11`) and re-run."
+            )
         return False
     _print_ok(f"Python {major}.{minor} detected.")
     return True
@@ -123,6 +183,38 @@ def check_working_tree(path: str, *, label: str) -> None:
         _print_ok(f"{label} working tree is clean.")
 
 
+def check_main_branch_state(path: str, *, label: str) -> None:
+    """Advisory only, like check_working_tree. A new doc branch is always cut
+    from a freshly-fetched origin/main (see preview.py's _checkout_branch), so
+    this can't produce a broken PR on its own anymore — but a clone left
+    checked out on a stale branch, or a local main that's behind origin, is
+    still worth surfacing early rather than discovering it mid-run."""
+    head = _run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"])
+    current_branch = head.stdout.strip() if head.returncode == 0 else None
+    if current_branch and current_branch != "main":
+        _print_warn(
+            f"{label} at {path} is checked out on '{current_branch}', not 'main'. "
+            "New doc branches always fetch fresh from origin/main regardless, but "
+            "consider switching back to main to avoid confusion."
+        )
+
+    fetch = _run(["git", "-C", path, "fetch", "-q", "origin", "main"])
+    if fetch.returncode != 0:
+        _print_warn(
+            f"Could not fetch origin/main for {label} at {path}. "
+            "Check the remote and network connectivity."
+        )
+        return
+    behind = _run(["git", "-C", path, "rev-list", "--count", "main..origin/main"])
+    if behind.returncode == 0 and behind.stdout.strip().isdigit() and int(behind.stdout.strip()) > 0:
+        _print_warn(
+            f"{label}'s local main is {behind.stdout.strip()} commit(s) behind origin/main. "
+            "Run `git -C <path> pull` to sync before generating docs."
+        )
+    else:
+        _print_ok(f"{label}'s local main is up to date with origin/main.")
+
+
 # ---------------------------------------------------------------------------
 # Flow-specific resource — Hub (separate hub-doc clone)
 # ---------------------------------------------------------------------------
@@ -135,6 +227,7 @@ def ensure_hub_doc(*, check_mode: bool) -> tuple[bool, str | None]:
     if path:
         _print_ok(f"hub-doc clone found at: {path}")
         check_working_tree(path, label="hub-doc clone")
+        check_main_branch_state(path, label="hub-doc clone")
         return True, path
 
     _print_info("hub-doc clone not found automatically.")
@@ -179,6 +272,7 @@ def ensure_hub_doc(*, check_mode: bool) -> tuple[bool, str | None]:
     _discover.persist_hub_doc(chosen_path)
     _print_ok(f"hub-doc path saved: {chosen_path}")
     check_working_tree(chosen_path, label="hub-doc clone")
+    check_main_branch_state(chosen_path, label="hub-doc clone")
     return True, chosen_path
 
 

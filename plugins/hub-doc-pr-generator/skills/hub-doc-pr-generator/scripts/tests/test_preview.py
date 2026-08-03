@@ -10,14 +10,21 @@ from scripts.preview import (
     detect_pretty_tools,
     render_diff_to_stdout, render_pages_to_stdout,
     _fix_file_permissions, run_lint_fix, LintFixResult, render_manual_checks_section,
-    apply_edits_with_lint_fix, check_table_completeness,
+    apply_edits_with_lint_fix, check_table_completeness, check_placeholder_version,
+    _dirty_paths, _stash_unrelated_changes, _filter_to_written_paths,
 )
 
 
 def _init_git(d: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+    """A repo with a self-referencing 'origin' remote and a fetched 'main', so
+    _checkout_branch's `fetch origin main` + `checkout -b <branch> origin/main`
+    has something real to branch from — matching what a real hub-doc clone
+    looks like, instead of a bare local-only repo."""
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=d, check=True)
     subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
                     "commit", "--allow-empty", "-qm", "init"], cwd=d, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(d)], cwd=d, check=True)
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=d, check=True)
 
 
 class TestApplyEdits(unittest.TestCase):
@@ -54,6 +61,52 @@ class TestApplyEdits(unittest.TestCase):
             apply_edits(repo_path=str(d), branch="docs/test", edits=edits)
             self.assertEqual((d / "existing.md").read_text(), "new\n")
 
+    def test_new_branch_does_not_inherit_stale_checked_out_branch(self):
+        """Regression for a broken PR (#965): a NEW doc branch must be cut from
+        origin/main, never from whatever branch happened to be checked out.
+        Simulates a clone left on an old, already-merged feature branch with
+        commits that aren't on main."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            subprocess.run(["git", "checkout", "-q", "-b", "old-merged-feature"], cwd=d, check=True)
+            (d / "unrelated.txt").write_text("leftover work\n")
+            subprocess.run(["git", "add", "unrelated.txt"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                            "commit", "-qm", "stale unrelated commit"], cwd=d, check=True)
+            # Clone is left checked out on the stale branch, exactly like the bug report.
+
+            edits = [FileEdit(path="docs/new.md", content="hello\n", mode="create")]
+            apply_edits(repo_path=str(d), branch="docs/new-feature", edits=edits)
+
+            log = subprocess.run(
+                ["git", "log", "--format=%s", "origin/main..docs/new-feature"],
+                cwd=d, capture_output=True, text=True, check=True,
+            ).stdout
+            self.assertNotIn("stale unrelated commit", log)
+            self.assertFalse((d / "unrelated.txt").exists())
+
+    def test_existing_local_branch_is_reused_not_recreated(self):
+        """The update-existing-doc-PR flow: a branch that already exists locally
+        (its own legitimate history diverging from main) must be checked out
+        as-is, not recreated from origin/main."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            subprocess.run(["git", "checkout", "-q", "-b", "docs/existing-pr"], cwd=d, check=True)
+            (d / "docs").mkdir()
+            (d / "docs/prior.md").write_text("prior work\n")
+            subprocess.run(["git", "add", "docs/prior.md"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                            "commit", "-qm", "prior doc PR commit"], cwd=d, check=True)
+            subprocess.run(["git", "checkout", "-q", "main"], cwd=d, check=True)
+
+            edits = [FileEdit(path="docs/new.md", content="more\n", mode="create")]
+            apply_edits(repo_path=str(d), branch="docs/existing-pr", edits=edits)
+
+            self.assertTrue((d / "docs/prior.md").is_file())
+            self.assertTrue((d / "docs/new.md").is_file())
+
 
 class TestApplyEditsValidation(unittest.TestCase):
     def test_patch_mode_raises(self):
@@ -87,6 +140,78 @@ class TestFixFilePermissions(unittest.TestCase):
             f.chmod(0o644)
             fixed = _fix_file_permissions(str(d), ["docs/new.md"])
         self.assertEqual(fixed, [])
+
+
+class TestFilterToWrittenPaths(unittest.TestCase):
+    def test_keeps_only_lines_mentioning_written_files(self):
+        output = (
+            "docs/unrelated-a.md:3:1 MD013 line too long\n"
+            "docs/new.md:12:5 MD013 line too long\n"
+            "docs/unrelated-b.mdx:1:1 MD041 first line heading\n"
+        )
+        filtered = _filter_to_written_paths(output, ["docs/new.md"])
+        self.assertEqual(filtered, "docs/new.md:12:5 MD013 line too long")
+
+    def test_no_written_files_mentioned_drops_everything(self):
+        output = "docs/unrelated-a.md:3:1 MD013 line too long\n"
+        self.assertEqual(_filter_to_written_paths(output, ["docs/new.md"]), "")
+
+    def test_empty_written_list_returns_output_unchanged(self):
+        output = "anything at all\n"
+        self.assertEqual(_filter_to_written_paths(output, []), output)
+
+
+class TestDirtyPathsAndStash(unittest.TestCase):
+    def test_dirty_paths_lists_untracked_and_modified(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            (d / "tracked.md").write_text("x\n")
+            subprocess.run(["git", "add", "tracked.md"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                            "commit", "-qm", "add"], cwd=d, check=True)
+            (d / "tracked.md").write_text("y\n")
+            (d / "untracked.md").write_text("z\n")
+            paths = _dirty_paths(str(d))
+        self.assertIn("tracked.md", paths)
+        self.assertIn("untracked.md", paths)
+
+    def test_dirty_paths_returns_empty_if_git_status_fails(self):
+        self.assertEqual(_dirty_paths("/definitely/not/a/repo"), [])
+
+    def test_stash_protects_unrelated_dirty_files_from_lint_fixer(self):
+        """The regression this guards: a hub-doc clone left dirty with unrelated
+        in-progress work must not get reformatted (or left dirty a second time)
+        by a repo-wide lint fixer run for our own edits."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            (d / "unrelated.md").write_text("someone else's in-progress edit\n")
+            (d / "docs").mkdir()
+            (d / "docs/ours.md").write_text("our new page\n")
+            subprocess.run(["git", "add", "docs/ours.md"], cwd=d, check=True)
+
+            with _stash_unrelated_changes(str(d), ["docs/ours.md"]):
+                # Inside the context, only our own file should still be dirty.
+                self.assertNotIn("unrelated.md", _dirty_paths(str(d)))
+                self.assertIn("docs/ours.md", _dirty_paths(str(d)))
+
+            # Restored afterward.
+            self.assertEqual((d / "unrelated.md").read_text(), "someone else's in-progress edit\n")
+
+    def test_nothing_to_stash_when_no_unrelated_changes(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            (d / "docs").mkdir()
+            (d / "docs/ours.md").write_text("our new page\n")
+            subprocess.run(["git", "add", "docs/ours.md"], cwd=d, check=True)
+            with _stash_unrelated_changes(str(d), ["docs/ours.md"]):
+                pass
+            stash_list = subprocess.run(
+                ["git", "stash", "list"], cwd=d, capture_output=True, text=True, check=True
+            ).stdout
+            self.assertEqual(stash_list.strip(), "")
 
 
 class TestRunLintFix(unittest.TestCase):
@@ -180,6 +305,48 @@ class TestApplyEditsWithLintFix(unittest.TestCase):
             self.assertIn("new mode 100644", diff)
             self.assertEqual(written, ["docs/existing.md"])
             self.assertIsInstance(lint, LintFixResult)
+
+
+class TestCheckPlaceholderVersion(unittest.TestCase):
+    def test_flags_vnext_placeholder(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.mdx",
+            content="## Gateway vNEXT\n\n**(version TBD)**\n\n### What's New\n",
+            mode="overwrite",
+        )]
+        findings = check_placeholder_version(edits)
+        self.assertTrue(any("vNEXT" in f for f in findings))
+
+    def test_does_not_flag_real_version(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.mdx",
+            content="## Gateway v3.20.7\n\n**2026-08-01**\n",
+            mode="overwrite",
+        )]
+        self.assertEqual(check_placeholder_version(edits), [])
+
+    def test_non_markdown_files_are_skipped(self):
+        edits = [FileEdit(path="sidebars.js", content="// vNEXT\n", mode="overwrite")]
+        self.assertEqual(check_placeholder_version(edits), [])
+
+    def test_wired_into_manual_checks_via_apply_edits_with_lint_fix(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            edits = [FileEdit(
+                path="docs/api-gateway/release-notes.mdx",
+                content="## Gateway vNEXT\n\n**(version TBD)**\n",
+                mode="create",
+            )]
+            with patch("scripts.preview.subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                mock_run.return_value.stdout = ""
+                mock_run.return_value.stderr = ""
+                _, lint = apply_edits_with_lint_fix(
+                    repo_path=str(d), branch="docs/test",
+                    impl_repo="traefik/traefik-hub", edits=edits,
+                )
+        self.assertTrue(any("vNEXT" in u for u in lint.unresolved))
 
 
 class TestCheckTableCompleteness(unittest.TestCase):
