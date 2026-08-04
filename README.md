@@ -1,6 +1,9 @@
 # ai-ws-hub-doc-pr-generator
 
-A Claude Code plugin that drafts documentation PRs from implementation PRs in `traefik/traefik-hub` (→ `traefik/hub-doc`) and `traefik/traefik` (→ in-repo `docs/content/`). It ships a single skill, `hub-doc-pr-generator`.
+A Claude Code plugin that drafts documentation PRs from implementation PRs in `traefik/traefik-hub` (→ `traefik/hub-doc`) and `traefik/traefik` (→ in-repo `docs/content/`). It ships two skills:
+
+- `hub-doc-pr-generator` — feature docs from an implementation PR
+- `release-notes-generator` — `release-notes.mdx` entries for one or more just-tagged Hub patch releases (commit range, dedup across lines, compatibility matrix — see its own `SKILL.md` for why this is separate)
 
 ## Quick start
 
@@ -74,14 +77,20 @@ Or with explicit PRs (multi-PR aggregation):
 /hub-doc-pr-generator:hub-doc-pr-generator https://github.com/traefik/traefik-hub/pull/1234 1235
 ```
 
+For a patch release's `release-notes.mdx` entry, from any directory:
+
+```
+/hub-doc-pr-generator:release-notes-generator v3.19.13 v3.20.8
+```
+
 ## Development
 
 ```bash
-make test    # run unit tests
-make lint    # pyflakes
+make test    # run unit tests for every skill
+make lint    # pyflakes for every skill
 ```
 
-See `spec.md` for the design rationale and `docs/superpowers/plans/2026-05-26-hub-doc-pr-generator.md` for the implementation plan.
+See `spec.md` for the design rationale and `docs/superpowers/plans/2026-05-26-hub-doc-pr-generator.md` for the implementation plan (both cover `hub-doc-pr-generator`; `release-notes-generator`'s own `SKILL.md` covers its design).
 
 ## Layout
 
@@ -89,8 +98,6 @@ See `spec.md` for the design rationale and `docs/superpowers/plans/2026-05-26-hu
 |---|---|
 | `.claude-plugin/marketplace.json` | Marketplace manifest (`traefik-workshops`) |
 | `plugins/hub-doc-pr-generator/.claude-plugin/plugin.json` | Plugin manifest |
-| `plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/SKILL.md` | Orchestrator the LLM follows |
-| `plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/scripts/` | Deterministic Python helpers (Python stdlib only) |
-| `plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/templates/` | Markdown scaffolds the LLM fills in |
-| `plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/references/` | Convention catalogs loaded on demand |
-| `spec.md` | Full design spec |
+| `plugins/hub-doc-pr-generator/skills/hub-doc-pr-generator/` | Feature-doc-from-impl-PR skill (`SKILL.md`, `scripts/`, `templates/`, `references/`) |
+| `plugins/hub-doc-pr-generator/skills/release-notes-generator/` | Patch-release `release-notes.mdx` skill (same layout) |
+| `spec.md` | Full design spec for `hub-doc-pr-generator` |
