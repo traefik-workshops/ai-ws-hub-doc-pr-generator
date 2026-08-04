@@ -6,12 +6,13 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from scripts.preview import apply_edits, FileEdit
 from unittest.mock import patch
+from scripts import _git
 from scripts.preview import (
     detect_pretty_tools,
     render_diff_to_stdout, render_pages_to_stdout,
     _fix_file_permissions, run_lint_fix, LintFixResult, render_manual_checks_section,
     apply_edits_with_lint_fix, check_table_completeness, check_placeholder_version,
-    _dirty_paths, _stash_unrelated_changes, _filter_to_written_paths,
+    _dirty_paths, _stash_unrelated_changes, _filter_to_written_paths, _checkout_branch,
 )
 
 
@@ -159,6 +160,33 @@ class TestFilterToWrittenPaths(unittest.TestCase):
     def test_empty_written_list_returns_output_unchanged(self):
         output = "anything at all\n"
         self.assertEqual(_filter_to_written_paths(output, []), output)
+
+    def test_does_not_false_positive_on_filename_substring(self):
+        """A written path like `api.md` must not match an unrelated file whose
+        name merely contains it, e.g. `old-api.md` — plain substring matching
+        would wrongly keep this line."""
+        output = "docs/old-api.md:1:1 MD041 first line heading\n"
+        self.assertEqual(_filter_to_written_paths(output, ["docs/api.md"]), "")
+
+    def test_still_matches_written_path_followed_by_punctuation(self):
+        output = "docs/api.md:12:5 MD013 line too long\n"
+        filtered = _filter_to_written_paths(output, ["docs/api.md"])
+        self.assertEqual(filtered, "docs/api.md:12:5 MD013 line too long")
+
+
+class TestCheckoutBranchFetchFailure(unittest.TestCase):
+    def test_missing_origin_remote_raises_clear_error(self):
+        """If a NEW branch needs to be cut but `origin` isn't configured (or
+        is unreachable), the fetch failure must surface as an actionable
+        GitError, not an opaque crash."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                            "commit", "--allow-empty", "-qm", "init"], cwd=d, check=True)
+            with self.assertRaises(_git.GitError) as ctx:
+                _checkout_branch(str(d), "docs/new-feature")
+            self.assertIn("origin", str(ctx.exception))
 
 
 class TestDirtyPathsAndStash(unittest.TestCase):

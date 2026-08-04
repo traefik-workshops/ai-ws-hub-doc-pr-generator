@@ -141,6 +141,11 @@ class TestBuildGrounding(unittest.TestCase):
         ids = [c["id"] for c in g["concepts"]]
         self.assertIn("hub.middlewares.tokenratelimit", ids)
         self.assertNotIn("http.middlewares.ratelimit", ids)
+        # concepts_total_matched must reflect the post-filter count (1 real Hub
+        # concept), not the raw pre-filter count that also counted the OSS
+        # concept filtered out above -- the raw count would overstate how many
+        # relevant candidates actually existed.
+        self.assertEqual(g["concepts_total_matched"], 1)
 
     def test_unknown_source_concept_is_not_dropped(self):
         # http.middlewares.stripprefix token-matches but has NO DOC_INDEX entry

@@ -37,7 +37,14 @@ def _checkout_branch(repo_path: str, branch: str) -> None:
     try:
         _git.run(repo_path, ["rev-parse", "--verify", f"refs/heads/{branch}"])
     except _git.GitError:
-        _git.run(repo_path, ["fetch", "-q", "origin", "main"])
+        try:
+            _git.run(repo_path, ["fetch", "-q", "origin", "main"])
+        except _git.GitError as e:
+            raise _git.GitError(
+                f"could not fetch origin/main to branch {branch!r} from — "
+                f"check the clone has an 'origin' remote pointing at the doc repo "
+                f"and network access to it: {e}"
+            ) from e
         _git.run(repo_path, ["checkout", "-q", "-b", branch, "origin/main"])
         return
     _git.run(repo_path, ["checkout", "-q", branch])
@@ -196,15 +203,26 @@ def _stash_unrelated_changes(repo_path: str, keep: list[str]) -> Iterator[None]:
             _git.run(repo_path, ["stash", "pop"])
 
 
+_PATH_LEFT_BOUNDARY = r"(?<![A-Za-z0-9_])"
+_PATH_RIGHT_BOUNDARY = r"(?![A-Za-z0-9_])"
+
+
 def _filter_to_written_paths(output: str, written: list[str]) -> str:
     """Repo-wide lint commands report on the whole tree; keep only the lines
     that mention one of our own written files, so pre-existing, unrelated
     lint noise elsewhere in the repo never reaches the PR body. If nothing in
     the output mentions a written file, the whole thing is dropped rather than
-    surfaced as ours to fix."""
+    surfaced as ours to fix.
+
+    Matches are bounded so a written path like `api.md` doesn't false-positive
+    on an unrelated `old-api.md` — plain substring matching would."""
     if not written:
         return output
-    kept = [line for line in output.splitlines() if any(w in line for w in written)]
+    patterns = [
+        re.compile(_PATH_LEFT_BOUNDARY + re.escape(w) + _PATH_RIGHT_BOUNDARY)
+        for w in written
+    ]
+    kept = [line for line in output.splitlines() if any(p.search(line) for p in patterns)]
     return "\n".join(kept)
 
 

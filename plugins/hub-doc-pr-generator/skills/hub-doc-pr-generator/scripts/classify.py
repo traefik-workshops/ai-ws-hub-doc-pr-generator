@@ -121,7 +121,7 @@ def _is_pure_type_def(p: str) -> bool:
     force the same strong 'yes' a real .tsx/.jsx change would."""
     if p.endswith(".d.ts"):
         return True
-    return Path(p).parent.name == "types" and p.endswith(".ts") and not p.endswith(".tsx")
+    return Path(p).parent.name == "types" and p.endswith(".ts")
 
 
 def needs_screenshots(*, neighbor_paths: list[str], touched_paths: list[str]) -> dict:

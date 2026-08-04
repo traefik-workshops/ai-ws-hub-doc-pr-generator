@@ -173,7 +173,6 @@ _SOURCE_FOR_IMPL_REPO = {
 def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -> dict:
     entries = parse_index(_fetch_raw(INDEX_PATH))
     matches = concepts_for_paths(entries, touched_paths)
-    total_matched = len(matches)
 
     doc_map: dict[str, dict] = {}
     if matches:
@@ -194,6 +193,12 @@ def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -
             m for m in matches
             if doc_map.get(m["id"], {}).get("source", expected_source) == expected_source
         ]
+    # Count AFTER the source-family filter: this is "how many relevant
+    # candidates existed before we cut to the top 3", the number that's
+    # actually useful for a caller deciding whether to widen the search --
+    # counting before the filter would include cross-family noise that was
+    # never going to surface anyway.
+    total_matched = len(matches)
     matches = matches[:3]
 
     enriched = []
