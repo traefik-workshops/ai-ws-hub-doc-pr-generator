@@ -1,5 +1,10 @@
+import json
+import tempfile
 import unittest
-from scripts.write_flags import render_needs_verification_section
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+from scripts.write_flags import render_needs_verification_section, main
 
 
 def _classify(confidence, kind="reference", rationale="touches config/middleware Go package",
@@ -66,6 +71,49 @@ class TestRenderNeedsVerificationSection(unittest.TestCase):
             kind_threshold=0.7,
         )
         self.assertEqual(md, "")
+
+    def test_override_renders_even_when_both_confident(self):
+        md = render_needs_verification_section(
+            classify_result=_classify(0.9), locate_result=_locate(0.9),
+            overrides=[("docs/api-management/api-auth.md",
+                        "linked issue points to this existing page")],
+        )
+        self.assertIn("## Needs verification", md)
+        self.assertIn("Override", md)
+        self.assertIn("docs/api-management/api-auth.md", md)
+        self.assertIn("linked issue points to this existing page", md)
+
+    def test_override_and_low_confidence_both_render(self):
+        md = render_needs_verification_section(
+            classify_result=_classify(0.6), locate_result=_locate(0.9),
+            overrides=[("docs/x.md", "reason")],
+        )
+        self.assertIn("Doc kind", md)
+        self.assertIn("Override", md)
+
+    def test_no_overrides_and_no_low_confidence_is_empty(self):
+        md = render_needs_verification_section(
+            classify_result=_classify(0.9), locate_result=_locate(0.9), overrides=[],
+        )
+        self.assertEqual(md, "")
+
+
+class TestMainOverrideParsing(unittest.TestCase):
+    def test_cli_override_flag_parses_path_and_reason(self):
+        with tempfile.TemporaryDirectory() as td:
+            classify_path = Path(td) / "classify.json"
+            locate_path = Path(td) / "locate.json"
+            classify_path.write_text(json.dumps(_classify(0.9)))
+            locate_path.write_text(json.dumps(_locate(0.9)))
+            buf = StringIO()
+            with redirect_stdout(buf):
+                main([
+                    "--classify", str(classify_path), "--locate", str(locate_path),
+                    "--override", "docs/api-management/api-auth.md:linked issue points here",
+                ])
+            out = json.loads(buf.getvalue())
+        self.assertIn("Override", out["needs_verification_md"])
+        self.assertIn("docs/api-management/api-auth.md", out["needs_verification_md"])
 
 
 if __name__ == "__main__":

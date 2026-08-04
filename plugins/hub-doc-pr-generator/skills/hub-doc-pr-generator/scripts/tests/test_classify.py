@@ -141,6 +141,27 @@ class TestScreenshots(unittest.TestCase):
         )
         self.assertEqual(result["verdict"], "yes")
 
+    def test_pure_type_def_file_does_not_force_yes(self):
+        # Regression: hub/portal/types/api.d.ts is a type-definition file with
+        # no rendered UI — it must NOT trigger rule 1's strong "yes" the way an
+        # actual .tsx component touch would.
+        result = needs_screenshots(
+            neighbor_paths=[str(FIXTURES / "hub_doc_neighbor_middleware.md")] * 4,
+            touched_paths=["hub/portal/types/api.d.ts"],
+        )
+        self.assertEqual(result["verdict"], "no")
+        self.assertNotIn("ui-code-touched", result["signals"])
+
+    def test_type_def_alongside_real_component_still_yes(self):
+        # A type-def file touched alongside actual component code should still
+        # trigger "yes" from the component file, not be masked by the type file.
+        result = needs_screenshots(
+            neighbor_paths=[],
+            touched_paths=["hub/portal/types/api.d.ts", "hub/portal/src/ApiKeyPanel.tsx"],
+        )
+        self.assertEqual(result["verdict"], "yes")
+        self.assertIn("ui-code-touched", result["signals"])
+
 
 class TestDocKindCandidatesNoSignal(unittest.TestCase):
     def test_no_signal_returns_user_guide_default(self):

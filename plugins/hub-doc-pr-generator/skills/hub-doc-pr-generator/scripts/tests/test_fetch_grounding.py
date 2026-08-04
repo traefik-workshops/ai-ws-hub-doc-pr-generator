@@ -114,6 +114,51 @@ class TestBuildGrounding(unittest.TestCase):
             g = build_grounding(["pkg/server/router.go"], impl_repo=None)
         self.assertNotEqual(g["llms_txt_url"], "https://doc.traefik.io/llms.txt")
 
+    def test_cross_family_matches_are_filtered_before_output(self):
+        # Regression: touching a path that token-matches an OSS concept
+        # ('ratelimit') alongside a real Hub concept ('tokenratelimit') must not
+        # surface the unrelated OSS concept for a Hub impl_repo — filtering by
+        # source family has to happen BEFORE the top-3 truncation, or a large
+        # enough batch of incidental cross-family matches can crowd the real
+        # concept out of the slice entirely.
+        def raw(path):
+            mapping = {
+                "reference/INDEX.md": (FIXTURES / "reference_INDEX.md").read_text(),
+                "reference/DOC_INDEX.json": (FIXTURES / "reference_DOC_INDEX.json").read_text(),
+                "reference/hub/middlewares/tokenratelimit.md":
+                    (FIXTURES / "reference_concept_tokenratelimit.md").read_text(),
+                "reference/oss/http/middlewares/ratelimit.md":
+                    "---\nid: http.middlewares.ratelimit\nkind: middleware-http\nsource: oss\n---\n",
+            }
+            return mapping[path]
+
+        with patch("scripts.fetch_grounding._fetch_raw", side_effect=raw):
+            g = build_grounding(
+                ["hub/pkg/middleware/tokenratelimit/config.go",
+                 "hub/pkg/middleware/tokenratelimit/ratelimit.go"],
+                impl_repo="traefik/traefik-hub",
+            )
+        ids = [c["id"] for c in g["concepts"]]
+        self.assertIn("hub.middlewares.tokenratelimit", ids)
+        self.assertNotIn("http.middlewares.ratelimit", ids)
+        # concepts_total_matched must reflect the post-filter count (1 real Hub
+        # concept), not the raw pre-filter count that also counted the OSS
+        # concept filtered out above -- the raw count would overstate how many
+        # relevant candidates actually existed.
+        self.assertEqual(g["concepts_total_matched"], 1)
+
+    def test_unknown_source_concept_is_not_dropped(self):
+        # http.middlewares.stripprefix token-matches but has NO DOC_INDEX entry
+        # in the fixture (source unknown) — it must still be kept for a Hub
+        # impl_repo rather than dropped just because its family can't be
+        # determined.
+        with patch("scripts.fetch_grounding._fetch_raw", side_effect=self._raw):
+            g = build_grounding(
+                ["pkg/middlewares/stripprefix/stripprefix.go"],
+                impl_repo="traefik/traefik-hub",
+            )
+        self.assertIn("http.middlewares.stripprefix", [c["id"] for c in g["concepts"]])
+
     def test_empty_touched_paths_yields_no_concepts(self):
         # An all-test/generated PR leaves no touched paths after fetch_pr's filter;
         # grounding must degrade to empty concepts, not crash.

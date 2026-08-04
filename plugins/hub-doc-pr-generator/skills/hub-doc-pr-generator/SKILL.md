@@ -51,11 +51,25 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    ```
    If it exits non-zero, the error message says exactly what to fix (`gh auth login`, etc.). Stop here.
 
+   **If the failure is specifically the Python-version check** and the output reports a
+   discovered compatible interpreter (e.g. `Found a compatible interpreter:
+   /opt/homebrew/bin/python3.11`), re-run the check with that exact path in place of
+   `python3` to confirm it passes, then use that path — not the literal `python3` — for
+   every `python3 -m scripts.X` command for the rest of this run. This may prompt for a
+   one-time Bash permission approval for the new interpreter path, since it differs from
+   the plugin's default `python3:*` allowlist — that's expected and much cheaper than
+   rediscovering the path by hand every session.
+
 1. **Parse inputs.** Resolve each argument to `{impl_repo, pr_number}`. Forms:
    - PR URL: `https://github.com/<owner>/<repo>/pull/<N>`
    - PR number: requires being inside the impl repo, or `--repo` flag
    - No-arg: auto-detect from current branch (`gh pr view --json number,headRepository`)
-   Validate all PRs share the same `impl_repo`. If not, refuse.
+   - `--context <url>`: a supplementary reference (an issue URL, or a PR in a different repo)
+     the engineer wants available as background — NOT a primary aggregation PR. Fetch it
+     read-only (`gh issue view`/`gh pr view` as appropriate) for context in step 8's
+     generation step; never subject it to the "same impl_repo" check below, never treat it
+     as a diff source for the generated page, never count it toward multi-PR aggregation.
+   Validate all PRs (excluding `--context` references) share the same `impl_repo`. If not, refuse.
 
    Once `impl_repo` is known, provision the flow's resources (only now is this knowable):
    ```bash
@@ -131,8 +145,12 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.locate_targets \
      --impl-repo <repo> --doc-repo-root <path> --doc-kind <kind> \
-     --feature-slug <slug> --touched-files ... > /tmp/locate.json
+     --feature-slug <slug> --touched-files ... --bundle /tmp/bundle.json > /tmp/locate.json
    ```
+   `--bundle` lets locate_targets check the linked issue's own text for an existing page
+   it already points to (a `doc.traefik.io/...` URL or a literal `docs/...` path) — when
+   found and verified to exist, that page outranks any path-heuristic guess. A human
+   naming the target is stronger evidence than inferring it from touched Go paths.
 
    Always auto-accept `candidates[0]`. Log: `Auto-selected path: <path> (confidence: <N>)`
    — same, unconditional. The 0.75 threshold likewise only gates the flag below.
@@ -145,6 +163,13 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    `flags.json`'s `needs_verification_md` names what was picked below threshold, the
    runner-up that was passed over, and why — it's appended to `/tmp/pr-body.md` in step 8,
    alongside `preview.json`'s `manual_checks_md`.
+
+   **If you (the agent) override a script's pick** — e.g. you have direct evidence a
+   `locate_targets.py` candidate is wrong, beyond what `--bundle`'s issue-text scan already
+   catches — don't hand-edit `flags.json`/`pr-body.md`. Re-run `write_flags` with
+   `--override "<path-you-chose>:<why>"` (repeatable) so the override gets the same
+   consistent PR-body treatment as an auto-flagged low-confidence pick, instead of being
+   recorded ad hoc or not at all.
 
 6b. **Re-sync neighbors if locate_targets disagreed with step 4's guess.**
 
@@ -170,6 +195,12 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
 
    Store the answer as `target_version`. Unlike step 6's picks, this is a genuinely
    unknowable fact rather than a confidence-gated guess, so it stays a real prompt.
+
+   **If the engineer/tech writer doesn't know the version yet**, use the literal
+   placeholder `vNEXT` (heading `## Gateway vNEXT`, date line `**(version TBD)**`) — never
+   improvise something like `vTBD` or leave it blank. `preview.py` mechanically flags any
+   `vNEXT` left in the generated content under "Manual checks required" in step 8, so it
+   can't merge un-replaced without at least one visible flag.
 
 7. **Generate.** This is the LLM step — no script. Read:
    - `/tmp/bundle.json` (the PR + diff, linked issues with their `parent`/`siblings`, and `merged.related_prs` — use the parent epic and sibling issues to understand the feature's intent and scope, not just the single PR's diff)
@@ -206,6 +237,13 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    For each release-note shape (see `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md`), pick the right template and instantiate it. **Skip release notes entirely for OSS impl repos.**
 
    Also render the PR body: read `${CLAUDE_SKILL_DIR}/templates/pr-body.md.tmpl`, fill in the feature title, source PR numbers (`bundle.json → prs[].number`), a one-paragraph summary of what the new or updated docs cover, the linked issue numbers, and the reviewer checklist from the template. Write the rendered result to `/tmp/pr-body.md`. (This file is consumed by `open_pr.py` in step 10.)
+
+   **Before finalizing `/tmp/edits.json`**, if the page adds a row to an existing table for
+   a value with documented siblings (see style-guide.md's Tables section), re-check: are
+   the siblings each on their own row, or grouped under one umbrella entry? Match whatever
+   the table already does — don't introduce a new row granularity it doesn't use elsewhere.
+   This is a quick self-consistency pass against the page's own existing conventions, not a
+   new research step.
 
 8. **Preview.**
    ```bash

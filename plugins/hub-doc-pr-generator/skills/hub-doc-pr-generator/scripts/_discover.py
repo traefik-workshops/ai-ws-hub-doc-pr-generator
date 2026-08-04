@@ -132,6 +132,20 @@ def persist_hub_doc(path: str) -> None:
     _save_config(cfg)
 
 
+def discover_python_path() -> Optional[str]:
+    """A previously-resolved Python 3.11+ interpreter path, if one was saved
+    after the default `python3` on PATH turned out to be too old."""
+    return _load_config().get("python_path")
+
+
+def persist_python_path(path: str) -> None:
+    """Save a confirmed Python 3.11+ interpreter path so future runs (and the
+    rest of this run's script invocations) don't have to rediscover it."""
+    cfg = _load_config()
+    cfg["python_path"] = path
+    _save_config(cfg)
+
+
 def discover_oss(*, cwd: Optional[str] = None) -> Optional[str]:
     """Return the OSS impl repo root by walking up from cwd. None if cwd isn't in a git repo."""
     cwd_p = Path(cwd) if cwd else Path.cwd()

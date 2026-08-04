@@ -164,17 +164,42 @@ def _llms_txt_url_for(impl_repo: str | None, sources: set[str]) -> str:
     return hub
 
 
+_SOURCE_FOR_IMPL_REPO = {
+    "traefik/traefik-hub": "hub",
+    "traefik/traefik": "oss",
+}
+
+
 def build_grounding(touched_paths: list[str], *, impl_repo: str | None = None) -> dict:
     entries = parse_index(_fetch_raw(INDEX_PATH))
     matches = concepts_for_paths(entries, touched_paths)
-    total_matched = len(matches)
-    matches = matches[:3]
 
     doc_map: dict[str, dict] = {}
     if matches:
         doc_index = json.loads(_fetch_raw(DOC_INDEX_PATH))
         for entry in doc_index.get("entries", []):
             doc_map[entry["concept_id"]] = entry
+
+    # Filter by source family BEFORE truncating to top 3. Token matching alone
+    # is repo-agnostic (see the module docstring — there's no Go-file -> concept
+    # index), so an impl_repo=traefik/traefik-hub PR can token-match unrelated
+    # OSS provider concepts (Docker, ECS, etcd) that happen to sort earlier in
+    # INDEX.md, crowding the real Hub concepts out of the top-3 slice entirely.
+    # A concept with no DOC_INDEX entry (source unknown) is kept — we can't
+    # confidently call it irrelevant just because we don't know its family yet.
+    expected_source = _SOURCE_FOR_IMPL_REPO.get(impl_repo)
+    if expected_source:
+        matches = [
+            m for m in matches
+            if doc_map.get(m["id"], {}).get("source", expected_source) == expected_source
+        ]
+    # Count AFTER the source-family filter: this is "how many relevant
+    # candidates existed before we cut to the top 3", the number that's
+    # actually useful for a caller deciding whether to widen the search --
+    # counting before the filter would include cross-family noise that was
+    # never going to surface anyway.
+    total_matched = len(matches)
+    matches = matches[:3]
 
     enriched = []
     for m in matches:

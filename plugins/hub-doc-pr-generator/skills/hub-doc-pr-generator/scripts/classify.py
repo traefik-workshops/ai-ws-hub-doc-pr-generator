@@ -111,12 +111,23 @@ def _title_to_heading(title: str) -> str:
 
 
 _UI_MARKER_RE = re.compile(r"<BrowserWindow\b|!\[[^\]]*\]\(/img/")
+_UI_DIR_PREFIXES = ("hub/dashboard/", "hub/portal/")
+
+
+def _is_pure_type_def(p: str) -> bool:
+    """A .d.ts file, or a .ts file sitting directly in a `types/` directory,
+    carries no rendered UI on its own — e.g. hub/portal/types/api.d.ts. Rule 1
+    is reserved for actual component code; a lone type-def touch shouldn't
+    force the same strong 'yes' a real .tsx/.jsx change would."""
+    if p.endswith(".d.ts"):
+        return True
+    return Path(p).parent.name == "types" and p.endswith(".ts")
 
 
 def needs_screenshots(*, neighbor_paths: list[str], touched_paths: list[str]) -> dict:
     signals: list[str] = []
     ui_touch = any(
-        p.startswith("hub/dashboard/") or p.startswith("hub/portal/")
+        p.startswith(_UI_DIR_PREFIXES) and not _is_pure_type_def(p)
         for p in touched_paths
     )
     if ui_touch:

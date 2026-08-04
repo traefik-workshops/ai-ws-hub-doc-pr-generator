@@ -157,3 +157,9 @@ import BrowserWindow from '@site/src/components/BrowserWindow';
   to save space — that silently drops content a reader depends on. If unsure of another
   row's exact values, look them up in the touched source or `grounding.json` rather than
   guessing or omitting it.
+- Before adding a new row for a value that has siblings already documented (e.g. a new
+  auth method alongside existing `apiKey`/`jwt`/`ldap` entries), check how those siblings
+  are actually treated in the table first. If they share one umbrella row rather than
+  getting individual rows each, mirror that exact treatment — extend the umbrella entry,
+  don't add a standalone row duplicating what it already covers. Don't invent a new
+  granularity the table doesn't already use elsewhere.
