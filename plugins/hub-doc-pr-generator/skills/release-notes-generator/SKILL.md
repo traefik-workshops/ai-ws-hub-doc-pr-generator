@@ -23,17 +23,26 @@ no overlap with that pipeline. Forcing it through the same steps would mean
 threading a parallel special case through nearly all of them for little
 shared logic.
 
-## Shared code (duplicated for now, by design)
+## Shared code
 
-`scripts/_gh.py`, `_git.py`, and the shape of `setup.py`/`_discover.py` are
-copied from the sibling skill rather than imported — each Claude Code skill
-gets `${CLAUDE_SKILL_DIR}` pointed at its own directory, so there's no clean
-way to share a Python package across skill directories without a plugin-level
-`lib/` and updating both skills' invocation lines to a wider `PYTHONPATH`.
-That's a reasonable follow-up once both skills are being touched in the same
-pass — worth doing then, not as a side effect of adding this one. Until then:
-if you change `_git.py`/`_gh.py` behavior in one skill, check whether the copy
-here needs the same fix.
+`scripts/_gh.py` and `_git.py` are symlinks to the sibling skill's copies
+(`../../hub-doc-pr-generator/scripts/_gh.py` / `_git.py`) rather than
+independent files — each Claude Code skill gets `${CLAUDE_SKILL_DIR}` pointed
+at its own directory, so a real plugin-level `lib/` package would need both
+skills' invocation lines updated to a wider `PYTHONPATH`. A symlink avoids
+that: it resolves to a normal file at `scripts/_git.py` from the interpreter's
+point of view, so `${CLAUDE_SKILL_DIR}`-relative invocation is unaffected, and
+there's exactly one copy of the logic (and its tests, which import and patch
+it identically on each side) to maintain.
+
+`setup.py`/`_discover.py` are **not** symlinked — they're a deliberately
+trimmed variant (no `discover_oss`/`--impl-repo` branching, since release
+notes never target OSS traefik/traefik), not a duplicate, so sharing them
+would mean threading an unused branch back in just to unify the file.
+
+`references/style-guide.md` and `references/hub-doc-conventions.md` are
+**not** copied — step 6 below reads the sibling skill's copies directly by
+path, since those are Hub-doc-wide style rules, not PR-generator-specific.
 
 `references/style-guide.md` and `references/hub-doc-conventions.md` are
 **not** copied — step 6 below reads the sibling skill's copies directly by
