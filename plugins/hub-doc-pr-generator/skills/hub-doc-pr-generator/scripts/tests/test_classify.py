@@ -286,5 +286,53 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(result["doc_kind_candidates"][0]["kind"], "reference")
 
 
+class TestClassifyWithNoPR(unittest.TestCase):
+    """A fetch_issue.py bundle: no implementation PR at all, so classify()
+    can't derive `primary` from bundle["prs"] (empty) -- it must fall back to
+    the issue itself as the title/body signal instead of crashing."""
+
+    def _issue_bundle(self, title, body="", labels=None):
+        issue = {"number": 2930, "repo": "traefik/hub-issues", "title": title,
+                  "body": body, "labels": labels or [], "state": "CLOSED", "comments": []}
+        return {
+            "impl_repo": "traefik/traefik-hub",
+            "prs": [],
+            "merged": {
+                "files_changed": [],
+                "primary_pr": None,
+                "linked_issues": [issue],
+                "sub_issues": [],
+                "related_prs": [],
+            },
+            "existing_doc_pr": None,
+            "issue": issue,
+        }
+
+    def test_does_not_crash_with_empty_prs(self):
+        result = classify(
+            self._issue_bundle("regex anchoring usage tip"),
+            grounding={"concepts": []},
+            neighbor_paths=[],
+        )
+        self.assertIn("doc_kind_candidates", result)
+
+    def test_uses_issue_title_as_signal(self):
+        result = classify(
+            self._issue_bundle("docs: CRD reference for regex anchoring"),
+            grounding={"concepts": []},
+            neighbor_paths=[],
+        )
+        self.assertEqual(result["feature_type"], "docs")
+
+    def test_needs_release_note_false_with_no_pr(self):
+        # No PR means nothing shipped in a release -- never a release note.
+        result = classify(
+            self._issue_bundle("clarify harmless debug log"),
+            grounding={"concepts": []},
+            neighbor_paths=[],
+        )
+        self.assertEqual(result["needs_release_note"]["verdict"], "no")
+
+
 if __name__ == "__main__":
     unittest.main()

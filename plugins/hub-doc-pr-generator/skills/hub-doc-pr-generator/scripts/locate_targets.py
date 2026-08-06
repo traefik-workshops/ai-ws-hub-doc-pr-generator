@@ -91,8 +91,117 @@ def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tu
     return dirs, matched_prefixes
 
 
+_MIDDLEWARE_PKG_PREFIXES = {
+    "traefik/traefik-hub": "hub/pkg/middleware/",
+    "traefik/traefik": "pkg/middlewares/",
+}
+
+
+def _normalize_name(s: str) -> str:
+    """Lowercase and strip everything but alphanumerics, so 'content-guard'
+    and 'contentguard' (the Go package name has no separators at all) compare
+    equal without having to guess where hyphens belong."""
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _touched_middleware_pkgs(impl_repo: str, touched_paths: list[str]) -> dict[str, int]:
+    """Middleware package name (the dir segment right after the middleware
+    prefix) -> number of touched files under it. This is the touched
+    component itself, not an LLM-invented feature slug -- the signal
+    propose_paths() needs to find a page that already covers it."""
+    prefix = _MIDDLEWARE_PKG_PREFIXES.get(impl_repo)
+    if not prefix:
+        return {}
+    counts: dict[str, int] = {}
+    for p in touched_paths:
+        if p.startswith(prefix):
+            pkg = p[len(prefix):].split("/", 1)[0]
+            if pkg:
+                counts[pkg] = counts.get(pkg, 0) + 1
+    return counts
+
+
+def find_existing_middleware_pages(*, doc_repo_root: str, section_dirs: list[str],
+                                    pkg_counts: dict[str, int]) -> list[str]:
+    """Existing doc pages in the candidate section dirs whose filename matches
+    a touched middleware package (hyphen/underscore-insensitive), most-touched
+    package first. Ties (or a PR spanning multiple middlewares) surface as
+    multiple ranked entries rather than picking one arbitrarily."""
+    if not pkg_counts:
+        return []
+    norm_pkgs = {pkg: _normalize_name(pkg) for pkg in pkg_counts}
+    hits: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for d in section_dirs:
+        dir_path = Path(doc_repo_root) / d
+        if not dir_path.is_dir():
+            continue
+        for f in sorted(dir_path.iterdir()):
+            if not (f.is_file() and f.suffix in {".md", ".mdx"}):
+                continue
+            norm_stem = _normalize_name(f.stem)
+            for pkg, norm_pkg in norm_pkgs.items():
+                if norm_stem == norm_pkg:
+                    rel = str(f.relative_to(doc_repo_root))
+                    if rel not in seen:
+                        seen.add(rel)
+                        hits.append((rel, pkg_counts[pkg]))
+                    break
+    hits.sort(key=lambda h: -h[1])
+    return [h[0] for h in hits]
+
+
+_PARTIAL_IMPORT_RE = re.compile(r"import\s+(\w+)\s+from\s+['\"]([^'\"]+)['\"]")
+
+
+def find_transcluded_partials(*, doc_repo_root: str, candidate_paths: list[str]) -> list[dict]:
+    """Shared `_*.mdx` partials transcluded into a candidate page via an
+    import + component (e.g. `import DenyResponseFormats from
+    '../_deny-response-formats.mdx'` then `<DenyResponseFormats />`).
+    locate_targets can find the *page* that covers a touched middleware, but
+    a page-level match hides content that actually lives in one of these
+    partials — editing only the page's own prose would miss it entirely (see
+    traefik-hub#1304: content-guard.md, llm-guard.md, and token-rate-limit.md
+    all transclude docs/ai-gateway/_deny-response-formats.mdx).
+
+    Scoped to `candidate_paths` — the existing pages already found by
+    find_existing_middleware_pages() — not a repo-wide scan."""
+    root = Path(doc_repo_root).resolve()
+    seen: set[str] = set()
+    hits: list[dict] = []
+    for cand_path in candidate_paths:
+        full = root / cand_path
+        if not full.is_file():
+            continue
+        try:
+            text = full.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for m in _PARTIAL_IMPORT_RE.finditer(text):
+            component, rel_import = m.group(1), m.group(2)
+            partial_name = rel_import.rsplit("/", 1)[-1]
+            if not (partial_name.startswith("_") and partial_name.endswith((".md", ".mdx"))):
+                continue
+            partial_path = (full.parent / rel_import).resolve()
+            if not partial_path.is_file():
+                continue
+            try:
+                partial_rel = str(partial_path.relative_to(root))
+            except ValueError:
+                continue
+            if partial_rel in seen:
+                continue
+            seen.add(partial_rel)
+            hits.append({
+                "path": partial_rel,
+                "component": component,
+                "transcluded_into": cand_path,
+            })
+    return hits
+
+
 def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
-                  touched_paths: list[str]) -> list[dict]:
+                  touched_paths: list[str], doc_repo_root: str | None = None) -> list[dict]:
     section_dirs, matched_prefixes = _section_dirs(impl_repo, doc_kind, touched_paths)
     # Confidence reflects how GROUNDED the match is, not how many directories a
     # single matched prefix happens to map to. Directory count alone is the wrong
@@ -120,6 +229,65 @@ def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
             "confidence": round(base if i == 0 else base * 0.8, 2),
             "rationale": rationale or f"Inferred section dir {d} from touched paths",
         })
+
+    if doc_repo_root is not None:
+        pkg_counts = _touched_middleware_pkgs(impl_repo, touched_paths)
+        existing_pages = find_existing_middleware_pages(
+            doc_repo_root=doc_repo_root, section_dirs=section_dirs, pkg_counts=pkg_counts,
+        )
+        if existing_pages:
+            # A page for the touched middleware already exists -- propose it
+            # (ranked by how much of the PR touches that middleware) ahead of
+            # any fabricated new filename, which stays in the list, demoted,
+            # in case this really is an additional new page.
+            for c in out:
+                c["confidence"] = round(min(c["confidence"], 0.7), 2)
+            existing_candidates = [
+                {
+                    "path": p,
+                    "confidence": round(max(0.93 - 0.08 * i, 0.75), 2),
+                    "rationale": "Existing page's filename matches a touched middleware package",
+                }
+                for i, p in enumerate(existing_pages)
+            ]
+            out = existing_candidates + out
+
+            # Surface, but never auto-select: a partial transcluded into one
+            # of the pages above may be where the actual content to edit
+            # lives, not the page's own prose. Confidence stays well under
+            # the auto-accept gate — this is "go check," not a placement.
+            for partial in find_transcluded_partials(
+                doc_repo_root=doc_repo_root, candidate_paths=existing_pages,
+            ):
+                out.append({
+                    "path": partial["path"],
+                    "confidence": 0.5,
+                    "kind": "shared_partial",
+                    "rationale": (
+                        f"Transcluded into {partial['transcluded_into']} via "
+                        f"<{partial['component']} /> — verify whether this shared "
+                        "partial (not just the page) needs the edit"
+                    ),
+                })
+
+            # existing_candidates and the fabricated {feature_slug}.md entries
+            # are built independently -- if the LLM-chosen feature_slug happens
+            # to normalize to the same filename as an existing page, that path
+            # would otherwise appear twice (once as the ~0.9-confidence
+            # existing-page match, once as the capped fabricated entry).
+            # First occurrence wins: existing_candidates were prepended first,
+            # so they take priority.
+            deduped: dict[str, dict] = {}
+            for c in out:
+                deduped.setdefault(c["path"], c)
+            out = list(deduped.values())
+        else:
+            # The check ran and found no existing page -- this filename is
+            # confirmed fabricated, not just directory-grounded. Don't let it
+            # clear the 0.75 auto-accept gate on the strength of the (correct)
+            # directory match alone.
+            for c in out:
+                c["confidence"] = round(min(c["confidence"], 0.7), 2)
     return out
 
 
@@ -157,13 +325,20 @@ def build_locate(*, impl_repo: str, doc_repo_root: str, doc_kind: str,
     candidates = propose_paths(
         impl_repo=impl_repo, doc_kind=doc_kind,
         feature_slug=feature_slug, touched_paths=touched_paths,
+        doc_repo_root=doc_repo_root,
     )
     # A page a human already named in the linked issue beats any path-heuristic
     # guess — but only when the scan turns up exactly ONE distinct page. Multiple
     # distinct references is itself ambiguous, so don't arbitrarily pick one;
     # fall through to the heuristic candidates instead.
     doc_refs = existing_doc_refs(list(issue_texts), doc_repo_root=doc_repo_root)
-    if len(doc_refs) == 1:
+    # Check membership across the WHOLE candidate list, not just index 0 --
+    # find_existing_middleware_pages() can already surface the human-referenced
+    # page at index 1+ (e.g. ranked behind another touched middleware's page),
+    # in which case re-inserting it at index 0 would produce a harmless-looking
+    # but confusing duplicate entry for the same path with two different
+    # confidences/rationales.
+    if len(doc_refs) == 1 and doc_refs[0] not in {c["path"] for c in candidates}:
         candidates.insert(0, {
             "path": doc_refs[0],
             "confidence": 0.97,
@@ -193,7 +368,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--doc-repo-root", required=True)
     parser.add_argument("--doc-kind", required=True, choices=["reference", "user-guide"])
     parser.add_argument("--feature-slug", required=True)
-    parser.add_argument("--touched-files", nargs="+", required=True)
+    # nargs="*" (not "+"): an issue-only bundle (fetch_issue.py) has no touched
+    # Go files at all. build_locate()/propose_paths() already tolerate an
+    # empty list -- this just stops argparse itself from rejecting it first,
+    # matching the convention fetch_grounding.py already uses for the same case.
+    parser.add_argument("--touched-files", nargs="*", default=[])
     parser.add_argument("--bundle", default=None,
                         help="path to pr-bundle.json; scanned for an existing doc page "
                              "explicitly referenced in the linked issue's text")

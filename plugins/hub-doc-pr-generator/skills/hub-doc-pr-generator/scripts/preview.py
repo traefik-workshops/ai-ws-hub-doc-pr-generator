@@ -136,9 +136,7 @@ class LintFixResult:
     commands: list[str]
 
 
-_HUB_AUTOFIX_COMMANDS = [["yarn", "docs:markdown", "--fix"]]
-_HUB_CHECK_COMMANDS = [["yarn", "docs:markdown"], ["yarn", "docs:alex"]]
-_CHECK_LABELS = {"yarn docs:markdown": "markdownlint", "yarn docs:alex": "alex (inclusive language)"}
+_MD_SUFFIXES = (".md", ".mdx")
 
 
 def _fix_file_permissions(repo_path: str, written: list[str]) -> list[str]:
@@ -200,7 +198,18 @@ def _stash_unrelated_changes(repo_path: str, keep: list[str]) -> Iterator[None]:
         yield
     finally:
         if stashed:
-            _git.run(repo_path, ["stash", "pop"])
+            try:
+                _git.run(repo_path, ["stash", "pop"])
+            except _git.GitError as e:
+                # Surface a short, actionable message instead of the raw
+                # multi-file merge-conflict dump: the caller can't do anything
+                # useful with the full conflict list, only with the recovery
+                # command itself.
+                raise _git.GitError(
+                    f"git stash pop conflicted while restoring pre-existing changes "
+                    f"in {repo_path} — run `git checkout -- . && git stash drop` there, "
+                    f"then retry. Original error: {e}"
+                ) from e
 
 
 _PATH_LEFT_BOUNDARY = r"(?<![A-Za-z0-9_])"
@@ -229,8 +238,17 @@ def _filter_to_written_paths(output: str, written: list[str]) -> str:
 def run_lint_fix(*, repo_path: str, impl_repo: str, written: list[str]) -> LintFixResult:
     """Auto-fix what's mechanical; never block on what isn't.
 
-    Hub: `yarn docs:markdown --fix` fixes what markdownlint-cli can fix in place.
-    `yarn docs:alex` (inclusive language) has no --fix — flags are always unresolved.
+    Hub: markdownlint fixes what it can fix in place; alex (inclusive language)
+    has no --fix — flags are always unresolved. Both are invoked directly via
+    their node_modules/.bin binaries, scoped to just the written .md/.mdx
+    files — never repo-wide. `yarn docs:markdown`/`yarn docs:alex` are npm
+    script aliases with the target glob (`docs/**/*.md`) baked into the
+    script string itself; passing extra file args to the yarn wrapper only
+    appends to that glob, it can't replace it, so scoping requires calling
+    the underlying binary directly instead. Running repo-wide left ~70
+    unrelated files dirty after every run, which then broke the next run's
+    `_stash_unrelated_changes()` (the regenerated repo-wide diff conflicted
+    with the stashed copy of itself on `stash pop`).
     OSS: `mkdocs build --strict` is a structural check with nothing to auto-fix.
     Either way, whatever remains goes to `unresolved` for the PR body, not a blocker.
     """
@@ -240,19 +258,40 @@ def run_lint_fix(*, repo_path: str, impl_repo: str, written: list[str]) -> LintF
 
     with _stash_unrelated_changes(repo_path, written):
         if impl_repo == "traefik/traefik-hub":
-            for cmd in _HUB_AUTOFIX_COMMANDS:
-                commands.append(" ".join(cmd))
-                proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
-                if proc.returncode == 0:
-                    fixed.append(f"Ran `{' '.join(cmd)}` — auto-fixed mechanical markdown issues")
-            for cmd in _HUB_CHECK_COMMANDS:
-                commands.append(" ".join(cmd))
-                proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
-                if proc.returncode != 0:
-                    label = _CHECK_LABELS[" ".join(cmd)]
-                    filtered = _filter_to_written_paths((proc.stdout + proc.stderr).strip(), written)
-                    if filtered.strip():
-                        unresolved.append(f"{label}: {filtered}")
+            md_written = [w for w in written if w.endswith(_MD_SUFFIXES)]
+            if md_written:
+                markdownlint = str(Path(repo_path) / "node_modules" / ".bin" / "markdownlint")
+                alex = str(Path(repo_path) / "node_modules" / ".bin" / "alex")
+
+                try:
+                    fix_cmd = [markdownlint, "--fix", *md_written]
+                    commands.append(" ".join(fix_cmd))
+                    proc = subprocess.run(fix_cmd, cwd=repo_path, capture_output=True, text=True, check=False)
+                    if proc.returncode == 0:
+                        fixed.append(f"Ran `{' '.join(fix_cmd)}` — auto-fixed mechanical markdown issues")
+
+                    for cmd, label in (
+                        ([markdownlint, *md_written], "markdownlint"),
+                        ([alex, "--quiet", *md_written], "alex (inclusive language)"),
+                    ):
+                        commands.append(" ".join(cmd))
+                        proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
+                        if proc.returncode != 0:
+                            filtered = _filter_to_written_paths((proc.stdout + proc.stderr).strip(), written)
+                            if filtered.strip():
+                                unresolved.append(f"{label}: {filtered}")
+                except FileNotFoundError:
+                    # Calling the binaries directly (see docstring) means a
+                    # clone that hasn't had `yarn install` run yet -- or one
+                    # where hoisting puts binaries somewhere else -- hits a
+                    # bare FileNotFoundError instead of yarn's own "command
+                    # not found" framing. Surface that as an actionable
+                    # unresolved note rather than letting the whole preview
+                    # step crash.
+                    unresolved.append(
+                        f"markdownlint/alex not found under {repo_path}/node_modules/.bin — "
+                        "run `yarn install` in the doc repo, then retry"
+                    )
         else:
             site_dir = tempfile.mkdtemp(prefix="mkdocs-preview-")
             try:

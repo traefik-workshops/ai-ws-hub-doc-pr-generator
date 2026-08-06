@@ -227,6 +227,34 @@ class TestDirtyPathsAndStash(unittest.TestCase):
             # Restored afterward.
             self.assertEqual((d / "unrelated.md").read_text(), "someone else's in-progress edit\n")
 
+    def test_stash_pop_conflict_raises_actionable_error(self):
+        """Regression: if the stash pop conflicts (e.g. a prior crashed run left
+        the tree in a state where re-applying the stash collides), the raised
+        GitError must tell the caller how to recover, not surface a raw
+        multi-file conflict dump."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            (d / "unrelated.md").write_text("someone else's in-progress edit\n")
+            (d / "docs").mkdir()
+            (d / "docs/ours.md").write_text("our new page\n")
+            subprocess.run(["git", "add", "docs/ours.md"], cwd=d, check=True)
+
+            real_run = _git.run
+
+            def fake_git_run(repo_path, args):
+                if args == ["stash", "pop"]:
+                    raise _git.GitError("error: Your local changes ... Aborting")
+                return real_run(repo_path, args)
+
+            with patch("scripts.preview._git.run", side_effect=fake_git_run):
+                with self.assertRaises(_git.GitError) as ctx:
+                    with _stash_unrelated_changes(str(d), ["docs/ours.md"]):
+                        pass
+        message = str(ctx.exception)
+        self.assertIn("git checkout -- .", message)
+        self.assertIn("git stash drop", message)
+
     def test_nothing_to_stash_when_no_unrelated_changes(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -248,31 +276,95 @@ class TestRunLintFix(unittest.TestCase):
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = ""
             mock_run.return_value.stderr = ""
-            result = run_lint_fix(repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=[])
+            result = run_lint_fix(
+                repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=["docs/new.md"],
+            )
         self.assertIsInstance(result, LintFixResult)
         self.assertEqual(result.unresolved, [])
         commands_joined = " ".join(result.commands)
-        self.assertIn("docs:markdown --fix", commands_joined)
-        self.assertIn("docs:alex", commands_joined)
+        self.assertIn("node_modules/.bin/markdownlint", commands_joined)
+        self.assertIn("--fix", commands_joined)
+        self.assertIn("node_modules/.bin/alex", commands_joined)
+
+    def test_hub_scopes_commands_to_written_markdown_files_only(self):
+        """Regression: the lint-fix pass must never run repo-wide -- that's what
+        left ~70 unrelated files dirty after every run and crashed the next
+        run's stash-pop. Only the written .md/.mdx files should ever appear as
+        args, and non-markdown written files (e.g. sidebars.js) are excluded."""
+        with patch("scripts.preview.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.stderr = ""
+            run_lint_fix(
+                repo_path="/hub-doc", impl_repo="traefik/traefik-hub",
+                written=["docs/a.md", "docs/b.mdx", "sidebars.js"],
+            )
+        all_args = [arg for call in mock_run.call_args_list for arg in call.args[0]]
+        self.assertIn("docs/a.md", all_args)
+        self.assertIn("docs/b.mdx", all_args)
+        self.assertNotIn("sidebars.js", all_args)
+        self.assertTrue(all("docs/**" not in a for a in all_args))
+
+    def test_hub_skips_lint_commands_when_no_markdown_written(self):
+        with patch("scripts.preview.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.stderr = ""
+            result = run_lint_fix(
+                repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=["sidebars.js"],
+            )
+        # No markdownlint/alex invocation at all -- only (if anything) the
+        # unrelated-changes git-status check, never a lint command.
+        self.assertEqual(result.commands, [])
+        self.assertEqual(result.unresolved, [])
+        for call in mock_run.call_args_list:
+            self.assertNotIn("markdownlint", call.args[0][0])
+            self.assertNotIn("alex", call.args[0][0])
+
+    def test_hub_missing_binaries_surfaces_actionable_unresolved_note(self):
+        """Regression: calling node_modules/.bin/markdownlint|alex directly
+        (instead of the yarn wrapper) means a clone that hasn't had
+        `yarn install` run yet would otherwise hit a bare FileNotFoundError
+        and crash the whole preview step. Must degrade to an unresolved note
+        pointing at the fix, not crash."""
+        def fake_run(cmd, **kwargs):
+            # subprocess.run is process-global (scripts.preview and scripts._git
+            # both do a plain `import subprocess`), so this also intercepts the
+            # `git status --porcelain` call _stash_unrelated_changes makes --
+            # only the markdownlint/alex binaries should raise.
+            if "markdownlint" in cmd[0] or "alex" in cmd[0]:
+                raise FileNotFoundError(cmd[0])
+            r = type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
+            return r
+
+        with patch("scripts.preview.subprocess.run", side_effect=fake_run):
+            result = run_lint_fix(
+                repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=["docs/new.md"],
+            )
+        self.assertTrue(any("yarn install" in u for u in result.unresolved))
 
     def test_hub_captures_unfixable_markdownlint_errors(self):
         def fake_run(cmd, **kwargs):
             r = type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
-            if cmd[:2] == ["yarn", "docs:markdown"] and "--fix" not in cmd:
-                r.returncode, r.stderr = 1, "MD013 line too long"
+            if "markdownlint" in cmd[0] and "--fix" not in cmd:
+                r.returncode, r.stderr = 1, "docs/new.md:5 MD013 line too long"
             return r
         with patch("scripts.preview.subprocess.run", side_effect=fake_run):
-            result = run_lint_fix(repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=[])
+            result = run_lint_fix(
+                repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=["docs/new.md"],
+            )
         self.assertTrue(any("MD013" in u for u in result.unresolved))
 
     def test_hub_captures_alex_flags_as_unresolved_never_autofixed(self):
         def fake_run(cmd, **kwargs):
             r = type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
-            if cmd == ["yarn", "docs:alex"]:
-                r.returncode, r.stdout = 1, "warning: `guys` may be insensitive"
+            if "alex" in cmd[0]:
+                r.returncode, r.stdout = 1, "docs/new.md:3:1 warning: `guys` may be insensitive"
             return r
         with patch("scripts.preview.subprocess.run", side_effect=fake_run):
-            result = run_lint_fix(repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=[])
+            result = run_lint_fix(
+                repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=["docs/new.md"],
+            )
         self.assertTrue(any("guys" in u for u in result.unresolved))
         # alex has no --fix flag anywhere in the commands we run
         self.assertTrue(all("alex --fix" not in c for c in result.commands))

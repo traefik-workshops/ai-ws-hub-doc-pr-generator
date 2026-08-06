@@ -203,17 +203,32 @@ def doc_kind_candidates(*, title: str, touched_paths: list[str]) -> list[dict]:
 
 
 def classify(bundle: dict, *, grounding: dict, neighbor_paths: list[str]) -> dict:
-    primary = next(
-        (p for p in bundle["prs"] if p["number"] == bundle["merged"]["primary_pr"]),
-        bundle["prs"][0],
-    )
+    # A fetch_issue.py bundle (no implementation PR at all) has an empty
+    # `prs` list -- bundle["prs"][0] as the `next()` default would IndexError
+    # before even checking for a match. Fall back to the issue itself as the
+    # title/body signal, and skip the release-note heuristic outright: with
+    # no PR, nothing shipped in a release, so it can never be "yes"/"ask".
+    if bundle["prs"]:
+        primary = next(
+            (p for p in bundle["prs"] if p["number"] == bundle["merged"]["primary_pr"]),
+            bundle["prs"][0],
+        )
+        release_note = needs_release_note(primary, impl_repo=bundle["impl_repo"])
+    else:
+        primary = bundle.get("issue") or {"title": "", "body": "", "labels": []}
+        release_note = {
+            "verdict": "no",
+            "signals": ["no-pr-no-release-note"],
+            "proposed_shape": None,
+            "proposed_section_heading": None,
+        }
     touched = [f["path"] for f in bundle["merged"]["files_changed"]]
     candidates = doc_kind_candidates(title=primary["title"], touched_paths=touched)
     top_confidence = candidates[0]["confidence"] if candidates else 0.5
     return {
         "confidence": top_confidence,
         "feature_type": feature_type(primary["title"]),
-        "needs_release_note": needs_release_note(primary, impl_repo=bundle["impl_repo"]),
+        "needs_release_note": release_note,
         "needs_screenshots": needs_screenshots(
             neighbor_paths=neighbor_paths, touched_paths=touched
         ),
