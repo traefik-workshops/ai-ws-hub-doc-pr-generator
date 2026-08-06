@@ -91,8 +91,68 @@ def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tu
     return dirs, matched_prefixes
 
 
+_MIDDLEWARE_PKG_PREFIXES = {
+    "traefik/traefik-hub": "hub/pkg/middleware/",
+    "traefik/traefik": "pkg/middlewares/",
+}
+
+
+def _normalize_name(s: str) -> str:
+    """Lowercase and strip everything but alphanumerics, so 'content-guard'
+    and 'contentguard' (the Go package name has no separators at all) compare
+    equal without having to guess where hyphens belong."""
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _touched_middleware_pkgs(impl_repo: str, touched_paths: list[str]) -> dict[str, int]:
+    """Middleware package name (the dir segment right after the middleware
+    prefix) -> number of touched files under it. This is the touched
+    component itself, not an LLM-invented feature slug -- the signal
+    propose_paths() needs to find a page that already covers it."""
+    prefix = _MIDDLEWARE_PKG_PREFIXES.get(impl_repo)
+    if not prefix:
+        return {}
+    counts: dict[str, int] = {}
+    for p in touched_paths:
+        if p.startswith(prefix):
+            pkg = p[len(prefix):].split("/", 1)[0]
+            if pkg:
+                counts[pkg] = counts.get(pkg, 0) + 1
+    return counts
+
+
+def find_existing_middleware_pages(*, doc_repo_root: str, section_dirs: list[str],
+                                    pkg_counts: dict[str, int]) -> list[str]:
+    """Existing doc pages in the candidate section dirs whose filename matches
+    a touched middleware package (hyphen/underscore-insensitive), most-touched
+    package first. Ties (or a PR spanning multiple middlewares) surface as
+    multiple ranked entries rather than picking one arbitrarily."""
+    if not pkg_counts:
+        return []
+    norm_pkgs = {pkg: _normalize_name(pkg) for pkg in pkg_counts}
+    hits: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for d in section_dirs:
+        dir_path = Path(doc_repo_root) / d
+        if not dir_path.is_dir():
+            continue
+        for f in sorted(dir_path.iterdir()):
+            if not (f.is_file() and f.suffix in {".md", ".mdx"}):
+                continue
+            norm_stem = _normalize_name(f.stem)
+            for pkg, norm_pkg in norm_pkgs.items():
+                if norm_stem == norm_pkg:
+                    rel = str(f.relative_to(doc_repo_root))
+                    if rel not in seen:
+                        seen.add(rel)
+                        hits.append((rel, pkg_counts[pkg]))
+                    break
+    hits.sort(key=lambda h: -h[1])
+    return [h[0] for h in hits]
+
+
 def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
-                  touched_paths: list[str]) -> list[dict]:
+                  touched_paths: list[str], doc_repo_root: str | None = None) -> list[dict]:
     section_dirs, matched_prefixes = _section_dirs(impl_repo, doc_kind, touched_paths)
     # Confidence reflects how GROUNDED the match is, not how many directories a
     # single matched prefix happens to map to. Directory count alone is the wrong
@@ -120,6 +180,35 @@ def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
             "confidence": round(base if i == 0 else base * 0.8, 2),
             "rationale": rationale or f"Inferred section dir {d} from touched paths",
         })
+
+    if doc_repo_root is not None:
+        pkg_counts = _touched_middleware_pkgs(impl_repo, touched_paths)
+        existing_pages = find_existing_middleware_pages(
+            doc_repo_root=doc_repo_root, section_dirs=section_dirs, pkg_counts=pkg_counts,
+        )
+        if existing_pages:
+            # A page for the touched middleware already exists -- propose it
+            # (ranked by how much of the PR touches that middleware) ahead of
+            # any fabricated new filename, which stays in the list, demoted,
+            # in case this really is an additional new page.
+            for c in out:
+                c["confidence"] = round(min(c["confidence"], 0.7), 2)
+            existing_candidates = [
+                {
+                    "path": p,
+                    "confidence": round(max(0.93 - 0.08 * i, 0.75), 2),
+                    "rationale": "Existing page's filename matches a touched middleware package",
+                }
+                for i, p in enumerate(existing_pages)
+            ]
+            out = existing_candidates + out
+        else:
+            # The check ran and found no existing page -- this filename is
+            # confirmed fabricated, not just directory-grounded. Don't let it
+            # clear the 0.75 auto-accept gate on the strength of the (correct)
+            # directory match alone.
+            for c in out:
+                c["confidence"] = round(min(c["confidence"], 0.7), 2)
     return out
 
 
@@ -157,13 +246,14 @@ def build_locate(*, impl_repo: str, doc_repo_root: str, doc_kind: str,
     candidates = propose_paths(
         impl_repo=impl_repo, doc_kind=doc_kind,
         feature_slug=feature_slug, touched_paths=touched_paths,
+        doc_repo_root=doc_repo_root,
     )
     # A page a human already named in the linked issue beats any path-heuristic
     # guess — but only when the scan turns up exactly ONE distinct page. Multiple
     # distinct references is itself ambiguous, so don't arbitrarily pick one;
     # fall through to the heuristic candidates instead.
     doc_refs = existing_doc_refs(list(issue_texts), doc_repo_root=doc_repo_root)
-    if len(doc_refs) == 1:
+    if len(doc_refs) == 1 and (not candidates or candidates[0]["path"] != doc_refs[0]):
         candidates.insert(0, {
             "path": doc_refs[0],
             "confidence": 0.97,

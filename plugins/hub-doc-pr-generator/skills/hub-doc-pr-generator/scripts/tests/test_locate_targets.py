@@ -77,6 +77,81 @@ class TestProposePaths(unittest.TestCase):
             any(c["path"].startswith("docs/content/reference/") for c in cands)
         )
 
+    def test_existing_middleware_page_preferred_over_fabricated_slug(self):
+        # Regression for #2806: touched hub/pkg/middleware/contentguard/... with an
+        # unrelated feature slug must not fabricate a new page when
+        # docs/ai-gateway/middlewares/content-guard.md already exists -- the
+        # package name "contentguard" and the filename "content-guard" match once
+        # hyphens are stripped.
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway/middlewares"
+            d.mkdir(parents=True)
+            (d / "content-guard.md").write_text("existing page")
+            cands = propose_paths(
+                impl_repo="traefik/traefik-hub",
+                doc_kind="reference",
+                feature_slug="presidio-score-threshold",
+                touched_paths=["hub/pkg/middleware/contentguard/engine/presidio.go"],
+                doc_repo_root=td,
+            )
+        self.assertEqual(cands[0]["path"], "docs/ai-gateway/middlewares/content-guard.md")
+        self.assertGreaterEqual(cands[0]["confidence"], 0.75)
+
+    def test_multiple_touched_packages_ranked_by_touch_count(self):
+        # Regression for #2927: touching both chatcompletion (1 file) and
+        # responsesapi (2 files) must rank responses-api.md first, matching the
+        # actually-correct target for that PR.
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway/middlewares"
+            d.mkdir(parents=True)
+            (d / "chat-completion.md").write_text("x")
+            (d / "responses-api.md").write_text("y")
+            cands = propose_paths(
+                impl_repo="traefik/traefik-hub",
+                doc_kind="reference",
+                feature_slug="responses-api-field-preservation",
+                touched_paths=[
+                    "hub/pkg/middleware/chatcompletion/middleware.go",
+                    "hub/pkg/middleware/responsesapi/config.go",
+                    "hub/pkg/middleware/responsesapi/middleware.go",
+                ],
+                doc_repo_root=td,
+            )
+        self.assertEqual(cands[0]["path"], "docs/ai-gateway/middlewares/responses-api.md")
+        self.assertEqual(cands[1]["path"], "docs/ai-gateway/middlewares/chat-completion.md")
+
+    def test_no_existing_match_caps_fabricated_confidence_below_gate(self):
+        # A genuinely new middleware with no existing page: the fabricated
+        # {slug}.md is the right call, but its confidence must not clear the
+        # 0.75 auto-accept gate on directory-match strength alone -- the
+        # existing-page check ran and found nothing, which is weaker evidence
+        # than an actual filename match.
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway/middlewares"
+            d.mkdir(parents=True)
+            (d / "llm-guard.md").write_text("unrelated")
+            cands = propose_paths(
+                impl_repo="traefik/traefik-hub",
+                doc_kind="reference",
+                feature_slug="brand-new-middleware",
+                touched_paths=["hub/pkg/middleware/brandnewmw/config.go"],
+                doc_repo_root=td,
+            )
+        self.assertTrue(cands[0]["path"].endswith("brand-new-middleware.md"))
+        self.assertLess(cands[0]["confidence"], 0.75)
+
+    def test_confidence_unaffected_when_doc_repo_root_omitted(self):
+        # Legacy pure-heuristic callers (no filesystem access) must keep
+        # getting the old high confidence -- the cap only applies once we've
+        # actually had the chance to check for an existing page and found none.
+        cands = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="reference",
+            feature_slug="token-ratelimit-deny-response",
+            touched_paths=["hub/pkg/middleware/tokenratelimit/config.go"],
+        )
+        self.assertGreaterEqual(cands[0]["confidence"], 0.85)
+
 
 class TestSelectNeighbors(unittest.TestCase):
     def test_picks_up_to_five_md_files(self):
