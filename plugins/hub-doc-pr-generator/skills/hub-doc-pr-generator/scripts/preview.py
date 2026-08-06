@@ -263,22 +263,35 @@ def run_lint_fix(*, repo_path: str, impl_repo: str, written: list[str]) -> LintF
                 markdownlint = str(Path(repo_path) / "node_modules" / ".bin" / "markdownlint")
                 alex = str(Path(repo_path) / "node_modules" / ".bin" / "alex")
 
-                fix_cmd = [markdownlint, "--fix", *md_written]
-                commands.append(" ".join(fix_cmd))
-                proc = subprocess.run(fix_cmd, cwd=repo_path, capture_output=True, text=True, check=False)
-                if proc.returncode == 0:
-                    fixed.append(f"Ran `{' '.join(fix_cmd)}` — auto-fixed mechanical markdown issues")
+                try:
+                    fix_cmd = [markdownlint, "--fix", *md_written]
+                    commands.append(" ".join(fix_cmd))
+                    proc = subprocess.run(fix_cmd, cwd=repo_path, capture_output=True, text=True, check=False)
+                    if proc.returncode == 0:
+                        fixed.append(f"Ran `{' '.join(fix_cmd)}` — auto-fixed mechanical markdown issues")
 
-                for cmd, label in (
-                    ([markdownlint, *md_written], "markdownlint"),
-                    ([alex, "--quiet", *md_written], "alex (inclusive language)"),
-                ):
-                    commands.append(" ".join(cmd))
-                    proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
-                    if proc.returncode != 0:
-                        filtered = _filter_to_written_paths((proc.stdout + proc.stderr).strip(), written)
-                        if filtered.strip():
-                            unresolved.append(f"{label}: {filtered}")
+                    for cmd, label in (
+                        ([markdownlint, *md_written], "markdownlint"),
+                        ([alex, "--quiet", *md_written], "alex (inclusive language)"),
+                    ):
+                        commands.append(" ".join(cmd))
+                        proc = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, check=False)
+                        if proc.returncode != 0:
+                            filtered = _filter_to_written_paths((proc.stdout + proc.stderr).strip(), written)
+                            if filtered.strip():
+                                unresolved.append(f"{label}: {filtered}")
+                except FileNotFoundError:
+                    # Calling the binaries directly (see docstring) means a
+                    # clone that hasn't had `yarn install` run yet -- or one
+                    # where hoisting puts binaries somewhere else -- hits a
+                    # bare FileNotFoundError instead of yarn's own "command
+                    # not found" framing. Surface that as an actionable
+                    # unresolved note rather than letting the whole preview
+                    # step crash.
+                    unresolved.append(
+                        f"markdownlint/alex not found under {repo_path}/node_modules/.bin — "
+                        "run `yarn install` in the doc repo, then retry"
+                    )
         else:
             site_dir = tempfile.mkdtemp(prefix="mkdocs-preview-")
             try:

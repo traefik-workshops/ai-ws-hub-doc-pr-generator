@@ -269,6 +269,18 @@ def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
                         "partial (not just the page) needs the edit"
                     ),
                 })
+
+            # existing_candidates and the fabricated {feature_slug}.md entries
+            # are built independently -- if the LLM-chosen feature_slug happens
+            # to normalize to the same filename as an existing page, that path
+            # would otherwise appear twice (once as the ~0.9-confidence
+            # existing-page match, once as the capped fabricated entry).
+            # First occurrence wins: existing_candidates were prepended first,
+            # so they take priority.
+            deduped: dict[str, dict] = {}
+            for c in out:
+                deduped.setdefault(c["path"], c)
+            out = list(deduped.values())
         else:
             # The check ran and found no existing page -- this filename is
             # confirmed fabricated, not just directory-grounded. Don't let it
@@ -320,7 +332,13 @@ def build_locate(*, impl_repo: str, doc_repo_root: str, doc_kind: str,
     # distinct references is itself ambiguous, so don't arbitrarily pick one;
     # fall through to the heuristic candidates instead.
     doc_refs = existing_doc_refs(list(issue_texts), doc_repo_root=doc_repo_root)
-    if len(doc_refs) == 1 and (not candidates or candidates[0]["path"] != doc_refs[0]):
+    # Check membership across the WHOLE candidate list, not just index 0 --
+    # find_existing_middleware_pages() can already surface the human-referenced
+    # page at index 1+ (e.g. ranked behind another touched middleware's page),
+    # in which case re-inserting it at index 0 would produce a harmless-looking
+    # but confusing duplicate entry for the same path with two different
+    # confidences/rationales.
+    if len(doc_refs) == 1 and doc_refs[0] not in {c["path"] for c in candidates}:
         candidates.insert(0, {
             "path": doc_refs[0],
             "confidence": 0.97,

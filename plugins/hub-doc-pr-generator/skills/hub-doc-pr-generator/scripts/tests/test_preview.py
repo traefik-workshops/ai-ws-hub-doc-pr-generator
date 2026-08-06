@@ -321,6 +321,28 @@ class TestRunLintFix(unittest.TestCase):
             self.assertNotIn("markdownlint", call.args[0][0])
             self.assertNotIn("alex", call.args[0][0])
 
+    def test_hub_missing_binaries_surfaces_actionable_unresolved_note(self):
+        """Regression: calling node_modules/.bin/markdownlint|alex directly
+        (instead of the yarn wrapper) means a clone that hasn't had
+        `yarn install` run yet would otherwise hit a bare FileNotFoundError
+        and crash the whole preview step. Must degrade to an unresolved note
+        pointing at the fix, not crash."""
+        def fake_run(cmd, **kwargs):
+            # subprocess.run is process-global (scripts.preview and scripts._git
+            # both do a plain `import subprocess`), so this also intercepts the
+            # `git status --porcelain` call _stash_unrelated_changes makes --
+            # only the markdownlint/alex binaries should raise.
+            if "markdownlint" in cmd[0] or "alex" in cmd[0]:
+                raise FileNotFoundError(cmd[0])
+            r = type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()
+            return r
+
+        with patch("scripts.preview.subprocess.run", side_effect=fake_run):
+            result = run_lint_fix(
+                repo_path="/hub-doc", impl_repo="traefik/traefik-hub", written=["docs/new.md"],
+            )
+        self.assertTrue(any("yarn install" in u for u in result.unresolved))
+
     def test_hub_captures_unfixable_markdownlint_errors(self):
         def fake_run(cmd, **kwargs):
             r = type("R", (), {"stdout": "", "stderr": "", "returncode": 0})()

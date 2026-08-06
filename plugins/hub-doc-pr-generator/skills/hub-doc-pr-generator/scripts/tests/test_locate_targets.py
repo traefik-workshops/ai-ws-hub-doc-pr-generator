@@ -154,6 +154,30 @@ class TestProposePaths(unittest.TestCase):
         )
         self.assertGreaterEqual(cands[0]["confidence"], 0.85)
 
+    def test_existing_and_fabricated_slug_dedupe_when_same_path(self):
+        # If the LLM-chosen feature_slug happens to normalize to the same
+        # filename as an existing middleware page (e.g. the slug IS the
+        # existing page's name), the existing-page match and the fabricated
+        # {slug}.md entry would otherwise both add "content-guard.md" to the
+        # output -- once at existing-page confidence, once at the capped
+        # fabricated confidence. Only one entry for that path should survive,
+        # keeping the higher-priority (existing-page) confidence/rationale.
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway/middlewares"
+            d.mkdir(parents=True)
+            (d / "content-guard.md").write_text("existing page")
+            cands = propose_paths(
+                impl_repo="traefik/traefik-hub",
+                doc_kind="reference",
+                feature_slug="content-guard",
+                touched_paths=["hub/pkg/middleware/contentguard/engine/presidio.go"],
+                doc_repo_root=td,
+            )
+        paths = [c["path"] for c in cands]
+        self.assertEqual(paths.count("docs/ai-gateway/middlewares/content-guard.md"), 1)
+        match = next(c for c in cands if c["path"] == "docs/ai-gateway/middlewares/content-guard.md")
+        self.assertEqual(match["rationale"], "Existing page's filename matches a touched middleware package")
+
 
 class TestSelectNeighbors(unittest.TestCase):
     def test_picks_up_to_five_md_files(self):
@@ -282,6 +306,32 @@ class TestBuildLocate(unittest.TestCase):
         self.assertTrue(out["target_exists"])
         # Heuristic candidate is still present, just no longer first.
         self.assertGreater(len(out["candidates"]), 1)
+
+    def test_issue_referenced_page_already_surfaced_is_not_duplicated(self):
+        # Regression: find_existing_middleware_pages() can already surface the
+        # human-referenced page, just not necessarily at index 0 (e.g. ranked
+        # behind another touched middleware's page). The old guard only
+        # checked candidates[0]["path"] != doc_refs[0], so it would re-insert
+        # the same path a second time with a different confidence/rationale.
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway/middlewares"
+            d.mkdir(parents=True)
+            (d / "chat-completion.md").write_text("x")  # touched more -> ranked first
+            (d / "responses-api.md").write_text("y")     # touched less, but issue-referenced
+            out = build_locate(
+                impl_repo="traefik/traefik-hub",
+                doc_repo_root=td,
+                doc_kind="reference",
+                feature_slug="responses-api-field-preservation",
+                touched_paths=[
+                    "hub/pkg/middleware/chatcompletion/a.go",
+                    "hub/pkg/middleware/chatcompletion/b.go",
+                    "hub/pkg/middleware/responsesapi/config.go",
+                ],
+                issue_texts=["See docs/ai-gateway/middlewares/responses-api.md"],
+            )
+        paths = [c["path"] for c in out["candidates"]]
+        self.assertEqual(paths.count("docs/ai-gateway/middlewares/responses-api.md"), 1)
 
     def test_ambiguous_multiple_issue_refs_falls_back_to_heuristic(self):
         with tempfile.TemporaryDirectory() as td:
