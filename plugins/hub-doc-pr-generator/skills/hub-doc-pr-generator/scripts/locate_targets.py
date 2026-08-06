@@ -350,7 +350,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--doc-repo-root", required=True)
     parser.add_argument("--doc-kind", required=True, choices=["reference", "user-guide"])
     parser.add_argument("--feature-slug", required=True)
-    parser.add_argument("--touched-files", nargs="+", required=True)
+    # nargs="*" (not "+"): an issue-only bundle (fetch_issue.py) has no touched
+    # Go files at all. build_locate()/propose_paths() already tolerate an
+    # empty list -- this just stops argparse itself from rejecting it first,
+    # matching the convention fetch_grounding.py already uses for the same case.
+    parser.add_argument("--touched-files", nargs="*", default=[])
     parser.add_argument("--bundle", default=None,
                         help="path to pr-bundle.json; scanned for an existing doc page "
                              "explicitly referenced in the linked issue's text")

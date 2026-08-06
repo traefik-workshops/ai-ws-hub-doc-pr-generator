@@ -190,9 +190,13 @@ def _fetch_sub_issues(repo: str, issue_number: int) -> list[dict]:
 
 
 def _fetch_issue(repo: str, number: int) -> dict:
+    # labels/state/stateReason are additive: collect_issues() (linked-issue
+    # path) still only plucks number/title/body/comments and ignores the
+    # rest; fetch_issue.py (the standalone-issue entry point) is what
+    # actually needs them.
     return _gh.run_json([
         "issue", "view", str(number), "--repo", repo,
-        "--json", "number,title,body,comments",
+        "--json", "number,title,body,comments,labels,state,stateReason",
     ])
 
 

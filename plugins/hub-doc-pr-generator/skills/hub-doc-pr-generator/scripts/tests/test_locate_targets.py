@@ -6,6 +6,7 @@ from scripts.locate_targets import select_neighbors
 from scripts.locate_targets import sidebar_insertion_point, build_locate
 from scripts.locate_targets import existing_doc_refs, issue_texts_from_bundle
 from scripts.locate_targets import find_transcluded_partials
+from scripts import locate_targets
 
 
 class TestProposePaths(unittest.TestCase):
@@ -447,6 +448,24 @@ class TestPartialsWiredIntoBuildLocate(unittest.TestCase):
         self.assertEqual(len(partial_candidates), 1)
         self.assertEqual(partial_candidates[0]["path"], "docs/ai-gateway/_deny-response-formats.mdx")
         self.assertLess(partial_candidates[0]["confidence"], 0.75)
+
+
+class TestMainAcceptsNoTouchedFiles(unittest.TestCase):
+    def test_cli_runs_with_zero_touched_files(self):
+        """Regression: an issue-only bundle (fetch_issue.py) has no touched Go
+        files at all. --touched-files was nargs='+' (required, at least one),
+        which argparse itself rejects on zero values -- even though
+        build_locate()/propose_paths() already tolerate an empty list fine."""
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "docs/ai-gateway/middlewares").mkdir(parents=True)
+            rc = locate_targets.main([
+                "--impl-repo", "traefik/traefik-hub",
+                "--doc-repo-root", td,
+                "--doc-kind", "reference",
+                "--feature-slug", "regex-anchoring-tip",
+                "--touched-files",
+            ])
+        self.assertEqual(rc, 0)
 
 
 if __name__ == "__main__":
