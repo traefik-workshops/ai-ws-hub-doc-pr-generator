@@ -5,6 +5,7 @@ from scripts.locate_targets import propose_paths
 from scripts.locate_targets import select_neighbors
 from scripts.locate_targets import sidebar_insertion_point, build_locate
 from scripts.locate_targets import existing_doc_refs, issue_texts_from_bundle
+from scripts.locate_targets import find_transcluded_partials
 
 
 class TestProposePaths(unittest.TestCase):
@@ -341,6 +342,111 @@ class TestBuildLocate(unittest.TestCase):
                 touched_paths=["hub/pkg/middleware/newthing/config.go"],
             )
         self.assertTrue(out["target_exists"])
+
+
+class TestFindTranscludedPartials(unittest.TestCase):
+    def test_surfaces_partial_imported_by_candidate_page(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway"
+            d.mkdir(parents=True)
+            (d / "_shared-partial.mdx").write_text("shared content\n")
+            (d / "middlewares").mkdir()
+            (d / "middlewares/content-guard.md").write_text(
+                "import Shared from '../_shared-partial.mdx';\n\n<Shared />\n"
+            )
+            hits = find_transcluded_partials(
+                doc_repo_root=td,
+                candidate_paths=["docs/ai-gateway/middlewares/content-guard.md"],
+            )
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["path"], "docs/ai-gateway/_shared-partial.mdx")
+        self.assertEqual(hits[0]["component"], "Shared")
+        self.assertEqual(hits[0]["transcluded_into"], "docs/ai-gateway/middlewares/content-guard.md")
+
+    def test_no_import_means_no_hits(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway/middlewares"
+            d.mkdir(parents=True)
+            (d / "content-guard.md").write_text("# Content Guard\n\nJust prose.\n")
+            hits = find_transcluded_partials(
+                doc_repo_root=td,
+                candidate_paths=["docs/ai-gateway/middlewares/content-guard.md"],
+            )
+        self.assertEqual(hits, [])
+
+    def test_same_partial_imported_by_two_pages_surfaces_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway"
+            d.mkdir(parents=True)
+            (d / "_deny-response-formats.mdx").write_text("shared table\n")
+            (d / "middlewares").mkdir()
+            for name in ("content-guard.md", "llm-guard.md"):
+                (d / "middlewares" / name).write_text(
+                    "import DenyResponseFormats from '../_deny-response-formats.mdx';\n"
+                    "<DenyResponseFormats />\n"
+                )
+            hits = find_transcluded_partials(
+                doc_repo_root=td,
+                candidate_paths=[
+                    "docs/ai-gateway/middlewares/content-guard.md",
+                    "docs/ai-gateway/middlewares/llm-guard.md",
+                ],
+            )
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["path"], "docs/ai-gateway/_deny-response-formats.mdx")
+
+    def test_import_of_non_underscore_file_is_ignored(self):
+        """Only the leading-underscore partial-file naming convention counts --
+        an ordinary component import (e.g. a shared React component, not a doc
+        partial) must not be mistaken for a transcluded partial."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/ai-gateway/middlewares"
+            d.mkdir(parents=True)
+            (Path(td) / "docs/ai-gateway/widget.mdx").write_text("not a partial\n")
+            (d / "content-guard.md").write_text(
+                "import Widget from '../widget.mdx';\n<Widget />\n"
+            )
+            hits = find_transcluded_partials(
+                doc_repo_root=td,
+                candidate_paths=["docs/ai-gateway/middlewares/content-guard.md"],
+            )
+        self.assertEqual(hits, [])
+
+
+class TestPartialsWiredIntoBuildLocate(unittest.TestCase):
+    def test_pr_1304_regression_surfaces_shared_partial(self):
+        """Regression for traefik-hub#1304: a PR touching multiple middleware
+        packages whose pages all transclude the same partial must surface that
+        partial as an additional low-confidence candidate, not just the pages
+        themselves."""
+        with tempfile.TemporaryDirectory() as td:
+            gw = Path(td) / "docs/ai-gateway"
+            gw.mkdir(parents=True)
+            (gw / "_deny-response-formats.mdx").write_text("old shape\n")
+            mw = gw / "middlewares"
+            mw.mkdir()
+            for name in ("content-guard.md", "llm-guard.md", "token-rate-limit.md"):
+                (mw / name).write_text(
+                    "import DenyResponseFormats from '../_deny-response-formats.mdx';\n"
+                    "<DenyResponseFormats />\n"
+                )
+            out = build_locate(
+                impl_repo="traefik/traefik-hub",
+                doc_repo_root=td,
+                doc_kind="reference",
+                feature_slug="responses-api-deny-response-failed-event",
+                touched_paths=[
+                    "hub/pkg/middleware/aiformat/denyresponse.go",
+                    "hub/pkg/middleware/contentguard/middleware.go",
+                    "hub/pkg/middleware/llmguard/client_formatter_res_api.go",
+                    "hub/pkg/middleware/tokenratelimit/middleware.go",
+                    "hub/pkg/middleware/tokenratelimit/responsewriter.go",
+                ],
+            )
+        partial_candidates = [c for c in out["candidates"] if c.get("kind") == "shared_partial"]
+        self.assertEqual(len(partial_candidates), 1)
+        self.assertEqual(partial_candidates[0]["path"], "docs/ai-gateway/_deny-response-formats.mdx")
+        self.assertLess(partial_candidates[0]["confidence"], 0.75)
 
 
 if __name__ == "__main__":

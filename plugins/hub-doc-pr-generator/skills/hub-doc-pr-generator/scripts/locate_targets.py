@@ -151,6 +151,55 @@ def find_existing_middleware_pages(*, doc_repo_root: str, section_dirs: list[str
     return [h[0] for h in hits]
 
 
+_PARTIAL_IMPORT_RE = re.compile(r"import\s+(\w+)\s+from\s+['\"]([^'\"]+)['\"]")
+
+
+def find_transcluded_partials(*, doc_repo_root: str, candidate_paths: list[str]) -> list[dict]:
+    """Shared `_*.mdx` partials transcluded into a candidate page via an
+    import + component (e.g. `import DenyResponseFormats from
+    '../_deny-response-formats.mdx'` then `<DenyResponseFormats />`).
+    locate_targets can find the *page* that covers a touched middleware, but
+    a page-level match hides content that actually lives in one of these
+    partials — editing only the page's own prose would miss it entirely (see
+    traefik-hub#1304: content-guard.md, llm-guard.md, and token-rate-limit.md
+    all transclude docs/ai-gateway/_deny-response-formats.mdx).
+
+    Scoped to `candidate_paths` — the existing pages already found by
+    find_existing_middleware_pages() — not a repo-wide scan."""
+    root = Path(doc_repo_root).resolve()
+    seen: set[str] = set()
+    hits: list[dict] = []
+    for cand_path in candidate_paths:
+        full = root / cand_path
+        if not full.is_file():
+            continue
+        try:
+            text = full.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for m in _PARTIAL_IMPORT_RE.finditer(text):
+            component, rel_import = m.group(1), m.group(2)
+            partial_name = rel_import.rsplit("/", 1)[-1]
+            if not (partial_name.startswith("_") and partial_name.endswith((".md", ".mdx"))):
+                continue
+            partial_path = (full.parent / rel_import).resolve()
+            if not partial_path.is_file():
+                continue
+            try:
+                partial_rel = str(partial_path.relative_to(root))
+            except ValueError:
+                continue
+            if partial_rel in seen:
+                continue
+            seen.add(partial_rel)
+            hits.append({
+                "path": partial_rel,
+                "component": component,
+                "transcluded_into": cand_path,
+            })
+    return hits
+
+
 def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
                   touched_paths: list[str], doc_repo_root: str | None = None) -> list[dict]:
     section_dirs, matched_prefixes = _section_dirs(impl_repo, doc_kind, touched_paths)
@@ -202,6 +251,24 @@ def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
                 for i, p in enumerate(existing_pages)
             ]
             out = existing_candidates + out
+
+            # Surface, but never auto-select: a partial transcluded into one
+            # of the pages above may be where the actual content to edit
+            # lives, not the page's own prose. Confidence stays well under
+            # the auto-accept gate — this is "go check," not a placement.
+            for partial in find_transcluded_partials(
+                doc_repo_root=doc_repo_root, candidate_paths=existing_pages,
+            ):
+                out.append({
+                    "path": partial["path"],
+                    "confidence": 0.5,
+                    "kind": "shared_partial",
+                    "rationale": (
+                        f"Transcluded into {partial['transcluded_into']} via "
+                        f"<{partial['component']} /> — verify whether this shared "
+                        "partial (not just the page) needs the edit"
+                    ),
+                })
         else:
             # The check ran and found no existing page -- this filename is
             # confirmed fabricated, not just directory-grounded. Don't let it
