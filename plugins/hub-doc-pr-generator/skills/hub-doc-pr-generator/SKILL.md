@@ -64,6 +64,11 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    - PR URL: `https://github.com/<owner>/<repo>/pull/<N>`
    - PR number: requires being inside the impl repo, or `--repo` flag
    - No-arg: auto-detect from current branch (`gh pr view --json number,headRepository`)
+   - Issue URL, no PR: `https://github.com/<owner>/<repo>/issues/<N>` — use when the finding
+     was investigated and resolved WITHOUT a code change (a QA finding closed as
+     working-as-intended, a config/usage gotcha that never needed a PR). Step 2 becomes
+     `scripts.fetch_issue` instead of `scripts.fetch_pr`; every later step still runs, just
+     against a bundle with no diff and no touched files.
    - `--context <url>`: a supplementary reference (an issue URL, or a PR in a different repo)
      the engineer wants available as background — NOT a primary aggregation PR. Fetch it
      read-only (`gh issue view`/`gh pr view` as appropriate) for context in step 8's
@@ -82,11 +87,21 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    - **OSS** (`traefik/traefik`): confirms cwd is the impl repo (where the doc commit lands). No hub-doc clone is required, so an OSS-only engineer is never blocked on one.
    Only proceed once it exits 0.
 
-2. **Fetch the PR bundle.**
+2. **Fetch the PR bundle** — or the issue bundle, if step 1 resolved an issue-only input.
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.fetch_pr --pr <N> [--pr <M> ...] > /tmp/bundle.json
    ```
    Inspect `existing_doc_pr`; if non-null, ask the engineer `[u]pdate / [n]ew / [a]bort` via `AskUserQuestion`.
+
+   **Issue-only input:** run `scripts.fetch_issue` instead —
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.fetch_issue --issue <url|N> [--repo <owner/name>] [--impl-repo <owner/name>] > /tmp/bundle.json
+   ```
+   The resulting bundle has `prs: []`, empty `merged.files_changed`, and an `issue` key
+   carrying the issue's title/body/labels/state/comments — `classify.py` and
+   `locate_targets.py` both already handle this shape (no diff to reason about, no
+   touched-path signal), just with lower confidence than a PR-backed bundle. There's no
+   `existing_doc_pr` check for this path.
 
    The bundle gathers issue context in both directions: each linked issue carries its `parent` epic (with body) and `siblings` (the parent's other sub-issues), and `merged.related_prs` lists the other PRs that implement the same feature (the PRs closing the linked issue and its siblings). Use this for the *why* behind the feature in step 8. If a `related_prs` entry looks load-bearing for the docs and the bundle's diff isn't enough, fetch that specific PR with `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.fetch_pr --pr <related-N>` — don't pull them all by default.
 
@@ -252,11 +267,17 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
      --edits /tmp/edits.json > /tmp/preview.json
    ```
    `preview.py` runs a lint auto-fix pass before computing the diff: file permissions are
-   corrected and (Hub only) `yarn docs:markdown --fix` resolves what's mechanical, fully
-   automatically — never asks the engineer to confirm a fix. Whatever it can't fix
-   locally (alex inclusive-language flags, remaining markdownlint errors, `mkdocs build
-   --strict` failures for OSS) comes back in `lint_unresolved` and never blocks the
-   pipeline — there is no re-prompt on lint state.
+   corrected and (Hub only) markdownlint `--fix` resolves what's mechanical, fully
+   automatically — never asks the engineer to confirm a fix. Both markdownlint and alex
+   are scoped to only the files this run actually wrote, never the whole doc repo.
+   Whatever it can't fix locally (alex inclusive-language flags, remaining markdownlint
+   errors, `mkdocs build --strict` failures for OSS) comes back in `lint_unresolved` and
+   never blocks the pipeline — there is no re-prompt on lint state.
+
+   If `preview.py` ever raises a `GitError` mentioning a stash-pop conflict (a stale
+   leftover from before this scoping fix, or from an unrelated in-progress edit in the
+   clone), recover with `git checkout -- . && git stash drop` in the doc repo, then retry
+   — the error message itself says this.
 
    `preview.py` also mechanically flags table rows abbreviated with "…"/"etc." (see the
    Tables completeness rule) — those surface in `lint_unresolved`/`manual_checks_md` too,
