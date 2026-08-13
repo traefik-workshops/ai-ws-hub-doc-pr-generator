@@ -147,6 +147,47 @@ import BrowserWindow from '@site/src/components/BrowserWindow';
 </BrowserWindow>
 ```
 
+## Early Access features
+
+Load this section when `classify.json`'s `needs_release_note.proposed_shape == "ea-subsection"`.
+Every EA feature needs both the `<EarlyAccessBadge />` component and the
+`:::warning Early Access` callout together — never just one. Which shape depends on
+whether the whole topic is new or an existing page is gaining a new EA section
+(`locate.json`'s `target_exists`):
+
+- **Brand-new topic** (`target_exists: false`, e.g. a whole new middleware page):
+  badge goes in the **sidebar entry** via `customProps: { "badge": "Early Access" }`
+  (see `sidebar-entry.json.tmpl`) — not inline on the page, since the page body never
+  repeats the title as an `# H1` to put a badge next to. The callout goes at the
+  **beginning of the topic**, right after the imports, before the intro:
+
+  ```mdx
+  :::warning Early Access
+  This feature is currently in early access. Available starting v3.21.0-ea.1.
+  :::
+  ```
+
+- **New EA section on an existing page** (`target_exists: true`, e.g. adding a new
+  subsection to an already-published page): badge goes **inline, next to the
+  heading** for that section; the callout goes **directly under that heading**:
+
+  ```mdx
+  ## Generative AI Span Attributes <EarlyAccessBadge />
+
+  :::warning Early Access
+  This feature is currently in early access. Available starting v3.21.0-ea.1.
+  :::
+  ```
+
+Both shapes state the release version inside the callout (unlike the release-notes
+entry itself, where the heading already carries the version — see
+`release-note-heuristics.md`, restating it there would be redundant). Use the same
+`target_version` collected in SKILL.md step 6c. **If it isn't known yet**, use the
+same `vNEXT` placeholder convention as the release note ("Available starting
+vNEXT.") — `preview.py`'s `check_placeholder_version` already flags any `vNEXT`
+left in written files under "Manual checks required," so it can't merge unresolved
+without at least one visible flag in the PR body.
+
 ## Tables
 
 - Use sentence case for row headings.

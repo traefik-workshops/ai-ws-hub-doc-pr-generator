@@ -350,6 +350,28 @@ def check_placeholder_version(edits: list[FileEdit]) -> list[str]:
     return findings
 
 
+_FRAGMENT_PATH_RE = re.compile(r"release-notes\.d/")
+_UNASSIGNED_TARGET_VERSION_RE = re.compile(r"^target_version:\s*unassigned\s*$", re.MULTILINE)
+
+
+def check_unassigned_fragment(edits: list[FileEdit]) -> list[str]:
+    """Flag a release-note fragment (docs/api-gateway/release-notes.d/*.mdx) whose
+    front matter has target_version: unassigned — not an error (it's the expected
+    state until the EA cut number is known, see release-note-heuristics.md "Which
+    version"), but worth a visible reminder in the PR body so it isn't forgotten
+    before `release-notes-generator cut` runs."""
+    findings: list[str] = []
+    for e in edits:
+        if not _FRAGMENT_PATH_RE.search(e.path):
+            continue
+        if _UNASSIGNED_TARGET_VERSION_RE.search(e.content):
+            findings.append(
+                f"{e.path}: target_version is `unassigned` — release-notes-generator's "
+                f"`cut` command will prompt for this fragment once the release version is known"
+            )
+    return findings
+
+
 def apply_edits_with_lint_fix(
     *, repo_path: str, branch: str, impl_repo: str, edits: list[FileEdit],
 ) -> tuple[list[str], LintFixResult]:
@@ -359,6 +381,7 @@ def apply_edits_with_lint_fix(
     lint = run_lint_fix(repo_path=repo_path, impl_repo=impl_repo, written=written)
     lint.unresolved.extend(check_table_completeness(edits))
     lint.unresolved.extend(check_placeholder_version(edits))
+    lint.unresolved.extend(check_unassigned_fragment(edits))
     if lint.fixed and written:
         _git.run(repo_path, ["add", "--", *written])
     return written, lint

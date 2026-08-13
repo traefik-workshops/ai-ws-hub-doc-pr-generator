@@ -178,6 +178,55 @@ def static_analyzer_version() -> dict:
     }
 
 
+_DISPLAY_NAMES = {
+    "traefik_hub": "Traefik Hub",
+    "helm_chart": "Helm Chart",
+    "traefik_proxy": "Traefik Proxy",
+    "coraza_waf": "Coraza WAF",
+    "owasp_crs": "OWASP CRS",
+    "static_analyzer": "Static Analyzer",
+    "kubernetes_gateway_api": "Kubernetes Gateway API",
+}
+
+
+def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dict]:
+    """Merge per-fragment `compat:` front-matter deltas (release-note fragments'
+    optional component: version bumps -- see the sibling hub-doc-pr-generator
+    skill's SKILL.md step 7) into one row list for the `cut` command's rendered
+    table.
+
+    Fragment deltas win over `matrix`'s go.mod-derived value for the same
+    component: a fragment was written closer to when the bump actually
+    happened, whereas `matrix` reflects go.mod *at the release tag*, which can
+    legitimately be stale for a component whose real version isn't tracked in
+    go.mod at all (a fragment is often the only source for that). Never drops
+    a `matrix` row for a component with no matching delta -- this only adds
+    or overrides, it doesn't shrink the table.
+
+    Returns an ordered list of {"component": ..., "version": ..., "note": ...}
+    rows: known components first (matrix's fixed order), any delta naming a
+    component the matrix doesn't track appended after, in the order first seen.
+    """
+    rows: dict[str, dict] = {}
+    order: list[str] = []
+
+    for key, display in _DISPLAY_NAMES.items():
+        value = matrix.get(key)
+        if value is None:
+            continue
+        version, note = (value["version"], value.get("note")) if isinstance(value, dict) else (value, None)
+        rows[display] = {"component": display, "version": version, "note": note}
+        order.append(display)
+
+    for delta in fragment_deltas:
+        for component, version in delta.get("compat", {}).items():
+            if component not in rows:
+                order.append(component)
+            rows[component] = {"component": component, "version": version, "note": None}
+
+    return [rows[name] for name in order]
+
+
 def build_matrix(tag: str, *, max_chart_tags: int) -> dict:
     deps = go_mod_deps(tag)
     return {

@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 from scripts.compat_matrix import (
     go_mod_deps, traefik_proxy_version, helm_chart_for, static_analyzer_version, build_matrix,
+    merge_fragment_deltas,
 )
 
 # Real snippets (trimmed) verified live against traefik/traefik-hub@main and
@@ -135,6 +136,56 @@ class TestBuildMatrix(unittest.TestCase):
         self.assertEqual(matrix["traefik_hub"], "v3.20.8")
         self.assertEqual(matrix["coraza_waf"], "v3.7.0")
         self.assertIsNone(matrix["static_analyzer"]["version"])
+
+
+SAMPLE_MATRIX = {
+    "tag": "v3.21.0-ea.1",
+    "traefik_hub": "v3.21.0-ea.1",
+    "helm_chart": {"version": None, "note": "no chart release covers this tag yet"},
+    "traefik_proxy": {"version": "v3.7.9", "note": None},
+    "coraza_waf": "v3.7.0",
+    "owasp_crs": "v4.25.0",
+    "kubernetes_gateway_api": "v1.6.1",
+    "static_analyzer": {"version": None, "note": "pin location not yet identified"},
+}
+
+
+class TestMergeFragmentDeltas(unittest.TestCase):
+    def test_no_deltas_returns_matrix_as_is(self):
+        rows = merge_fragment_deltas(SAMPLE_MATRIX, [])
+        by_component = {r["component"]: r["version"] for r in rows}
+        self.assertEqual(by_component["Traefik Proxy"], "v3.7.9")
+        self.assertEqual(by_component["Helm Chart"], None)
+
+    def test_fragment_delta_overrides_matrix_value(self):
+        deltas = [{"compat": {"Traefik Proxy": "v3.7.10"}}]
+        rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
+        by_component = {r["component"]: r["version"] for r in rows}
+        self.assertEqual(by_component["Traefik Proxy"], "v3.7.10")
+
+    def test_fragment_delta_for_unknown_component_is_appended(self):
+        deltas = [{"compat": {"Envoy": "v1.30.0"}}]
+        rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
+        self.assertEqual(rows[-1], {"component": "Envoy", "version": "v1.30.0", "note": None})
+
+    def test_multiple_fragments_last_delta_for_same_component_wins(self):
+        deltas = [
+            {"compat": {"Traefik Proxy": "v3.7.10"}},
+            {"compat": {"Traefik Proxy": "v3.7.11"}},
+        ]
+        rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
+        by_component = {r["component"]: r["version"] for r in rows}
+        self.assertEqual(by_component["Traefik Proxy"], "v3.7.11")
+
+    def test_row_order_is_matrix_order_then_new_components(self):
+        deltas = [{"compat": {"Envoy": "v1.30.0"}}]
+        rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
+        components = [r["component"] for r in rows]
+        self.assertEqual(
+            components,
+            ["Traefik Hub", "Helm Chart", "Traefik Proxy", "Coraza WAF",
+             "OWASP CRS", "Static Analyzer", "Kubernetes Gateway API", "Envoy"],
+        )
 
 
 if __name__ == "__main__":

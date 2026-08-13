@@ -4,11 +4,34 @@ OSS PRs always short-circuit to `needs_release_note=no`.
 
 ## Where the entry goes
 
-Always `docs/api-gateway/release-notes.mdx`. The `docs/api-management/release-notes.md` file is a re-import shim — never patch it.
+**Never `docs/api-gateway/release-notes.mdx` directly.** This skill writes a
+fragment file instead: `docs/api-gateway/release-notes.d/<pr-number>-<feature-slug>.mdx`
+(`create` mode, front matter + the shape body — see `templates/release-note-fragment.mdx.tmpl`).
+
+This exists because per-PR full-file overwrites of `release-notes.mdx` caused real merge
+conflicts and silent duplicate subsections: every concurrently-open PR during an EA
+window regenerated the *entire* version section from scratch (including every sibling
+feature that had already merged), so two PRs branching at different times would mutate
+the exact same lines with slightly different snapshots. Verified against the real
+`v3.21.0-ea.1` batch (8 PRs, 5+ feature subsections reconstructed independently across
+them). A fragment file is unique per PR (the PR-number prefix makes filename collisions
+structurally impossible), so two PRs can never touch the same lines, or even the same
+file.
+
+The sibling `release-notes-generator` skill's `cut <version> <date>` command is the
+**only** thing that ever writes `release-notes.mdx` directly — it assembles all fragments
+for a confirmed release into one clean PR, once, centrally (see that skill's SKILL.md).
+This skill's job stops at writing one correct fragment.
+
+The `docs/api-management/release-notes.md` file is a re-import shim — never patch it.
 
 ## Structure of the target file
 
-Reorganized to per-version (semver) sections in [traefik/hub-doc#953](https://github.com/traefik/hub-doc/pull/953) — no longer month-based. Versions from before that change (November 2025 and earlier) are collapsed into an `## Earlier releases` archive and don't concern this skill; it only ever inserts new sections at the top.
+This describes the **assembled** `release-notes.mdx` output that `release-notes-generator
+cut` produces from fragments — useful context for writing a fragment body correctly, but
+this skill never renders this full structure itself anymore (see "Where the entry goes").
+
+Reorganized to per-version (semver) sections in [traefik/hub-doc#953](https://github.com/traefik/hub-doc/pull/953) — no longer month-based. Versions from before that change (November 2025 and earlier) are collapsed into an `## Earlier releases` archive and don't concern this skill; `cut` only ever inserts new sections at the top.
 
 ```mdx
 ## Gateway v<X.Y.Z>
@@ -78,45 +101,33 @@ plausible the engineer corrects it in the edit loop.
 
 ## Which version
 
-Unlike the old month-based layout, the target section can't be derived from the
+Unlike the old month-based layout, the target version can't be derived from the
 PR's merge date — it depends on which Hub release the change actually ships in,
 which isn't knowable from the PR alone. `classify.py::needs_release_note()` no
 longer returns a target field at all; when its `verdict` is `yes`, SKILL.md step
 6c asks the engineer/tech writer directly ("Which Hub release is this release
-note for? e.g. v3.20.7") and the answer becomes `target_version`. Insert the
-entry under `## Gateway v<target_version>` (plus `<EarlyAccessBadge />` if it's
-an EA version), creating that heading at the top of the post-header area if it
-doesn't exist yet. Do **not** simply append to whatever the newest heading
-happens to be, and do not guess a version from the date.
+note for? e.g. v3.20.7") and the answer becomes the fragment's `target_version`
+front-matter field. Do not guess a version from the date.
 
 **If the engineer/tech writer genuinely doesn't know the version yet** (common —
-release cuts often land after the doc PR is drafted), use the literal placeholder
-`## Gateway vNEXT` with a `**(version TBD)**` date line, instead of improvising
-something like `vTBD` or leaving the version blank. `vNEXT` is a fixed, grep-able
-token specifically so it's consistent across runs and can't be mistaken for a real
-version number if it ever slipped into `main` unreplaced — `preview.py`
-mechanically flags any `vNEXT` occurrence in written files under "Manual checks
-required" for exactly this reason (see `preview.py`'s `check_placeholder_version`).
+release cuts often land after the doc PR is drafted), set `target_version:
+unassigned` in the fragment's front matter, instead of improvising something
+like `vTBD` or leaving it blank. `unassigned` is a fixed, grep-able token so
+`release-notes-generator cut` can reliably find every fragment that still needs
+a version and prompt for it interactively — see that skill's SKILL.md. (This is
+a different placeholder from `vNEXT`, which is still used, unchanged, for this
+PR's own page-level Early Access callout — see `style-guide.md`'s "Early Access
+features" section; `preview.py`'s `check_placeholder_version` still flags that
+one, in the page content, not in fragment front matter.)
 
 ## Insertion order — newest on top
 
-The entry being added is the latest change, so it goes **at the top**, never
-appended at the bottom. Concretely:
-
-- **New version section:** create `## Gateway v<target_version>` (with the
-  `**<YYYY-MM-DD>**` date line right below it) at the very top of the
-  post-header area, above all existing version sections — never inside
-  `## Earlier releases`.
-- **New `#### <Feature>` subsection:** insert it as the **first** feature
-  subsection within that version's `### What's New` — immediately after
-  `#### Graduated to GA` if that block exists, otherwise at the very top of
-  `### What's New`. It must sit **above** the existing feature subsections and
-  **above** the `<Collapse title="Compatibility matrix">` block.
-- **New `ga-bullet`:** prepend it to the **top** of the `#### Graduated to GA`
-  list, not the end.
-- `#### Graduated to GA` always stays first and the compatibility-matrix
-  `<Collapse>` always stays last within a version — only the relative order of
-  feature subsections changes (newest first).
+**Not this skill's concern anymore.** Each PR's fragment is one small, independently
+merged file — there's no shared "top of the file" to insert into per-PR now, so this
+section moved to `release-notes-generator`'s `cut` command, which assembles the fragments
+for a confirmed release into the right order (`#### Graduated to GA` first, newest feature
+subsections next, compatibility-matrix `<Collapse>` last) once, centrally, when it renders
+the real `## Gateway v<version>` section. See that skill's SKILL.md and `assemble_section.py`.
 
 ## Links
 
