@@ -215,6 +215,17 @@ def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dic
     an older v3.7.8 delta after a newer v3.7.10 one previously produced
     v3.7.8 in the output).
 
+    A delta's component name is canonicalized (case/whitespace-insensitive)
+    against `_DISPLAY_NAMES`'s known display names before being used as a
+    dict key: an LLM-authored fragment can plausibly write `traefik proxy`
+    instead of `Traefik Proxy`, and without this a spelling/case variant
+    would silently become a SECOND row instead of overriding the canonical
+    one -- publishing two conflicting version rows for what's actually the
+    same component (verified live: an uncanonicalized `traefik proxy` delta
+    produced both `Traefik Proxy` and `traefik proxy` as separate rows).
+    A component the matrix doesn't track at all keeps the fragment's own
+    spelling, since there's no canonical form to normalize it to.
+
     Returns an ordered list of {"component": ..., "version": ..., "note": ...}
     rows: known components first (matrix's fixed order), any delta naming a
     component the matrix doesn't track appended after, in the order first seen.
@@ -230,9 +241,12 @@ def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dic
         rows[display] = {"component": display, "version": version, "note": note}
         order.append(display)
 
+    canonical_by_lower = {display.lower(): display for display in _DISPLAY_NAMES.values()}
+
     delta_assigned: set[str] = set()
     for delta in fragment_deltas:
-        for component, version in delta.get("compat", {}).items():
+        for raw_component, version in delta.get("compat", {}).items():
+            component = canonical_by_lower.get(raw_component.strip().lower(), raw_component.strip())
             if component in delta_assigned:
                 continue  # a newer fragment already claimed this component -- ignore the older one
             delta_assigned.add(component)

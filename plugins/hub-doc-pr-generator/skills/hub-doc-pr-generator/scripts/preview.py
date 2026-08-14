@@ -351,7 +351,7 @@ def check_placeholder_version(edits: list[FileEdit]) -> list[str]:
 
 
 _FRAGMENT_PATH_RE = re.compile(r"release-notes\.d/")
-_UNASSIGNED_TARGET_VERSION_RE = re.compile(r"^target_version:\s*unassigned\s*$", re.MULTILINE)
+_UNASSIGNED_TARGET_VERSION_RE = re.compile(r"^target_version:\s*['\"]?unassigned['\"]?\s*$", re.MULTILINE)
 
 
 def check_unassigned_fragment(edits: list[FileEdit]) -> list[str]:
@@ -359,7 +359,11 @@ def check_unassigned_fragment(edits: list[FileEdit]) -> list[str]:
     front matter has target_version: unassigned — not an error (it's the expected
     state until the EA cut number is known, see release-note-heuristics.md "Which
     version"), but worth a visible reminder in the PR body so it isn't forgotten
-    before `release-notes-generator cut` runs."""
+    before `release-notes-generator cut` runs. Matches quoted ('unassigned' /
+    "unassigned") as well as bare unassigned -- collect_fragments.parse_fragment
+    already unquotes scalars when it reads a fragment back, so this needs to
+    recognize the same forms at write time or a quoted value silently skips
+    this flag despite being functionally identical."""
     findings: list[str] = []
     for e in edits:
         if not _FRAGMENT_PATH_RE.search(e.path):

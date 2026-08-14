@@ -480,6 +480,20 @@ class TestCheckUnassignedFragment(unittest.TestCase):
         findings = check_unassigned_fragment(edits)
         self.assertTrue(any("unassigned" in f for f in findings))
 
+    def test_flags_quoted_unassigned_target_version(self):
+        """Regression test: a quoted target_version: "unassigned" must be
+        flagged the same as the bare form -- collect_fragments.parse_fragment
+        unquotes scalars when reading a fragment back, so this check must
+        recognize the same forms at write time or a quoted value silently
+        skips the flag despite being functionally identical."""
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+            content='---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: "unassigned"\n---\n\n#### Bedrock Mantle\n',
+            mode="create",
+        )]
+        findings = check_unassigned_fragment(edits)
+        self.assertTrue(any("unassigned" in f for f in findings))
+
     def test_does_not_flag_assigned_target_version(self):
         edits = [FileEdit(
             path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",

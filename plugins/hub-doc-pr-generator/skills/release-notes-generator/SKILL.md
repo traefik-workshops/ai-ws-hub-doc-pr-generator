@@ -291,22 +291,21 @@ them into the real section, once, when the release is actually confirmed.
    > "These fragments don't have a target_version yet. Which of them ship in
    > `<version>`?"
 
-   For each fragment the writer selects, rewrite its front matter in place —
-   replace `target_version: unassigned` with `target_version: <version>` via a
-   portable Python edit, not shell `sed -i` (its in-place syntax differs between
-   BSD/macOS and GNU/Linux — `sed -i ''` specifically is BSD-only and either
-   errors or silently no-ops under GNU sed, leaving `target_version` unassigned):
+   For each fragment the writer selects, rewrite its front matter in place:
    ```bash
-   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -c "
-   from pathlib import Path
-   path = Path('<fragment-path>')
-   path.write_text(
-       path.read_text().replace('target_version: unassigned', 'target_version: <version>', 1)
-   )
-   "
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.assign_target_version \
+     --fragment <fragment-path> --version <version>
    ```
-   Then re-run step 1 so the updated assignment is picked up. Fragments the
-   writer does *not* select stay `unassigned` for a future cut; never touch them.
+   Not a shell `sed -i` (its in-place syntax differs between BSD/macOS and
+   GNU/Linux — `sed -i ''` specifically is BSD-only) and not a literal
+   string `.replace` (silently no-ops on a quoted `target_version: "unassigned"`,
+   permanently stranding the fragment with no visible failure — both were real
+   bugs here before). `assign_target_version.py` tolerates the same quoted/bare
+   forms `preview.py`'s `check_unassigned_fragment` recognizes, and **exits
+   non-zero rather than silently doing nothing** if no unassigned line is found
+   — stop and investigate rather than proceeding if that happens. Then re-run
+   step 1 so the updated assignment is picked up. Fragments the writer does
+   *not* select stay `unassigned` for a future cut; never touch them.
 
 3. **Filter and order this release's fragments.**
    ```bash

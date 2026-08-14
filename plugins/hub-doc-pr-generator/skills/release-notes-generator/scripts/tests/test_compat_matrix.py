@@ -151,6 +151,31 @@ SAMPLE_MATRIX = {
 
 
 class TestMergeFragmentDeltas(unittest.TestCase):
+    def test_case_variant_component_name_overrides_instead_of_duplicating(self):
+        """Regression test: previously an uncanonicalized 'traefik proxy'
+        delta produced BOTH 'Traefik Proxy' and 'traefik proxy' as separate
+        rows instead of overriding the canonical one."""
+        deltas = [{"compat": {"traefik proxy": "v3.7.10"}}]
+        rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
+        components = [r["component"] for r in rows]
+        self.assertEqual(components.count("Traefik Proxy"), 1)
+        self.assertNotIn("traefik proxy", components)
+        by_component = {r["component"]: r["version"] for r in rows}
+        self.assertEqual(by_component["Traefik Proxy"], "v3.7.10")
+
+    def test_whitespace_variant_component_name_is_canonicalized(self):
+        deltas = [{"compat": {"  Traefik Proxy  ": "v3.7.10"}}]
+        rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
+        components = [r["component"] for r in rows]
+        self.assertEqual(components.count("Traefik Proxy"), 1)
+
+    def test_unknown_component_keeps_original_spelling(self):
+        """No canonical form exists for a component the matrix doesn't track,
+        so its spelling is preserved as-is rather than forced to some form."""
+        deltas = [{"compat": {"Envoy Gateway": "v1.30.0"}}]
+        rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
+        self.assertEqual(rows[-1]["component"], "Envoy Gateway")
+
     def test_no_deltas_returns_matrix_as_is(self):
         rows = merge_fragment_deltas(SAMPLE_MATRIX, [])
         by_component = {r["component"]: r["version"] for r in rows}
