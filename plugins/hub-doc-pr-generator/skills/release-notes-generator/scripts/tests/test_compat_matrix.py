@@ -176,6 +176,24 @@ class TestMergeFragmentDeltas(unittest.TestCase):
         rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
         self.assertEqual(rows[-1]["component"], "Envoy Gateway")
 
+    def test_case_variant_of_unknown_component_is_canonicalized_too(self):
+        """Regression test: canonicalization previously only covered the
+        static _DISPLAY_NAMES set -- two fragments naming a brand-new
+        component with different casing (newest-first: 'Envoy Gateway' then
+        older 'envoy gateway') previously produced two separate rows instead
+        of the newest fragment's spelling winning, same bug class as the
+        known-component case fixed earlier."""
+        deltas_newest_first = [
+            {"compat": {"Envoy Gateway": "v1.31.0"}},   # newer fragment, sets the canonical spelling
+            {"compat": {"envoy gateway": "v1.30.0"}},   # older fragment, case variant
+        ]
+        rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas_newest_first)
+        components = [r["component"] for r in rows]
+        self.assertEqual(components.count("Envoy Gateway"), 1)
+        self.assertNotIn("envoy gateway", components)
+        by_component = {r["component"]: r["version"] for r in rows}
+        self.assertEqual(by_component["Envoy Gateway"], "v1.31.0")
+
     def test_no_deltas_returns_matrix_as_is(self):
         rows = merge_fragment_deltas(SAMPLE_MATRIX, [])
         by_component = {r["component"]: r["version"] for r in rows}

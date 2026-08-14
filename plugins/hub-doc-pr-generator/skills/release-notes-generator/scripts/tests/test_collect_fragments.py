@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from scripts.collect_fragments import parse_fragment, collect, for_version, _pr_number
+from scripts.collect_fragments import parse_fragment, collect, for_version, _pr_number, main
 
 FRAGMENT_EA = """---
 shape: ea-subsection
@@ -144,6 +144,27 @@ class TestForVersion(unittest.TestCase):
             {"target_version": "v3.20.0-ea.8", "pr_number": 2},
         ]
         self.assertEqual(len(for_version(fragments, "v3.21.0-ea.1")), 1)
+
+
+class TestMain(unittest.TestCase):
+    def test_returns_zero_and_prints_json_on_success(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
+            rc = main(["--release-notes-dir", str(d)])
+        self.assertEqual(rc, 0)
+
+    def test_malformed_fragment_returns_nonzero_instead_of_raising(self):
+        """Regression test: previously a ValueError from a malformed fragment
+        (bad front matter, or a misnamed file per _pr_number) propagated all
+        the way out of main() as a raw traceback instead of a clean error --
+        inconsistent with assign_target_version.py's main(), which already
+        catches ValueError and returns 1."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "no-pr-prefix.mdx").write_text(FRAGMENT_EA)
+            rc = main(["--release-notes-dir", str(d)])  # must not raise
+        self.assertEqual(rc, 1)
 
 
 if __name__ == "__main__":

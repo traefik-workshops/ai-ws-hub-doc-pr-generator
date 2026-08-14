@@ -216,15 +216,24 @@ def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dic
     v3.7.8 in the output).
 
     A delta's component name is canonicalized (case/whitespace-insensitive)
-    against `_DISPLAY_NAMES`'s known display names before being used as a
-    dict key: an LLM-authored fragment can plausibly write `traefik proxy`
-    instead of `Traefik Proxy`, and without this a spelling/case variant
-    would silently become a SECOND row instead of overriding the canonical
-    one -- publishing two conflicting version rows for what's actually the
-    same component (verified live: an uncanonicalized `traefik proxy` delta
-    produced both `Traefik Proxy` and `traefik proxy` as separate rows).
-    A component the matrix doesn't track at all keeps the fragment's own
-    spelling, since there's no canonical form to normalize it to.
+    before being used as a dict key: an LLM-authored fragment can plausibly
+    write `traefik proxy` instead of `Traefik Proxy`, and without this a
+    spelling/case variant would silently become a SECOND row instead of
+    overriding the canonical one -- publishing two conflicting version rows
+    for what's actually the same component (verified live: an
+    uncanonicalized `traefik proxy` delta produced both `Traefik Proxy` and
+    `traefik proxy` as separate rows).
+
+    This isn't limited to `_DISPLAY_NAMES`'s known components -- a component
+    the matrix doesn't track at all (a brand-new dependency, not yet in
+    `_DISPLAY_NAMES`) has no *static* canonical form, but still needs one
+    within a single cut: since `fragment_deltas` is newest-first (same
+    ordering guarantee the rest of this function relies on), the first
+    (newest) fragment to name an unrecognized component establishes its
+    spelling as canonical for the rest of this run, and an older fragment's
+    case/whitespace variant of that same component folds into it instead of
+    becoming its own row (verified live: uncanonicalized `Envoy Gateway` and
+    `envoy gateway` deltas produced two separate rows).
 
     Returns an ordered list of {"component": ..., "version": ..., "note": ...}
     rows: known components first (matrix's fixed order), any delta naming a
@@ -246,7 +255,14 @@ def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dic
     delta_assigned: set[str] = set()
     for delta in fragment_deltas:
         for raw_component, version in delta.get("compat", {}).items():
-            component = canonical_by_lower.get(raw_component.strip().lower(), raw_component.strip())
+            key = raw_component.strip().lower()
+            if key not in canonical_by_lower:
+                # First (newest, since fragment_deltas is newest-first) fragment
+                # to name this component -- its spelling becomes canonical for
+                # the rest of this run, same "first-seen wins" rule the newest-
+                # first ordering already exists to enforce elsewhere.
+                canonical_by_lower[key] = raw_component.strip()
+            component = canonical_by_lower[key]
             if component in delta_assigned:
                 continue  # a newer fragment already claimed this component -- ignore the older one
             delta_assigned.add(component)

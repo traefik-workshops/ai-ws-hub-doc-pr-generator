@@ -118,7 +118,16 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--release-notes-dir", required=True)
     args = parser.parse_args(argv)
-    print(json.dumps(collect(Path(args.release_notes_dir)), indent=2))
+    try:
+        result = collect(Path(args.release_notes_dir))
+    except ValueError as e:
+        # One malformed fragment (bad front matter from parse_fragment, or a
+        # misnamed file from _pr_number) shouldn't take down the whole `cut`
+        # run with a raw traceback -- same clean-error convention
+        # assign_target_version.py's main() already uses.
+        print(f"error collecting fragments: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2))
     return 0
 
 
