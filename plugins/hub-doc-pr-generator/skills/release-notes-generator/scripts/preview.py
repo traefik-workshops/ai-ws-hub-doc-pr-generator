@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 from scripts import _git
+from scripts._frontmatter import VNEXT_RE
 
 _HUB_LINT_AUTOFIX = [["yarn", "docs:markdown", "--fix"]]
 _HUB_LINT_CHECK = [["yarn", "docs:markdown"], ["yarn", "docs:alex"]]
@@ -122,6 +123,27 @@ def check_table_completeness(content: str, rel_path: str) -> list[str]:
     return findings
 
 
+def check_vnext_placeholder(content: str, rel_path: str) -> list[str]:
+    """Flag a leftover vNEXT placeholder in the assembled release-notes.mdx
+    content. assign_target_version.py (sibling hub-doc-pr-generator's cut-mode
+    dependency) only ever rewrites a fragment's front-matter target_version,
+    never its body prose -- so a fragment generated with the page-level Early
+    Access callout's `vNEXT` placeholder (see that skill's style-guide.md,
+    "Early Access features") can still literally say `vNEXT` in its body even
+    after the front matter gets a real version assigned, and nothing catches
+    that mismatch before it ships. Uses the shared _frontmatter.VNEXT_RE so
+    this agrees with the sibling skill's preview.py check_placeholder_version
+    on what counts as an unresolved placeholder."""
+    findings = []
+    for line in content.splitlines():
+        if VNEXT_RE.search(line):
+            findings.append(
+                f"{rel_path}: contains the vNEXT placeholder — replace with the real "
+                f"Hub release version before merging: {line.strip()}"
+            )
+    return findings
+
+
 def render_manual_checks_section(unresolved: list[str]) -> str:
     if not unresolved:
         return ""
@@ -150,6 +172,7 @@ def main(argv: list[str]) -> int:
     apply_edit(repo_path=args.repo_path, branch=args.branch, rel_path=args.rel_path, content=content)
     fixed, unresolved = run_lint_fix(repo_path=args.repo_path)
     unresolved.extend(check_table_completeness(content, args.rel_path))
+    unresolved.extend(check_vnext_placeholder(content, args.rel_path))
     if fixed:
         _git.run(args.repo_path, ["add", "--", args.rel_path])
 

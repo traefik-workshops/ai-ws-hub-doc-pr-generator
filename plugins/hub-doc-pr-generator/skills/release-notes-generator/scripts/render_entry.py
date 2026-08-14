@@ -47,9 +47,17 @@ def _existing_section_span(existing: str, version: str) -> tuple[int, int] | Non
     v3.19.4 & v3.18.8`) — this pipeline never generates those itself (see
     "Structure of the target file" in the sibling skill's
     release-note-heuristics.md), so falling back to the default insert-above-
-    first-heading behavior for that case is correct, not a gap."""
+    first-heading behavior for that case is correct, not a gap.
+
+    The optional `<EarlyAccessBadge />` suffix is matched whitespace-tolerantly
+    (not one exact literal space) -- confirmed live that a byte-exact match
+    silently missed a heading with two spaces before the badge (a hand edit,
+    or drift from a differently-formatted legacy entry predating this fragment
+    system) and fell through to the default insert-above-first-heading path,
+    reopening the same duplicate-heading bug this function exists to prevent,
+    just via a narrower trigger."""
     heading_re = re.compile(
-        rf"^## Gateway {re.escape(version)}(?: <EarlyAccessBadge />)?\s*$", re.MULTILINE,
+        rf"^## Gateway {re.escape(version)}(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE,
     )
     m = heading_re.search(existing)
     if not m:

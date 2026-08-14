@@ -49,6 +49,15 @@ compat:
 #### Quoted Feature
 """
 
+FRAGMENT_BLANK_TARGET_VERSION = """---
+shape: ea-subsection
+source_prs: [990]
+target_version:
+---
+
+#### Blank Version Feature
+"""
+
 
 class TestParseFragment(unittest.TestCase):
     def test_parses_scalars_list_and_nested_compat(self):
@@ -63,6 +72,20 @@ class TestParseFragment(unittest.TestCase):
         fm = parse_fragment(FRAGMENT_UNASSIGNED)
         self.assertEqual(fm["compat"], {})
         self.assertEqual(fm["target_version"], "unassigned")
+
+    def test_blank_target_version_raises(self):
+        """Regression test: a blank `target_version:` line previously hit the
+        same "empty value = nested block header" branch that lets `compat:`
+        work, so it never became a dict key at all -- collect()'s old
+        falsy-value check then silently treated that identically to the
+        deliberate 'unassigned' sentinel, while the shared
+        UNASSIGNED_TARGET_VERSION_RE regex (used by preview.py and
+        assign_target_version.assign()) only recognizes the literal token.
+        That meant a blank fragment wasn't flagged at PR-preview time but was
+        later refused by assign() -- a confusing dead end. Blank/missing is
+        malformed input, not a legitimate third state, so this must raise."""
+        with self.assertRaises(ValueError):
+            parse_fragment(FRAGMENT_BLANK_TARGET_VERSION)
 
     def test_missing_front_matter_raises(self):
         with self.assertRaises(ValueError):
@@ -143,6 +166,18 @@ class TestForVersion(unittest.TestCase):
             {"target_version": "v3.21.0-ea.1", "pr_number": 1},
             {"target_version": "v3.20.0-ea.8", "pr_number": 2},
         ]
+        self.assertEqual(len(for_version(fragments, "v3.21.0-ea.1")), 1)
+
+    def test_matches_case_insensitively(self):
+        """Regression test: a fragment stamped with different casing than the
+        --version argument previously silently vanished from the assembled
+        section instead of matching -- same bug class already fixed twice for
+        compat component names, left open here for version strings."""
+        fragments = [{"target_version": "v3.21.0-EA.1", "pr_number": 1}]
+        self.assertEqual(len(for_version(fragments, "v3.21.0-ea.1")), 1)
+
+    def test_matches_with_incidental_whitespace(self):
+        fragments = [{"target_version": " v3.21.0-ea.1 ", "pr_number": 1}]
         self.assertEqual(len(for_version(fragments, "v3.21.0-ea.1")), 1)
 
 

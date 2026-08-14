@@ -66,6 +66,24 @@ def parse_fragment(text: str) -> dict:
         else:
             fm[key] = unquote(val)
 
+    if not fm.get("target_version"):
+        # A blank `target_version:` line hits the "elif val == '': section = key"
+        # branch above (the same one that lets `compat:` work) and never becomes
+        # a dict key at all -- collect()'s old falsy-value check then silently
+        # treated that identically to the deliberate "unassigned" sentinel,
+        # while the shared UNASSIGNED_TARGET_VERSION_RE regex (used by
+        # preview.py and assign_target_version.assign()) only recognizes the
+        # literal token, not a blank. That mismatch meant a blank fragment
+        # wasn't flagged at PR-preview time but was later refused by assign()
+        # -- a confusing dead end. This template always writes either
+        # `unassigned` or a real version; blank/missing is malformed input,
+        # not a legitimate third state, so raise here rather than silently
+        # letting the two "what counts as unassigned" definitions disagree.
+        raise ValueError(
+            "fragment's front matter has no target_version value (missing or blank) -- "
+            "must be either 'unassigned' or a real version string"
+        )
+
     return {**fm, "body": body.strip("\n") + "\n"}
 
 
@@ -96,7 +114,14 @@ def collect(fragments_dir: Path) -> dict:
             fragments.append(parsed)
 
     def _is_unassigned(f: dict) -> bool:
-        return not f.get("target_version") or f["target_version"] == "unassigned"
+        # parse_fragment now guarantees target_version is always present and
+        # non-blank (raises otherwise), so this only needs to check the literal
+        # sentinel -- the same definition _frontmatter.UNASSIGNED_TARGET_VERSION_RE
+        # (used by preview.py and assign_target_version.assign()) already uses.
+        # Previously this also treated any falsy value as unassigned, which
+        # disagreed with that regex for a blank value and produced a fragment
+        # that preview.py wouldn't flag but assign() would then refuse to fix.
+        return f["target_version"] == "unassigned"
 
     return {
         "fragments": fragments,
@@ -109,8 +134,17 @@ def for_version(fragments: list[dict], target_version: str) -> list[dict]:
     """Fragments assigned to exactly this release, newest-first (PR-number
     descending) — the same deterministic proxy for "newest" the design settled
     on instead of every branch guessing independently (see
-    release-note-heuristics.md, "Insertion order")."""
-    matching = [f for f in fragments if f.get("target_version") == target_version]
+    release-note-heuristics.md, "Insertion order").
+
+    Matches case/whitespace-insensitively -- the same class of bug already
+    fixed twice in compat_matrix.merge_fragment_deltas for component names,
+    left open here for version strings. Confirmed live: a fragment stamped
+    `v3.21.0-EA.1` (human-typed casing, from SKILL.md step 6c's free-text
+    AskUserQuestion answer or `cut`'s own CLI argument) silently doesn't match
+    cutting `v3.21.0-ea.1` -- not flagged as unassigned, not included in the
+    assembled section, just silently absent with no error."""
+    key = target_version.strip().lower()
+    matching = [f for f in fragments if (f.get("target_version") or "").strip().lower() == key]
     return sorted(matching, key=lambda f: f["pr_number"], reverse=True)
 
 

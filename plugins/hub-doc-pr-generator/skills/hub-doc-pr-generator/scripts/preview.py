@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Iterator, Literal
 
 from scripts import _git
-from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE
+from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE, VNEXT_RE
 
 
 @dataclass
@@ -331,19 +331,19 @@ def check_table_completeness(edits: list[FileEdit]) -> list[str]:
     return findings
 
 
-_VNEXT_RE = re.compile(r"\bvNEXT\b")
-
-
 def check_placeholder_version(edits: list[FileEdit]) -> list[str]:
     """Flag the vNEXT release-version placeholder (see release-note-heuristics.md
     "Which version") left in generated content, so it can't merge un-replaced
-    without at least one visible flag in the PR body."""
+    without at least one visible flag in the PR body. Uses the shared
+    _frontmatter.VNEXT_RE -- also used by the sibling release-notes-generator
+    skill's preview.py (check_vnext_placeholder) so both pipelines agree on
+    the one token that counts as an unresolved placeholder."""
     findings: list[str] = []
     for e in edits:
         if not (e.path.endswith(".md") or e.path.endswith(".mdx")):
             continue
         for line in e.content.splitlines():
-            if _VNEXT_RE.search(line):
+            if VNEXT_RE.search(line):
                 findings.append(
                     f"{e.path}: contains the vNEXT placeholder — replace with the real "
                     f"Hub release version before merging: {line.strip()}"

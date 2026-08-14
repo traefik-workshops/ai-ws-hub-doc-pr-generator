@@ -5,8 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.preview import (
-    apply_edit, run_lint_fix, check_table_completeness, render_manual_checks_section,
-    detect_pretty_tools, git_diff, DEFAULT_REL_PATH,
+    apply_edit, run_lint_fix, check_table_completeness, check_vnext_placeholder,
+    render_manual_checks_section, detect_pretty_tools, git_diff, DEFAULT_REL_PATH,
 )
 
 
@@ -111,6 +111,28 @@ class TestCheckTableCompleteness(unittest.TestCase):
     def test_complete_table_not_flagged(self):
         content = "| Component | Version |\n| --- | --- |\n| Traefik Hub | v3.20.8 |\n"
         self.assertEqual(check_table_completeness(content, DEFAULT_REL_PATH), [])
+
+
+class TestCheckVnextPlaceholder(unittest.TestCase):
+    def test_flags_vnext_left_in_fragment_body_prose(self):
+        """Regression test: assign_target_version.py only rewrites a
+        fragment's front-matter target_version, never its body -- a leftover
+        `vNEXT` in the assembled section's callout text previously had nothing
+        catching it before the cut PR shipped."""
+        content = (
+            "## Gateway v3.21.0-ea.1 <EarlyAccessBadge />\n\n**2026-08-10**\n\n"
+            "#### Bedrock Mantle\n\n:::warning Early Access\n"
+            "This feature is currently in early access. Available starting vNEXT.\n:::\n"
+        )
+        findings = check_vnext_placeholder(content, DEFAULT_REL_PATH)
+        self.assertTrue(any("vNEXT" in f for f in findings))
+
+    def test_real_version_not_flagged(self):
+        content = (
+            ":::warning Early Access\n"
+            "This feature is currently in early access. Available starting v3.21.0-ea.1.\n:::\n"
+        )
+        self.assertEqual(check_vnext_placeholder(content, DEFAULT_REL_PATH), [])
 
 
 class TestRenderManualChecksSection(unittest.TestCase):

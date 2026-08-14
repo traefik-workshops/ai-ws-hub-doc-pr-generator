@@ -29,6 +29,18 @@ _FRONT_MATTER_RE = re.compile(r"^---\n(?P<fm>.*?)\n---\n?(?P<body>.*)$", re.DOTA
 # its own private copy of this same pattern, in sync only by a comment.
 UNASSIGNED_TARGET_VERSION_RE = re.compile(r"^target_version:\s*['\"]?unassigned['\"]?\s*$", re.MULTILINE)
 
+# The release-version placeholder used in EA callouts/headings when the real
+# version isn't known yet (see the sibling hub-doc-pr-generator skill's
+# style-guide.md "Early Access features" and release-note-heuristics.md
+# "Which version"). Shared by hub-doc-pr-generator's preview.py
+# (check_placeholder_version) and release-notes-generator's preview.py
+# (check_vnext_placeholder) -- both need to agree on the one token that counts
+# as an unresolved placeholder, since assign_target_version.py only ever
+# rewrites a fragment's front-matter target_version, never its body prose, so
+# a fragment's body can still say vNEXT after its front matter is assigned a
+# real version.
+VNEXT_RE = re.compile(r"\bvNEXT\b")
+
 
 def unquote(v: str) -> str:
     v = v.strip()

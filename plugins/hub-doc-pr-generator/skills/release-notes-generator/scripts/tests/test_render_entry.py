@@ -60,6 +60,19 @@ class TestSplice(unittest.TestCase):
         self.assertIn("Messages API", twice)
         self.assertIn("## Gateway v3.20.6", twice)  # untouched sibling section
 
+    def test_resplice_tolerates_badge_spacing_drift(self):
+        """Regression test: a byte-exact single-space match previously missed
+        a heading with different spacing before the badge (hand edit, or a
+        legacy formatting variant) and silently fell through to the default
+        insert-above-first path, duplicating the heading -- the same bug this
+        function exists to prevent, just reopened via a narrower trigger."""
+        existing = "## Gateway v3.21.0-ea.1  <EarlyAccessBadge />\n\n**2026-08-10**\n\nold\n"  # two spaces
+        entry = "## Gateway v3.21.0-ea.1 <EarlyAccessBadge />\n\n**2026-08-11**\n\nnew\n"  # one space
+        result = splice(existing, entry)
+        self.assertEqual(result.count("## Gateway v3.21.0-ea.1"), 1)
+        self.assertIn("new", result)
+        self.assertNotIn("old", result)
+
     def test_resplice_preserves_ea_badge_in_heading(self):
         existing = "preamble\n\n## Gateway v3.21.0-ea.1 <EarlyAccessBadge />\n\n**2026-08-10**\n\nold\n"
         entry = "## Gateway v3.21.0-ea.1 <EarlyAccessBadge />\n\n**2026-08-11**\n\nnew\n"
