@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from scripts.collect_fragments import parse_fragment, collect, for_version
+from scripts.collect_fragments import parse_fragment, collect, for_version, _pr_number
 
 FRAGMENT_EA = """---
 shape: ea-subsection
@@ -104,6 +104,27 @@ class TestCollect(unittest.TestCase):
             (d / "964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
             result = collect(d)
         self.assertEqual(result["fragments"][0]["pr_number"], 964)
+
+    def test_malformed_filename_raises_instead_of_collecting_silently(self):
+        """Regression test: a fragment filename with no PR-number prefix
+        previously silently defaulted to pr_number=0 (sorting as if it were
+        the oldest possible PR) instead of surfacing that its ordering can't
+        be trusted -- inconsistent with parse_fragment's and assign()'s
+        loud-failure behavior elsewhere in this pipeline."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "bedrock-mantle-no-pr-prefix.mdx").write_text(FRAGMENT_EA)
+            with self.assertRaises(ValueError):
+                collect(d)
+
+
+class TestPrNumber(unittest.TestCase):
+    def test_raises_on_missing_prefix(self):
+        with self.assertRaises(ValueError):
+            _pr_number("bedrock-mantle-no-pr-prefix.mdx")
+
+    def test_extracts_leading_number(self):
+        self.assertEqual(_pr_number("964-bedrock-mantle.mdx"), 964)
 
 
 class TestForVersion(unittest.TestCase):

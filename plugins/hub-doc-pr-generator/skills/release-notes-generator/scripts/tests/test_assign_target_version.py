@@ -7,6 +7,9 @@ FRAGMENT_BARE = "---\nshape: ea-subsection\nsource_prs: [964]\ntarget_version: u
 FRAGMENT_DOUBLE_QUOTED = FRAGMENT_BARE.replace("target_version: unassigned", 'target_version: "unassigned"')
 FRAGMENT_SINGLE_QUOTED = FRAGMENT_BARE.replace("target_version: unassigned", "target_version: 'unassigned'")
 FRAGMENT_ALREADY_ASSIGNED = FRAGMENT_BARE.replace("target_version: unassigned", "target_version: v3.20.0-ea.8")
+FRAGMENT_DUPLICATE_KEY = FRAGMENT_BARE.replace(
+    "target_version: unassigned\n", "target_version: unassigned\ntarget_version: unassigned\n",
+)
 
 
 class TestAssign(unittest.TestCase):
@@ -36,6 +39,15 @@ class TestAssign(unittest.TestCase):
         """The literal bug being fixed: never return content unchanged."""
         with self.assertRaises(ValueError):
             assign("no target_version line at all\n", "v3.21.0-ea.1")
+
+    def test_raises_on_duplicate_unassigned_lines_instead_of_fixing_only_first(self):
+        """Regression test: previously silently replaced only the first of two
+        duplicate `target_version: unassigned` lines and reported success, while
+        parse_fragment's dict-assignment walk (which takes the LAST occurrence)
+        would still read the fragment back as unassigned. A duplicate key is
+        malformed front matter -- raise so a human fixes it, don't guess."""
+        with self.assertRaises(ValueError):
+            assign(FRAGMENT_DUPLICATE_KEY, "v3.21.0-ea.1")
 
     def test_written_version_is_never_quoted(self):
         result = assign(FRAGMENT_DOUBLE_QUOTED, "v3.21.0-ea.1")

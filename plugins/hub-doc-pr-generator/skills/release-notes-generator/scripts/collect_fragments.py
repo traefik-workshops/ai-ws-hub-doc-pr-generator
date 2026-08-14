@@ -70,8 +70,19 @@ def parse_fragment(text: str) -> dict:
 
 
 def _pr_number(filename: str) -> int:
+    """Raises ValueError on a filename that doesn't start with a PR number,
+    consistent with parse_fragment's and assign_target_version.assign's loud-
+    failure behavior elsewhere in this pipeline -- silently defaulting to 0
+    would let a misnamed fragment sort as if it were the oldest possible PR
+    instead of surfacing that its ordering can't actually be trusted."""
     m = _PR_NUMBER_RE.match(filename)
-    return int(m.group(1)) if m else 0
+    if not m:
+        raise ValueError(
+            f"{filename}: fragment filename doesn't start with a PR number "
+            "(expected '<pr-number>-<slug>.mdx') -- can't determine its position "
+            "in newest-first ordering"
+        )
+    return int(m.group(1))
 
 
 def collect(fragments_dir: Path) -> dict:

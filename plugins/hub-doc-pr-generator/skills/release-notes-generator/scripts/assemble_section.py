@@ -34,11 +34,20 @@ _EA_VERSION_RE = re.compile(r"-ea(\.|$)", re.IGNORECASE)
 _BULLET_SHAPE = "ga-bullet"
 
 
+def _escape_table_cell(value: object) -> str:
+    """Escape `|` (the markdown table cell delimiter) so a value containing one
+    -- component names and versions both come from free-text fragment front
+    matter, not a fixed enum -- can't split a row into extra columns. Confirmed
+    live: an unescaped 'v3.7.10 (rc | preview)' value produced a 3-column row
+    instead of 2."""
+    return str(value).replace("|", "\\|")
+
+
 def render_compat_table(rows: list[dict]) -> str:
     lines = ["<Collapse title=\"Compatibility matrix\">", "", "| Component | Version |", "| --- | --- |"]
     for row in rows:
         version = row["version"] if row["version"] is not None else "TBD"
-        lines.append(f"| {row['component']} | {version} |")
+        lines.append(f"| {_escape_table_cell(row['component'])} | {_escape_table_cell(version)} |")
     lines.append("")
     lines.append("</Collapse>")
     return "\n".join(lines)

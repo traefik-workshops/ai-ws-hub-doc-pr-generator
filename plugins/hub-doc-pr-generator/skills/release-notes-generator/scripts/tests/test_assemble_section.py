@@ -1,5 +1,8 @@
+import re
 import unittest
 from scripts.assemble_section import assemble, render_compat_table
+
+_UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 
 EA_FRAGMENT = {
     "shape": "ea-subsection",
@@ -33,6 +36,22 @@ class TestRenderCompatTable(unittest.TestCase):
         self.assertIn("<Collapse title=\"Compatibility matrix\">", table)
         self.assertIn("| Traefik Hub | v3.21.0-ea.1 |", table)
         self.assertIn("| Helm Chart | TBD |", table)
+
+    def test_escapes_pipe_in_version_value(self):
+        """Regression test: an unescaped '|' in a free-text compat value
+        (fragment front matter, not a fixed enum) previously split the row
+        into an extra column instead of staying a 2-column row."""
+        rows = [{"component": "Traefik Proxy", "version": "v3.7.10 (rc | preview)", "note": None}]
+        table = render_compat_table(rows)
+        row_line = next(line for line in table.splitlines() if "Traefik Proxy" in line)
+        self.assertEqual(len(_UNESCAPED_PIPE_RE.findall(row_line)) - 1, 2)  # exactly 2 real columns
+        self.assertIn("rc \\| preview", row_line)
+
+    def test_escapes_pipe_in_component_name(self):
+        rows = [{"component": "Weird | Component", "version": "v1.0.0", "note": None}]
+        table = render_compat_table(rows)
+        row_line = next(line for line in table.splitlines() if "Weird" in line)
+        self.assertEqual(len(_UNESCAPED_PIPE_RE.findall(row_line)) - 1, 2)
 
 
 class TestAssemble(unittest.TestCase):

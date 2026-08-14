@@ -18,28 +18,38 @@ target_version line to replace -- never silently no-ops.
 """
 from __future__ import annotations
 import argparse
-import re
 import sys
 from pathlib import Path
 
-# Same quote-tolerant match as the sibling hub-doc-pr-generator skill's
-# preview.py check_unassigned_fragment (_UNASSIGNED_TARGET_VERSION_RE) -- keep
-# these two in sync if either changes what counts as "unassigned".
-_UNASSIGNED_LINE_RE = re.compile(r"^target_version:\s*['\"]?unassigned['\"]?\s*$", re.MULTILINE)
+from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE
 
 
 def assign(content: str, version: str) -> str:
     """Replace the fragment's `target_version: unassigned` line (bare or
     quoted) with `target_version: <version>` (always written unquoted, matching
     templates/release-note-fragment.mdx.tmpl's convention). Raises ValueError
-    if no such line is found -- never returns `content` unchanged."""
-    new_content, count = _UNASSIGNED_LINE_RE.subn(f"target_version: {version}", content, count=1)
-    if count == 0:
+    if no such line is found -- never returns `content` unchanged.
+
+    Also raises if MORE than one such line is found, rather than quietly fixing
+    just the first: a well-formed fragment has exactly one `target_version:`
+    key, so two is itself malformed front matter (a bad hand-edit or merge),
+    not something to guess a "right one" for. Confirmed live that silently
+    replacing only the first left the fragment still parsing back as
+    `unassigned` (parse_fragment's dict-assignment walk takes the LAST
+    occurrence), while this function had already reported success."""
+    matches = list(UNASSIGNED_TARGET_VERSION_RE.finditer(content))
+    if not matches:
         raise ValueError(
             "no 'target_version: unassigned' line found -- fragment may already be "
             "assigned, or its front matter doesn't match the expected shape"
         )
-    return new_content
+    if len(matches) > 1:
+        raise ValueError(
+            f"found {len(matches)} 'target_version: unassigned' lines -- this fragment's "
+            "front matter has a duplicate key and needs a human to fix it by hand before "
+            "it can be assigned a version"
+        )
+    return UNASSIGNED_TARGET_VERSION_RE.sub(f"target_version: {version}", content, count=1)
 
 
 def main(argv: list[str]) -> int:

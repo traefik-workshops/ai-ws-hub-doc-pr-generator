@@ -20,6 +20,15 @@ import re
 
 _FRONT_MATTER_RE = re.compile(r"^---\n(?P<fm>.*?)\n---\n?(?P<body>.*)$", re.DOTALL)
 
+# What counts as an unassigned release-note fragment's target_version (bare or
+# quoted -- collect_fragments.parse_fragment unquotes scalars when reading a
+# fragment back, so anything that checks for this sentinel at write time or in
+# raw file content must recognize the same forms). Shared by
+# hub-doc-pr-generator's preview.py (check_unassigned_fragment) and
+# release-notes-generator's assign_target_version.py -- previously each kept
+# its own private copy of this same pattern, in sync only by a comment.
+UNASSIGNED_TARGET_VERSION_RE = re.compile(r"^target_version:\s*['\"]?unassigned['\"]?\s*$", re.MULTILINE)
+
 
 def unquote(v: str) -> str:
     v = v.strip()

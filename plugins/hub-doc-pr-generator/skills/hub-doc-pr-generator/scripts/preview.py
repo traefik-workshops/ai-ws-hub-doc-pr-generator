@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterator, Literal
 
 from scripts import _git
+from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE
 
 
 @dataclass
@@ -351,7 +352,6 @@ def check_placeholder_version(edits: list[FileEdit]) -> list[str]:
 
 
 _FRAGMENT_PATH_RE = re.compile(r"release-notes\.d/")
-_UNASSIGNED_TARGET_VERSION_RE = re.compile(r"^target_version:\s*['\"]?unassigned['\"]?\s*$", re.MULTILINE)
 
 
 def check_unassigned_fragment(edits: list[FileEdit]) -> list[str]:
@@ -360,15 +360,15 @@ def check_unassigned_fragment(edits: list[FileEdit]) -> list[str]:
     state until the EA cut number is known, see release-note-heuristics.md "Which
     version"), but worth a visible reminder in the PR body so it isn't forgotten
     before `release-notes-generator cut` runs. Matches quoted ('unassigned' /
-    "unassigned") as well as bare unassigned -- collect_fragments.parse_fragment
-    already unquotes scalars when it reads a fragment back, so this needs to
-    recognize the same forms at write time or a quoted value silently skips
-    this flag despite being functionally identical."""
+    "unassigned") as well as bare unassigned via the shared
+    _frontmatter.UNASSIGNED_TARGET_VERSION_RE (also used by the sibling
+    release-notes-generator skill's assign_target_version.py) -- previously
+    each kept its own private copy of this pattern, in sync only by a comment."""
     findings: list[str] = []
     for e in edits:
         if not _FRAGMENT_PATH_RE.search(e.path):
             continue
-        if _UNASSIGNED_TARGET_VERSION_RE.search(e.content):
+        if UNASSIGNED_TARGET_VERSION_RE.search(e.content):
             findings.append(
                 f"{e.path}: target_version is `unassigned` — release-notes-generator's "
                 f"`cut` command will prompt for this fragment once the release version is known"
