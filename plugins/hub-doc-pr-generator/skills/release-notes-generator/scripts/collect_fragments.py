@@ -12,7 +12,11 @@ didn't know the release yet — see that same reference's "Which version").
 No YAML dependency — this plugin deliberately stays stdlib-only (see
 compat_matrix.py's note on the same choice). The front-matter schema is small
 and fixed (scalars, one inline list, one nested mapping), so a hand-rolled
-parser is simpler than pulling in a real YAML library for it.
+parser is simpler than pulling in a real YAML library for it. The delimiter
+split and quoted-scalar handling come from the shared `_frontmatter` module
+(see that module's docstring) rather than a third private reimplementation —
+only the schema-specific field walk (the `source_prs` list and the `compat`
+nested mapping, neither of which the two existing consumers need) lives here.
 
 Usage:
   python -m scripts.collect_fragments --release-notes-dir <hub-doc-root>/docs/api-gateway/release-notes.d
@@ -24,7 +28,8 @@ import re
 import sys
 from pathlib import Path
 
-_FRONT_MATTER_RE = re.compile(r"^---\n(?P<fm>.*?)\n---\n?(?P<body>.*)$", re.DOTALL)
+from scripts._frontmatter import split_front_matter, unquote
+
 _SCALAR_RE = re.compile(r"^(?P<k>[A-Za-z0-9_]+):\s*(?P<v>.*)$")
 _NESTED_KV_RE = re.compile(r"^\s+(?P<k>[^:]+):\s*(?P<v>.+)$")
 _PR_NUMBER_RE = re.compile(r"^(\d+)-")
@@ -34,19 +39,20 @@ def parse_fragment(text: str) -> dict:
     """Parse one fragment's front matter + body. Raises ValueError if the
     front-matter block is missing or malformed — a fragment this script can't
     parse should stop `cut` loudly, not be silently skipped."""
-    m = _FRONT_MATTER_RE.match(text)
-    if not m:
+    try:
+        fm_text, body = split_front_matter(text)
+    except ValueError:
         raise ValueError("fragment has no '---' front matter block")
 
     fm: dict = {"compat": {}, "source_prs": []}
     section: str | None = None
-    for line in m["fm"].splitlines():
+    for line in fm_text.splitlines():
         if not line.strip():
             continue
         if line[0] in " \t":
             nested = _NESTED_KV_RE.match(line)
             if nested and section == "compat":
-                fm["compat"][nested["k"].strip()] = nested["v"].strip()
+                fm["compat"][unquote(nested["k"].strip())] = unquote(nested["v"].strip())
             continue
         section = None
         scalar = _SCALAR_RE.match(line)
@@ -58,9 +64,9 @@ def parse_fragment(text: str) -> dict:
         elif val == "":
             section = key  # nested block header (currently only "compat")
         else:
-            fm[key] = val
+            fm[key] = unquote(val)
 
-    return {**fm, "body": m["body"].strip("\n") + "\n"}
+    return {**fm, "body": body.strip("\n") + "\n"}
 
 
 def _pr_number(filename: str) -> int:

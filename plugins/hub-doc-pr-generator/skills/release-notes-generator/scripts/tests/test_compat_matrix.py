@@ -168,14 +168,20 @@ class TestMergeFragmentDeltas(unittest.TestCase):
         rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
         self.assertEqual(rows[-1], {"component": "Envoy", "version": "v1.30.0", "note": None})
 
-    def test_multiple_fragments_last_delta_for_same_component_wins(self):
-        deltas = [
-            {"compat": {"Traefik Proxy": "v3.7.10"}},
-            {"compat": {"Traefik Proxy": "v3.7.11"}},
+    def test_newest_first_delta_wins_over_older_duplicate(self):
+        """Regression test: fragment_deltas must be fed newest-first (the real
+        caller is collect_fragments.for_version, which orders that way), and the
+        FIRST delta seen per component must win -- an older duplicate must never
+        override a newer one. Previously this silently let whichever delta was
+        processed *last* win regardless of recency: fed exactly this newest-first
+        order, it returned the older v3.7.8 instead of the newer v3.7.10."""
+        deltas_newest_first = [
+            {"compat": {"Traefik Proxy": "v3.7.10"}},  # newer PR, correct bump
+            {"compat": {"Traefik Proxy": "v3.7.8"}},   # older PR, stale duplicate
         ]
-        rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
+        rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas_newest_first)
         by_component = {r["component"]: r["version"] for r in rows}
-        self.assertEqual(by_component["Traefik Proxy"], "v3.7.11")
+        self.assertEqual(by_component["Traefik Proxy"], "v3.7.10")
 
     def test_row_order_is_matrix_order_then_new_components(self):
         deltas = [{"compat": {"Envoy": "v1.30.0"}}]

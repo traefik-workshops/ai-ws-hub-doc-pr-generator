@@ -292,11 +292,21 @@ them into the real section, once, when the release is actually confirmed.
    > `<version>`?"
 
    For each fragment the writer selects, rewrite its front matter in place —
-   replace `target_version: unassigned` with `target_version: <version>` (a
-   one-line mechanical edit, e.g. via `sed -i '' "s/^target_version: unassigned$/target_version: <version>/"`
-   on that fragment's path) — then re-run step 1 so the updated assignment is
-   picked up. Fragments the writer does *not* select stay `unassigned` for a
-   future cut; never touch them.
+   replace `target_version: unassigned` with `target_version: <version>` via a
+   portable Python edit, not shell `sed -i` (its in-place syntax differs between
+   BSD/macOS and GNU/Linux — `sed -i ''` specifically is BSD-only and either
+   errors or silently no-ops under GNU sed, leaving `target_version` unassigned):
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -c "
+   from pathlib import Path
+   path = Path('<fragment-path>')
+   path.write_text(
+       path.read_text().replace('target_version: unassigned', 'target_version: <version>', 1)
+   )
+   "
+   ```
+   Then re-run step 1 so the updated assignment is picked up. Fragments the
+   writer does *not* select stay `unassigned` for a future cut; never touch them.
 
 3. **Filter and order this release's fragments.**
    ```bash

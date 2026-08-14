@@ -203,6 +203,18 @@ def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dic
     a `matrix` row for a component with no matching delta -- this only adds
     or overrides, it doesn't shrink the table.
 
+    `fragment_deltas` MUST be ordered newest-first (see
+    `collect_fragments.for_version`, which is what actually feeds this in
+    practice) -- the first delta seen for a given component wins; an older
+    fragment's delta for a component a newer fragment already set is ignored.
+    Without this, two PRs bumping the same component in one release window
+    would let whichever one happens to be processed last silently win
+    regardless of recency -- exactly the class of silent cross-PR corruption
+    fragments exist to prevent, just relocated into the compat matrix instead
+    of the release-note prose (confirmed live: feeding a newest-first list of
+    an older v3.7.8 delta after a newer v3.7.10 one previously produced
+    v3.7.8 in the output).
+
     Returns an ordered list of {"component": ..., "version": ..., "note": ...}
     rows: known components first (matrix's fixed order), any delta naming a
     component the matrix doesn't track appended after, in the order first seen.
@@ -218,8 +230,12 @@ def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dic
         rows[display] = {"component": display, "version": version, "note": note}
         order.append(display)
 
+    delta_assigned: set[str] = set()
     for delta in fragment_deltas:
         for component, version in delta.get("compat", {}).items():
+            if component in delta_assigned:
+                continue  # a newer fragment already claimed this component -- ignore the older one
+            delta_assigned.add(component)
             if component not in rows:
                 order.append(component)
             rows[component] = {"component": component, "version": version, "note": None}

@@ -38,6 +38,17 @@ target_version: v3.21.0-ea.1
 - **Hardened Image** is now generally available. See the [Hardened Image](../setup/installation/hardened-image.md) documentation.
 """
 
+FRAGMENT_QUOTED_SCALARS = """---
+shape: ea-subsection
+source_prs: [990]
+target_version: "v3.21.0-ea.1"
+compat:
+  "Traefik Proxy": 'v3.7.10'
+---
+
+#### Quoted Feature
+"""
+
 
 class TestParseFragment(unittest.TestCase):
     def test_parses_scalars_list_and_nested_compat(self):
@@ -56,6 +67,18 @@ class TestParseFragment(unittest.TestCase):
     def test_missing_front_matter_raises(self):
         with self.assertRaises(ValueError):
             parse_fragment("#### No front matter here\n")
+
+    def test_unquotes_scalar_and_nested_compat_values(self):
+        """Regression test: quoted scalars (which an LLM generation step can
+        plausibly emit even when not required) must be unquoted the same way
+        the two other front-matter consumers (extract_neighbor_structure.py,
+        fetch_grounding.py) already do via the shared _frontmatter.unquote --
+        previously this parser kept the literal quote characters, which would
+        have silently broken the `target_version == "unassigned"` sentinel
+        check and version-matching in for_version()."""
+        fm = parse_fragment(FRAGMENT_QUOTED_SCALARS)
+        self.assertEqual(fm["target_version"], "v3.21.0-ea.1")
+        self.assertEqual(fm["compat"], {"Traefik Proxy": "v3.7.10"})
 
 
 class TestCollect(unittest.TestCase):
