@@ -180,6 +180,26 @@ class TestForVersion(unittest.TestCase):
         fragments = [{"target_version": " v3.21.0-ea.1 ", "pr_number": 1}]
         self.assertEqual(len(for_version(fragments, "v3.21.0-ea.1")), 1)
 
+    def test_matches_missing_v_prefix(self):
+        """Regression test: a fragment stamped without the leading `v`
+        previously silently didn't match -- not flagged as unassigned (it has
+        a non-empty value), not included in the assembled section either,
+        just silently absent with zero error."""
+        fragments = [{"target_version": "3.20.7", "pr_number": 1}]
+        self.assertEqual(len(for_version(fragments, "v3.20.7")), 1)
+
+    def test_matches_v_prefix_and_case_drift_together(self):
+        fragments = [{"target_version": "3.21.0-EA.1", "pr_number": 1}]
+        self.assertEqual(len(for_version(fragments, "v3.21.0-ea.1")), 1)
+
+    def test_non_semver_value_falls_back_to_exact_string_match(self):
+        """A value that doesn't parse as semver at all (e.g. hand-typo'd) still
+        gets an exact-match chance via the fallback, rather than being treated
+        as unmatchable against everything."""
+        fragments = [{"target_version": "not-a-version", "pr_number": 1}]
+        self.assertEqual(len(for_version(fragments, "not-a-version")), 1)
+        self.assertEqual(len(for_version(fragments, "v3.20.7")), 0)
+
 
 class TestMain(unittest.TestCase):
     def test_returns_zero_and_prints_json_on_success(self):

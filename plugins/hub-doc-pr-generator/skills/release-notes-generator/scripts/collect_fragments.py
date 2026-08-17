@@ -28,6 +28,7 @@ import re
 import sys
 from pathlib import Path
 
+from scripts import _semver
 from scripts._frontmatter import split_front_matter, unquote
 
 _SCALAR_RE = re.compile(r"^(?P<k>[A-Za-z0-9_]+):\s*(?P<v>.*)$")
@@ -130,21 +131,52 @@ def collect(fragments_dir: Path) -> dict:
     }
 
 
+def _version_key(value: str) -> tuple | None:
+    """A comparison key robust to the two ways a human-typed version string
+    (SKILL.md step 6c's free-text answer, or `cut`'s own CLI argument) can
+    drift from a fragment's stored value without being a different release:
+    presence/absence of the `v` prefix (_semver.parse already treats both the
+    same) and case in the prerelease suffix (`_semver.SemVer.key()` does NOT
+    fold this itself -- confirmed live that v3.21.0-EA.1 and v3.21.0-ea.1
+    produce different keys from plain _semver.parse().key(), which would have
+    silently regressed the case-insensitivity fix below if used as-is).
+    Returns None if `value` doesn't parse as semver at all, so callers can
+    fall back to a plain string comparison rather than treating "doesn't
+    parse" as "never matches"."""
+    parsed = _semver.parse(value)
+    if parsed is None:
+        return None
+    return (parsed.major, parsed.minor, parsed.patch, (parsed.prerelease or "").lower())
+
+
 def for_version(fragments: list[dict], target_version: str) -> list[dict]:
     """Fragments assigned to exactly this release, newest-first (PR-number
     descending) — the same deterministic proxy for "newest" the design settled
     on instead of every branch guessing independently (see
     release-note-heuristics.md, "Insertion order").
 
-    Matches case/whitespace-insensitively -- the same class of bug already
-    fixed twice in compat_matrix.merge_fragment_deltas for component names,
-    left open here for version strings. Confirmed live: a fragment stamped
-    `v3.21.0-EA.1` (human-typed casing, from SKILL.md step 6c's free-text
-    AskUserQuestion answer or `cut`'s own CLI argument) silently doesn't match
-    cutting `v3.21.0-ea.1` -- not flagged as unassigned, not included in the
-    assembled section, just silently absent with no error."""
-    key = target_version.strip().lower()
-    matching = [f for f in fragments if (f.get("target_version") or "").strip().lower() == key]
+    Matches on a semver-normalized key when both sides parse as one (handles
+    case AND `v`-prefix drift -- confirmed live that a fragment stamped
+    `3.20.7`, missing the `v` prefix, previously silently didn't match cutting
+    `v3.20.7`: not flagged as unassigned since it has a non-empty value, not
+    included in the assembled section either, just silently absent with no
+    error -- the same failure class as the case-insensitivity bug fixed
+    earlier in compat_matrix.merge_fragment_deltas, just a different kind of
+    format drift). Falls back to a plain case/whitespace-insensitive string
+    comparison when either side doesn't parse as valid semver, so a
+    genuinely malformed value still gets an exact-match chance instead of
+    being silently unmatchable against everything."""
+    target_key = _version_key(target_version)
+    fallback = target_version.strip().lower()
+
+    def _matches(f: dict) -> bool:
+        value = f.get("target_version") or ""
+        value_key = _version_key(value)
+        if target_key is not None and value_key is not None:
+            return value_key == target_key
+        return value.strip().lower() == fallback
+
+    matching = [f for f in fragments if _matches(f)]
     return sorted(matching, key=lambda f: f["pr_number"], reverse=True)
 
 
