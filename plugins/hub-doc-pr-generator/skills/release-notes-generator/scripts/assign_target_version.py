@@ -62,7 +62,14 @@ def assign(content: str, version: str) -> str:
             "matter -- that's a duplicate key and needs a human to fix it by hand before it can "
             "be assigned a version"
         )
-    new_fm = UNASSIGNED_TARGET_VERSION_RE.sub(f"target_version: {version}", fm_text, count=1)
+    # A callable replacement, not an f-string passed straight to `sub`'s `repl`
+    # argument -- re.sub treats a STRING repl's backslash-digit sequences
+    # (\1, \g<name>, ...) as backreferences, so a version containing one
+    # (a plausible typo, e.g. an accidentally-pasted regex fragment) would
+    # raise a raw `re.error: invalid group reference` instead of this
+    # module's documented clean non-zero exit. A callable's return value is
+    # inserted literally -- no backreference processing.
+    new_fm = UNASSIGNED_TARGET_VERSION_RE.sub(lambda m: f"target_version: {version}", fm_text, count=1)
     return f"---\n{new_fm}\n---\n{body}"
 
 

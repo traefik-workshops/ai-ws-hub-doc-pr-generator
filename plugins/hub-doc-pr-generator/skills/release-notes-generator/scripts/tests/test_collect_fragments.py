@@ -179,6 +179,34 @@ class TestCollect(unittest.TestCase):
             with self.assertRaises(ValueError):
                 collect(d)
 
+    def test_orders_by_pr_number_not_filename_string(self):
+        """Regression test: sorted(glob(...)) with no key sorts filenames as
+        plain strings, so '10-x.mdx' comes before '9-x.mdx' ('1' < '9'
+        lexicographically). SKILL.md's cut-mode step 2 lists collect()'s
+        `unassigned` slice in this exact order for the interactive "which of
+        these belong to this release" prompt -- a writer with fragments from
+        PR #9 and PR #10 would see #10 offered first, which reads as though
+        it's the older one."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "10-second.mdx").write_text(FRAGMENT_UNASSIGNED.replace("970", "10"))
+            (d / "9-first.mdx").write_text(FRAGMENT_UNASSIGNED.replace("970", "9"))
+            result = collect(d)
+        self.assertEqual([f["pr_number"] for f in result["fragments"]], [9, 10])
+
+    def test_malformed_front_matter_error_names_the_file(self):
+        """Regression test: parse_fragment's own ValueError message never
+        names the file it was parsing -- previously a writer saw e.g.
+        "fragment's front matter has no target_version value" with no way to
+        tell which of possibly many accumulated fragments (never deleted, by
+        the round-7 no-delete design) that referred to."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "990-blank-version.mdx").write_text(FRAGMENT_BLANK_TARGET_VERSION)
+            with self.assertRaises(ValueError) as ctx:
+                collect(d)
+        self.assertIn("990-blank-version.mdx", str(ctx.exception))
+
 
 class TestPrNumber(unittest.TestCase):
     def test_raises_on_missing_prefix(self):

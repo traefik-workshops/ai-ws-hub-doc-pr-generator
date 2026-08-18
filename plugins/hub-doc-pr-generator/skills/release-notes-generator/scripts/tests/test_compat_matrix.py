@@ -150,7 +150,25 @@ SAMPLE_MATRIX = {
 }
 
 
+SAMPLE_MATRIX_WITH_UNMATCHED_DEP = {**SAMPLE_MATRIX, "kubernetes_gateway_api": None}
+
+
 class TestMergeFragmentDeltas(unittest.TestCase):
+    def test_go_mod_dep_with_no_regex_match_renders_as_tbd_not_dropped(self):
+        """Regression test: a go.mod-derived component (coraza_waf/owasp_crs/
+        kubernetes_gateway_api) whose regex doesn't match at a given tag comes
+        back as a bare `None` (not a dict), unlike helm_chart/traefik_proxy/
+        static_analyzer which are always dict-shaped even when unknown.
+        Checking `value is None` to decide whether to skip the row -- instead
+        of checking whether the matrix even has the key -- silently dropped
+        that component from the published compat table entirely instead of
+        rendering it as `TBD` like every other unknown value."""
+        rows = merge_fragment_deltas(SAMPLE_MATRIX_WITH_UNMATCHED_DEP, [])
+        components = [r["component"] for r in rows]
+        self.assertIn("Kubernetes Gateway API", components)
+        by_component = {r["component"]: r["version"] for r in rows}
+        self.assertIsNone(by_component["Kubernetes Gateway API"])
+
     def test_case_variant_component_name_overrides_instead_of_duplicating(self):
         """Regression test: previously an uncanonicalized 'traefik proxy'
         delta produced BOTH 'Traefik Proxy' and 'traefik proxy' as separate

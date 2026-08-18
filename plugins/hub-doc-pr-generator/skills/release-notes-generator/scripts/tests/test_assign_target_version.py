@@ -73,6 +73,16 @@ class TestAssign(unittest.TestCase):
         self.assertIn('target_version: v3.21.0-ea.1', result)
         self.assertNotIn('target_version: "v3.21.0-ea.1"', result)
 
+    def test_version_containing_backslash_digit_does_not_crash(self):
+        """Regression test: the version was interpolated into re.sub's `repl`
+        STRING argument, where a backslash-digit sequence (\\1, \\g<name>, ...)
+        is interpreted as a backreference rather than literal text -- a
+        plausible fat-fingered version string containing one previously
+        raised a raw `re.error: invalid group reference` instead of this
+        module's documented clean behavior. Must substitute it literally."""
+        result = assign(FRAGMENT_BARE, r"v3.20\1")
+        self.assertIn("target_version: v3.20\\1", result)
+
 
 class TestMain(unittest.TestCase):
     def test_writes_file_and_returns_zero(self):

@@ -502,6 +502,28 @@ class TestCheckUnassignedFragment(unittest.TestCase):
         )]
         self.assertEqual(check_unassigned_fragment(edits), [])
 
+    def test_body_text_false_positive_does_not_flag_an_already_assigned_fragment(self):
+        """Regression test: this check previously scanned the whole fragment
+        content, not just its front matter -- the same false-positive class
+        assign_target_version.assign() was fixed to avoid (see that
+        function's docstring) at a sibling call site in this same PR. A
+        fragment whose front matter is already assigned but whose BODY prose
+        happens to contain the literal string "target_version: unassigned"
+        (e.g. documentation about this very convention) was wrongly flagged
+        as unassigned in the PR body's manual-checks section."""
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+            content=(
+                "---\nshape: ea-subsection\nsource_prs: [1234]\n"
+                "target_version: v3.21.0-ea.1\n---\n\n"
+                "#### Bedrock Mantle\n\n"
+                "This fragment demonstrates the format:\n"
+                "target_version: unassigned\n"
+            ),
+            mode="create",
+        )]
+        self.assertEqual(check_unassigned_fragment(edits), [])
+
     def test_non_fragment_paths_are_skipped(self):
         edits = [FileEdit(
             path="docs/api-gateway/some-page.md",

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Iterator, Literal
 
 from scripts import _git
-from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE, VNEXT_RE
+from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE, VNEXT_RE, split_front_matter
 
 
 @dataclass
@@ -363,12 +363,26 @@ def check_unassigned_fragment(edits: list[FileEdit]) -> list[str]:
     "unassigned") as well as bare unassigned via the shared
     _frontmatter.UNASSIGNED_TARGET_VERSION_RE (also used by the sibling
     release-notes-generator skill's assign_target_version.py) -- previously
-    each kept its own private copy of this pattern, in sync only by a comment."""
+    each kept its own private copy of this pattern, in sync only by a comment.
+
+    The search is scoped to the front-matter block only, not the whole file --
+    this previously reintroduced, at this call site, the exact false-positive
+    bug that assign_target_version.assign() was fixed to avoid (see that
+    function's docstring): scanning `e.content` whole let a coincidental
+    mention of the literal string "target_version: unassigned" in the
+    fragment's own BODY prose flag an already-assigned fragment as unassigned
+    in the PR body's manual-checks section."""
     findings: list[str] = []
     for e in edits:
         if not _FRAGMENT_PATH_RE.search(e.path):
             continue
-        if UNASSIGNED_TARGET_VERSION_RE.search(e.content):
+        try:
+            fm_text, _ = split_front_matter(e.content)
+        except ValueError:
+            # Malformed front matter isn't this check's job to catch -- it
+            # only flags a legitimate `unassigned` sentinel when one exists.
+            continue
+        if UNASSIGNED_TARGET_VERSION_RE.search(fm_text):
             findings.append(
                 f"{e.path}: target_version is `unassigned` — release-notes-generator's "
                 f"`cut` command will prompt for this fragment once the release version is known"

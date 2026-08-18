@@ -243,9 +243,18 @@ def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dic
     order: list[str] = []
 
     for key, display in _DISPLAY_NAMES.items():
-        value = matrix.get(key)
-        if value is None:
+        if key not in matrix:
             continue
+        value = matrix[key]
+        # A bare `None` (not a dict) means a go.mod-derived component (coraza_waf/
+        # owasp_crs/kubernetes_gateway_api) whose regex didn't match at this tag --
+        # that's a real "unknown" result, the same as helm_chart/traefik_proxy/
+        # static_analyzer's dict-shaped `{"version": None, ...}`, not a component
+        # to omit from the table. Skipping the row entirely here (checking `value
+        # is None` instead of "is this key even present") silently dropped it from
+        # the published compat matrix instead of rendering it as the `TBD` every
+        # other unknown value gets -- confirmed live with a go.mod snippet missing
+        # the kubernetes_gateway_api line.
         version, note = (value["version"], value.get("note")) if isinstance(value, dict) else (value, None)
         rows[display] = {"component": display, "version": version, "note": note}
         order.append(display)

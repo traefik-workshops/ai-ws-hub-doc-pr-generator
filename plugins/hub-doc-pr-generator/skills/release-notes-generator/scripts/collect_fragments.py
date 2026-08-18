@@ -128,8 +128,25 @@ def _pr_number(filename: str) -> int:
 def collect(fragments_dir: Path) -> dict:
     fragments = []
     if fragments_dir.is_dir():
-        for path in sorted(fragments_dir.glob("*.mdx")):
-            parsed = parse_fragment(path.read_text(encoding="utf-8"))
+        # Sort by the PR number embedded in the filename, not the filename
+        # string itself -- a plain string sort puts "10-x.mdx" before
+        # "9-x.mdx" (lexicographic: '1' < '9'), which silently misorders the
+        # step 2 interactive "which unassigned fragments belong to this
+        # release" prompt in SKILL.md (that prompt lists collect()'s
+        # `unassigned` slice as-is; only for_version()'s separate, later sort
+        # of *assigned* fragments is numeric). _pr_number already raises
+        # ValueError on a filename it can't parse, so a malformed name still
+        # fails loudly here, just during the sort instead of the loop body.
+        for path in sorted(fragments_dir.glob("*.mdx"), key=lambda p: _pr_number(p.name)):
+            try:
+                parsed = parse_fragment(path.read_text(encoding="utf-8"))
+            except ValueError as e:
+                # parse_fragment's own message never names the file it was
+                # parsing -- without this, a writer sees e.g. "fragment's
+                # front matter has no target_version value" with no way to
+                # tell which of possibly dozens of accumulated fragments
+                # (never deleted, by design) that refers to.
+                raise ValueError(f"{path.name}: {e}") from e
             parsed["filename"] = path.name
             parsed["path"] = str(path)
             parsed["pr_number"] = _pr_number(path.name)
