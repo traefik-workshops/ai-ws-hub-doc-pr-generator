@@ -10,6 +10,12 @@ FRAGMENT_ALREADY_ASSIGNED = FRAGMENT_BARE.replace("target_version: unassigned", 
 FRAGMENT_DUPLICATE_KEY = FRAGMENT_BARE.replace(
     "target_version: unassigned\n", "target_version: unassigned\ntarget_version: unassigned\n",
 )
+FRAGMENT_BODY_TEXT_FALSE_POSITIVE = (
+    "---\nshape: ea-subsection\nsource_prs: [964]\ntarget_version: unassigned\n---\n\n"
+    "#### Bedrock Mantle\n\n"
+    "This fragment demonstrates the format:\n"
+    "target_version: unassigned\n"
+)
 
 
 class TestAssign(unittest.TestCase):
@@ -48,6 +54,19 @@ class TestAssign(unittest.TestCase):
         malformed front matter -- raise so a human fixes it, don't guess."""
         with self.assertRaises(ValueError):
             assign(FRAGMENT_DUPLICATE_KEY, "v3.21.0-ea.1")
+
+    def test_body_text_false_positive_does_not_block_assignment(self):
+        """Regression test: a coincidental match of the sentinel pattern in
+        the fragment's own BODY prose (not its front matter) previously
+        counted as a second "duplicate key", permanently blocking assignment
+        with a false "malformed front matter" error even though the actual
+        front matter was perfectly well-formed. The search must be scoped to
+        the front-matter block only."""
+        result = assign(FRAGMENT_BODY_TEXT_FALSE_POSITIVE, "v3.21.0-ea.1")
+        self.assertIn("target_version: v3.21.0-ea.1", result)
+        # The body-text occurrence is untouched -- assign() only ever rewrites
+        # the front-matter field, never body prose.
+        self.assertIn("This fragment demonstrates the format:\ntarget_version: unassigned", result)
 
     def test_written_version_is_never_quoted(self):
         result = assign(FRAGMENT_DOUBLE_QUOTED, "v3.21.0-ea.1")

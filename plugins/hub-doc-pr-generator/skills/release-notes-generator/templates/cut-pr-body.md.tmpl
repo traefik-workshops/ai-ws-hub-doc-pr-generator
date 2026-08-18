@@ -1,8 +1,10 @@
 ## Summary
 
 Assembles the `## Gateway {{version}}` release-notes.mdx section from
-{{fragment_count}} fragment(s) written across {{source_pr_count}} doc PR(s),
-and deletes those fragments now that they're consumed.
+{{fragment_count}} fragment(s) written across {{source_pr_count}} doc PR(s).
+The source fragment files are left in place (not deleted) — `release-notes.d/`
+is the durable source of truth this section is re-derived from, so this cut
+can be safely re-run if another fragment for this release lands before it ships.
 
 - Fragments assembled: {{fragment_filenames}}
 - Source doc PRs: {{source_prs}}
@@ -20,7 +22,6 @@ still TBD needs a human to fill in before merging:
 - [ ] Section order matches convention: Graduated to GA first, feature subsections newest-first, compatibility matrix last
 - [ ] No fragment content was dropped or altered beyond front-matter stripping
 - [ ] Compatibility matrix TBDs above are resolved (or intentionally left for hub-doc team follow-up)
-- [ ] Deleted fragment files match exactly the ones assembled into this section (see list above)
 
 ---
 

@@ -368,17 +368,33 @@ them into the real section, once, when the release is actually confirmed.
      > /tmp/preview.json
    ```
 
-7. **Delete consumed fragments and render the PR body.** Stage the deletions in
-   the same branch so they land in the same commit as the assembled section:
-   ```bash
-   git -C <hub-doc-root> rm -q <fragment-path-1> <fragment-path-2> ...
-   ```
-   (paths come from `/tmp/fragments_for_version.json`'s `path` fields). Then read
-   `${CLAUDE_SKILL_DIR}/templates/cut-pr-body.md.tmpl` and fill in the version,
-   fragment filenames/count, aggregated source PR numbers, and a checklist item
-   for every `null`-valued row in `/tmp/compat_rows.json`. Append
-   `preview.json`'s `manual_checks_md` (a plain string append, same as tag
-   mode step 9). Write to `/tmp/pr-body.md`.
+7. **Render the PR body.** **Never delete the fragment files this cut consumed.**
+   Fragments are the durable source of truth for a version's section, not a
+   one-time input — `cut` must stay safe to re-run any number of times for the
+   same still-open version as new straggler fragments land (an explicitly
+   supported workflow, see step 2), and each re-run has to re-derive the
+   *complete* section from scratch. Deleting a fragment the moment it's first
+   consumed broke that: confirmed live that a second cut of the same version,
+   after the first cut's fragments were deleted, silently wiped the
+   previously-published feature notes (and any compat-matrix override they
+   carried) from the section, leaving only the new straggler's content —
+   `assemble_section`/`merge_fragment_deltas` only ever see what's *currently
+   on disk*, so deleting shrinks what a future re-cut can recover. Leaving
+   fragments in place costs nothing: `collect_fragments`'s `assigned`/
+   `unassigned` split already keys off `target_version`, so an
+   already-assigned fragment is invisible to step 2's interactive prompt
+   forever, and `for_version` only ever pulls in fragments for the *exact*
+   version being cut — a fragment sitting in `release-notes.d/` after its
+   release has shipped is inert, not a bug, and doubles as a durable per-PR
+   record of what shipped in which release. (If `release-notes.d/` ever needs
+   tidying, that's a separate, manual housekeeping decision — not something
+   `cut` should do automatically as a side effect of assembling a section.)
+
+   Read `${CLAUDE_SKILL_DIR}/templates/cut-pr-body.md.tmpl` and fill in the
+   version, fragment filenames/count, aggregated source PR numbers, and a
+   checklist item for every `null`-valued row in `/tmp/compat_rows.json`.
+   Append `preview.json`'s `manual_checks_md` (a plain string append, same as
+   tag mode step 9). Write to `/tmp/pr-body.md`.
 
 8. **Preview presentation, edit loop, push.** Same as tag mode steps 9–11: present
    the diff, `AskUserQuestion` for push / re-prompt / save-and-exit, then:
@@ -388,8 +404,8 @@ them into the real section, once, when the release is actually confirmed.
      --title "docs: release notes for <version>" --body-file /tmp/pr-body.md
    ```
    `push.py` is unchanged and reused as-is — it commits whatever is staged
-   (the release-notes.mdx rewrite from step 6 *and* the fragment deletions from
-   step 7 together) and opens the draft PR.
+   (just the release-notes.mdx rewrite from step 6; fragment files are never
+   touched) and opens the draft PR.
 
 ## Confirmation gates
 
@@ -400,8 +416,10 @@ them into the real section, once, when the release is actually confirmed.
 - Never fill in a compatibility-matrix value the scripts reported as
   unknown/`null` — surface it as a TBD checklist item instead
 - Cut mode: never touch a fragment the writer didn't explicitly select in step 2
-  (leave it `unassigned` for a future cut); never delete a fragment that wasn't
-  actually assembled into the section being pushed
+  (leave it `unassigned` for a future cut); never delete or modify a fragment
+  file for any reason — `cut` only ever reads them, never removes them, so a
+  re-run for the same still-open version always has the full set to
+  re-derive a complete section from
 
 ## When to use the AskUserQuestion tool
 

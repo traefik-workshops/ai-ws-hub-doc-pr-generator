@@ -21,7 +21,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE
+from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE, split_front_matter
 
 
 def assign(content: str, version: str) -> str:
@@ -36,20 +36,34 @@ def assign(content: str, version: str) -> str:
     not something to guess a "right one" for. Confirmed live that silently
     replacing only the first left the fragment still parsing back as
     `unassigned` (parse_fragment's dict-assignment walk takes the LAST
-    occurrence), while this function had already reported success."""
-    matches = list(UNASSIGNED_TARGET_VERSION_RE.finditer(content))
+    occurrence), while this function had already reported success.
+
+    The search is scoped to the front-matter block only, not the whole file --
+    confirmed live that scanning the whole content let a coincidental match in
+    the fragment's own BODY prose (e.g. documentation text that happens to
+    contain the literal string "target_version: unassigned") count as a second
+    "duplicate key", permanently blocking assignment with a false "malformed
+    front matter" error even though the front matter itself was perfectly
+    well-formed."""
+    try:
+        fm_text, body = split_front_matter(content)
+    except ValueError:
+        raise ValueError("fragment has no '---' front matter block")
+
+    matches = list(UNASSIGNED_TARGET_VERSION_RE.finditer(fm_text))
     if not matches:
         raise ValueError(
-            "no 'target_version: unassigned' line found -- fragment may already be "
-            "assigned, or its front matter doesn't match the expected shape"
+            "no 'target_version: unassigned' line found in this fragment's front matter "
+            "-- it may already be assigned, or its front matter doesn't match the expected shape"
         )
     if len(matches) > 1:
         raise ValueError(
-            f"found {len(matches)} 'target_version: unassigned' lines -- this fragment's "
-            "front matter has a duplicate key and needs a human to fix it by hand before "
-            "it can be assigned a version"
+            f"found {len(matches)} 'target_version: unassigned' lines in this fragment's front "
+            "matter -- that's a duplicate key and needs a human to fix it by hand before it can "
+            "be assigned a version"
         )
-    return UNASSIGNED_TARGET_VERSION_RE.sub(f"target_version: {version}", content, count=1)
+    new_fm = UNASSIGNED_TARGET_VERSION_RE.sub(f"target_version: {version}", fm_text, count=1)
+    return f"---\n{new_fm}\n---\n{body}"
 
 
 def main(argv: list[str]) -> int:

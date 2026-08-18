@@ -85,6 +85,27 @@ def parse_fragment(text: str) -> dict:
             "must be either 'unassigned' or a real version string"
         )
 
+    if fm["target_version"] != "unassigned" and _semver.parse(fm["target_version"]) is None:
+        # Anything that isn't the literal sentinel AND doesn't parse as a
+        # plausible version is garbled input, not a legitimate third state --
+        # confirmed live this happens with a MISMATCHED-quote value like
+        # `target_version: 'unassigned"` (single-quote open, double-quote
+        # close): UNASSIGNED_TARGET_VERSION_RE's independent ['"]? on each
+        # side matches this (so preview.py's check_unassigned_fragment WOULD
+        # flag it), but unquote() requires the SAME character on both ends and
+        # leaves the stray quotes in place, producing a value that's neither
+        # the clean "unassigned" sentinel nor a real version -- collect()
+        # would then silently miscategorize it as "assigned" (not equal to
+        # "unassigned") with a garbage value that for_version() can never
+        # match against any real cut, permanently orphaning the fragment:
+        # invisible to both the interactive "needs a version" prompt AND any
+        # future cut. Raising here, at parse time, catches this and any other
+        # garbled value the same way regardless of exactly how it got garbled.
+        raise ValueError(
+            f"fragment's target_version ({fm['target_version']!r}) is neither 'unassigned' "
+            "nor a valid version string -- fix it by hand before this fragment can be collected"
+        )
+
     return {**fm, "body": body.strip("\n") + "\n"}
 
 

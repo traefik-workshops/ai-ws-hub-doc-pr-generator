@@ -58,6 +58,24 @@ target_version:
 #### Blank Version Feature
 """
 
+FRAGMENT_MISMATCHED_QUOTES = """---
+shape: ea-subsection
+source_prs: [990]
+target_version: 'unassigned"
+---
+
+#### Mismatched Quotes Feature
+"""
+
+FRAGMENT_GARBLED_VERSION = """---
+shape: ea-subsection
+source_prs: [990]
+target_version: not-a-real-version
+---
+
+#### Garbled Version Feature
+"""
+
 
 class TestParseFragment(unittest.TestCase):
     def test_parses_scalars_list_and_nested_compat(self):
@@ -86,6 +104,27 @@ class TestParseFragment(unittest.TestCase):
         malformed input, not a legitimate third state, so this must raise."""
         with self.assertRaises(ValueError):
             parse_fragment(FRAGMENT_BLANK_TARGET_VERSION)
+
+    def test_mismatched_quotes_raise_instead_of_orphaning_the_fragment(self):
+        """Regression test: UNASSIGNED_TARGET_VERSION_RE's independent ['\"]?
+        on each side matched a MISMATCHED quote pair ('unassigned" -- single
+        open, double close), but unquote() requires the SAME character on
+        both ends and left the stray quotes in place. That produced a value
+        that was neither the clean 'unassigned' sentinel nor a real version --
+        collect() silently miscategorized it as "assigned" (since it wasn't
+        exactly "unassigned") with a garbage value for_version() could never
+        match against any real cut, permanently orphaning the fragment:
+        invisible to both the interactive assignment prompt and every future
+        cut. This must raise at parse time instead."""
+        with self.assertRaises(ValueError):
+            parse_fragment(FRAGMENT_MISMATCHED_QUOTES)
+
+    def test_garbled_non_version_value_raises(self):
+        """Any target_version that's neither the literal sentinel nor a
+        parseable version is malformed input, regardless of how it got that
+        way -- not just the mismatched-quote case above."""
+        with self.assertRaises(ValueError):
+            parse_fragment(FRAGMENT_GARBLED_VERSION)
 
     def test_missing_front_matter_raises(self):
         with self.assertRaises(ValueError):

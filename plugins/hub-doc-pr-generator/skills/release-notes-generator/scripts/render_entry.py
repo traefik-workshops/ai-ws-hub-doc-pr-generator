@@ -29,35 +29,51 @@ import sys
 from pathlib import Path
 
 _HEADING_RE = re.compile(r"^## Gateway v", re.MULTILINE)
-_ENTRY_VERSION_RE = re.compile(r"^## Gateway (?P<version>v\S+)")
+_HEADING_IDENTITY_RE = re.compile(
+    r"^## Gateway (?P<identity>.+?)(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE,
+)
 _EARLIER_RELEASES_RE = re.compile(r"^## Earlier releases", re.MULTILINE)
 
 
-def _entry_version(entry: str) -> str | None:
-    m = _ENTRY_VERSION_RE.match(entry.strip())
-    return m["version"] if m else None
+def _heading_identity(text: str) -> str | None:
+    """The version (or hub-doc-team-curated combined version pair) a `##
+    Gateway ...` heading represents -- e.g. `v3.20.6` or `v3.20.6 & v3.19.11`
+    -- with any `<EarlyAccessBadge />` decoration stripped off (in any
+    spacing), read from `text`'s first line. None if that line isn't a Gateway
+    heading at all.
+
+    This is the FULL remaining heading text, not just the leading version
+    token: an earlier version of this function extracted only the leading
+    token (e.g. `v3.20.6` out of `v3.20.6 & v3.19.11`), which made
+    `_existing_section_span` match on a bare prefix -- unsafe. Confirmed live
+    that splicing a plain single-version entry (`## Gateway v3.20.6`) against
+    an existing COMBINED heading (`## Gateway v3.20.6 & v3.19.11`) then
+    matched and replaced the whole combined section, silently destroying
+    v3.19.11's content. Comparing the full identity instead means a combined
+    heading is only ever replaced by a re-splice that represents that exact
+    same combined pair, never by an unrelated single-version entry that
+    merely shares a leading version."""
+    m = _HEADING_IDENTITY_RE.match(text.strip())
+    return m["identity"].strip() if m else None
 
 
-def _existing_section_span(existing: str, version: str) -> tuple[int, int] | None:
-    """[start, end) of an existing `## Gateway <version>` section (its heading
-    line through everything up to the next `## Gateway v...` heading, the
-    `## Earlier releases` archive boundary, or end of file — whichever comes
-    first). None if no section for this exact version exists yet. Doesn't
-    attempt to match a hub-doc-team-curated combined heading (e.g. `## Gateway
-    v3.19.4 & v3.18.8`) — this pipeline never generates those itself (see
-    "Structure of the target file" in the sibling skill's
-    release-note-heuristics.md), so falling back to the default insert-above-
-    first-heading behavior for that case is correct, not a gap.
+def _existing_section_span(existing: str, identity: str) -> tuple[int, int] | None:
+    """[start, end) of an existing `## Gateway <identity>` section (its
+    heading line through everything up to the next `## Gateway v...` heading,
+    the `## Earlier releases` archive boundary, or end of file — whichever
+    comes first). None if no section with this exact identity exists yet.
 
-    The optional `<EarlyAccessBadge />` suffix is matched whitespace-tolerantly
-    (not one exact literal space) -- confirmed live that a byte-exact match
-    silently missed a heading with two spaces before the badge (a hand edit,
-    or drift from a differently-formatted legacy entry predating this fragment
-    system) and fell through to the default insert-above-first-heading path,
-    reopening the same duplicate-heading bug this function exists to prevent,
-    just via a narrower trigger."""
+    `identity` must match exactly (modulo the optional badge) -- confirmed
+    live this needs to recognize a hub-doc-team-curated combined heading
+    (`## Gateway v3.20.6 & v3.19.11`) as identical to itself when tag mode's
+    edit-loop re-prompt path re-splices a regenerated combined entry against a
+    file that already has that same heading from an earlier splice attempt
+    (previously fell through to the default insert-above-first path and
+    duplicated it -- the very bug this function exists to prevent), while
+    still refusing to match a DIFFERENT identity that merely shares a leading
+    version (see `_heading_identity`'s docstring)."""
     heading_re = re.compile(
-        rf"^## Gateway {re.escape(version)}(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE,
+        rf"^## Gateway {re.escape(identity)}(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE,
     )
     m = heading_re.search(existing)
     if not m:
@@ -72,9 +88,9 @@ def _existing_section_span(existing: str, version: str) -> tuple[int, int] | Non
 def splice(existing: str, entry: str) -> str:
     entry_block = entry.strip("\n") + "\n\n"
 
-    version = _entry_version(entry)
-    if version:
-        span = _existing_section_span(existing, version)
+    identity = _heading_identity(entry)
+    if identity:
+        span = _existing_section_span(existing, identity)
         if span:
             start, end = span
             return existing[:start] + entry_block + existing[end:]
