@@ -1,12 +1,14 @@
 ---
 name: hub-doc-pr-generator
-description: Use when an engineer or tech writer wants to open a documentation PR in traefik/hub-doc (or amend a traefik/traefik PR with docs) from one or more implementation PRs. Invoke as `/hub-doc-pr-generator <pr-url|pr-number>...` or with no arg when checked out on the impl branch.
+description: Use when an engineer or tech writer wants to open a documentation PR in traefik/hub-doc (or amend a traefik/traefik PR with docs) — either from one or more implementation PRs, or from a GitHub issue alone when there is no implementation PR to point at. The issue-only path covers any case where a doc update is needed without a code change: a content gap or inconsistency a PM/writer/support filed directly, a QA finding closed as working-as-intended, a config/usage gotcha that never needed a fix. Invoke as `/hub-doc-pr-generator <pr-url|pr-number|issue-url>...`, or with no arg when checked out on the impl branch.
 allowed-tools: "AskUserQuestion Read Bash(python3:*) Bash(git:*) Bash(gh:*) Bash(jq:*)"
 ---
 
 # hub-doc-pr-generator
 
-Turns implementation PRs into draft documentation PRs.
+Turns implementation PRs into draft documentation PRs — or, when there's no
+implementation PR at all, turns a plain GitHub issue describing a doc gap into
+one instead (see step 1's issue-URL input form).
 
 ## Bundled resources
 
@@ -64,11 +66,17 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    - PR URL: `https://github.com/<owner>/<repo>/pull/<N>`
    - PR number: requires being inside the impl repo, or `--repo` flag
    - No-arg: auto-detect from current branch (`gh pr view --json number,headRepository`)
-   - Issue URL, no PR: `https://github.com/<owner>/<repo>/issues/<N>` — use when the finding
-     was investigated and resolved WITHOUT a code change (a QA finding closed as
-     working-as-intended, a config/usage gotcha that never needed a PR). Step 2 becomes
-     `scripts.fetch_issue` instead of `scripts.fetch_pr`; every later step still runs, just
-     against a bundle with no diff and no touched files.
+   - Issue URL, no PR: `https://github.com/<owner>/<repo>/issues/<N>` — use for **any**
+     issue that should produce a doc update but has no implementation PR to fetch a diff
+     from. This is broader than one scenario: a QA finding investigated and closed as
+     working-as-intended, a config/usage gotcha that never needed a code fix, or — just
+     as commonly — a content gap, inconsistency, or correction someone (a PM, support, a
+     fellow writer) filed directly against the docs with no code involved at all. Nothing
+     about this path is gated on the issue's labels, state, or who filed it —
+     `fetch_issue.py` accepts any issue URL and hands it to the same pipeline. Step 2
+     becomes `scripts.fetch_issue` instead of `scripts.fetch_pr`; every later step still
+     runs, just against a bundle with no diff and no touched files (see step 2 for what
+     that changes about confidence).
    - `--context <url>`: a supplementary reference (an issue URL, or a PR in a different repo)
      the engineer wants available as background — NOT a primary aggregation PR. Fetch it
      read-only (`gh issue view`/`gh pr view` as appropriate) for context in step 8's
