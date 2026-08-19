@@ -1,0 +1,47 @@
+---
+shape: {{shape}}
+source_prs: [{{pr_numbers}}]
+target_version: {{target_version}}
+{{#if compat}}
+compat:
+{{#each compat}}
+  {{this.component}}: {{this.version}}
+{{/each}}
+{{/if}}
+---
+
+<!--
+This file is one fragment among possibly several concurrently-open ones -- it
+must never touch docs/api-gateway/release-notes.mdx directly (see
+references/release-note-heuristics.md, "Where the entry goes"). Body below
+this front matter is exactly the shape template's content for {{shape}}
+(release-note-ea.mdx.tmpl / release-note-ga-bullet.mdx.tmpl /
+release-note-ga-subsection.mdx.tmpl / release-note-breaking.mdx.tmpl) --
+this wrapper only adds the front matter that lets `release-notes-generator
+cut` find, group, and order fragments later. Don't duplicate insertion-order
+logic here: that's the cut step's job, done once, centrally, not a per-PR
+decision.
+
+target_version is `unassigned` when the engineer/tech writer doesn't know the
+release yet (see SKILL.md step 6c) -- never invent a version, and never use
+the old `vNEXT` heading hack here; that convention now applies only to this
+PR's own page-level Early Access callout (style-guide.md), not to this
+fragment's front matter.
+
+compat is optional -- only include component: version pairs the diff/grounding
+clearly shows changed. Omit the whole block rather than guessing.
+-->
+
+<!-- shape body goes here, e.g. for ea-subsection:
+
+#### {{feature_name}}
+
+:::warning Early Access
+This feature is currently in early access.
+:::
+
+{{description}}
+
+For configuration details and examples, see the [{{feature_name}}]({{relative_link}}) documentation.
+
+-->

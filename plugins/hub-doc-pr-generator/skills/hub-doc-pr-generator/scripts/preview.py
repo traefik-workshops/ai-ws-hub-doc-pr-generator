@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterator, Literal
 
 from scripts import _git
+from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE, VNEXT_RE, split_front_matter
 
 
 @dataclass
@@ -330,23 +331,62 @@ def check_table_completeness(edits: list[FileEdit]) -> list[str]:
     return findings
 
 
-_VNEXT_RE = re.compile(r"\bvNEXT\b")
-
-
 def check_placeholder_version(edits: list[FileEdit]) -> list[str]:
     """Flag the vNEXT release-version placeholder (see release-note-heuristics.md
     "Which version") left in generated content, so it can't merge un-replaced
-    without at least one visible flag in the PR body."""
+    without at least one visible flag in the PR body. Uses the shared
+    _frontmatter.VNEXT_RE -- also used by the sibling release-notes-generator
+    skill's preview.py (check_vnext_placeholder) so both pipelines agree on
+    the one token that counts as an unresolved placeholder."""
     findings: list[str] = []
     for e in edits:
         if not (e.path.endswith(".md") or e.path.endswith(".mdx")):
             continue
         for line in e.content.splitlines():
-            if _VNEXT_RE.search(line):
+            if VNEXT_RE.search(line):
                 findings.append(
                     f"{e.path}: contains the vNEXT placeholder — replace with the real "
                     f"Hub release version before merging: {line.strip()}"
                 )
+    return findings
+
+
+_FRAGMENT_PATH_RE = re.compile(r"release-notes\.d/")
+
+
+def check_unassigned_fragment(edits: list[FileEdit]) -> list[str]:
+    """Flag a release-note fragment (docs/api-gateway/release-notes.d/*.mdx) whose
+    front matter has target_version: unassigned — not an error (it's the expected
+    state until the EA cut number is known, see release-note-heuristics.md "Which
+    version"), but worth a visible reminder in the PR body so it isn't forgotten
+    before `release-notes-generator cut` runs. Matches quoted ('unassigned' /
+    "unassigned") as well as bare unassigned via the shared
+    _frontmatter.UNASSIGNED_TARGET_VERSION_RE (also used by the sibling
+    release-notes-generator skill's assign_target_version.py) -- previously
+    each kept its own private copy of this pattern, in sync only by a comment.
+
+    The search is scoped to the front-matter block only, not the whole file --
+    this previously reintroduced, at this call site, the exact false-positive
+    bug that assign_target_version.assign() was fixed to avoid (see that
+    function's docstring): scanning `e.content` whole let a coincidental
+    mention of the literal string "target_version: unassigned" in the
+    fragment's own BODY prose flag an already-assigned fragment as unassigned
+    in the PR body's manual-checks section."""
+    findings: list[str] = []
+    for e in edits:
+        if not _FRAGMENT_PATH_RE.search(e.path):
+            continue
+        try:
+            fm_text, _ = split_front_matter(e.content)
+        except ValueError:
+            # Malformed front matter isn't this check's job to catch -- it
+            # only flags a legitimate `unassigned` sentinel when one exists.
+            continue
+        if UNASSIGNED_TARGET_VERSION_RE.search(fm_text):
+            findings.append(
+                f"{e.path}: target_version is `unassigned` — release-notes-generator's "
+                f"`cut` command will prompt for this fragment once the release version is known"
+            )
     return findings
 
 
@@ -359,6 +399,7 @@ def apply_edits_with_lint_fix(
     lint = run_lint_fix(repo_path=repo_path, impl_repo=impl_repo, written=written)
     lint.unresolved.extend(check_table_completeness(edits))
     lint.unresolved.extend(check_placeholder_version(edits))
+    lint.unresolved.extend(check_unassigned_fragment(edits))
     if lint.fixed and written:
         _git.run(repo_path, ["add", "--", *written])
     return written, lint

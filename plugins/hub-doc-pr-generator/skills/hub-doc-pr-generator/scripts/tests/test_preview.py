@@ -12,6 +12,7 @@ from scripts.preview import (
     render_diff_to_stdout, render_pages_to_stdout,
     _fix_file_permissions, run_lint_fix, LintFixResult, render_manual_checks_section,
     apply_edits_with_lint_fix, check_table_completeness, check_placeholder_version,
+    check_unassigned_fragment,
     _dirty_paths, _stash_unrelated_changes, _filter_to_written_paths, _checkout_branch,
 )
 
@@ -467,6 +468,88 @@ class TestCheckPlaceholderVersion(unittest.TestCase):
                     impl_repo="traefik/traefik-hub", edits=edits,
                 )
         self.assertTrue(any("vNEXT" in u for u in lint.unresolved))
+
+
+class TestCheckUnassignedFragment(unittest.TestCase):
+    def test_flags_unassigned_target_version(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+            content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: unassigned\n---\n\n#### Bedrock Mantle\n",
+            mode="create",
+        )]
+        findings = check_unassigned_fragment(edits)
+        self.assertTrue(any("unassigned" in f for f in findings))
+
+    def test_flags_quoted_unassigned_target_version(self):
+        """Regression test: a quoted target_version: "unassigned" must be
+        flagged the same as the bare form -- collect_fragments.parse_fragment
+        unquotes scalars when reading a fragment back, so this check must
+        recognize the same forms at write time or a quoted value silently
+        skips the flag despite being functionally identical."""
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+            content='---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: "unassigned"\n---\n\n#### Bedrock Mantle\n',
+            mode="create",
+        )]
+        findings = check_unassigned_fragment(edits)
+        self.assertTrue(any("unassigned" in f for f in findings))
+
+    def test_does_not_flag_assigned_target_version(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+            content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: v3.21.0-ea.1\n---\n\n#### Bedrock Mantle\n",
+            mode="create",
+        )]
+        self.assertEqual(check_unassigned_fragment(edits), [])
+
+    def test_body_text_false_positive_does_not_flag_an_already_assigned_fragment(self):
+        """Regression test: this check previously scanned the whole fragment
+        content, not just its front matter -- the same false-positive class
+        assign_target_version.assign() was fixed to avoid (see that
+        function's docstring) at a sibling call site in this same PR. A
+        fragment whose front matter is already assigned but whose BODY prose
+        happens to contain the literal string "target_version: unassigned"
+        (e.g. documentation about this very convention) was wrongly flagged
+        as unassigned in the PR body's manual-checks section."""
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+            content=(
+                "---\nshape: ea-subsection\nsource_prs: [1234]\n"
+                "target_version: v3.21.0-ea.1\n---\n\n"
+                "#### Bedrock Mantle\n\n"
+                "This fragment demonstrates the format:\n"
+                "target_version: unassigned\n"
+            ),
+            mode="create",
+        )]
+        self.assertEqual(check_unassigned_fragment(edits), [])
+
+    def test_non_fragment_paths_are_skipped(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/some-page.md",
+            content="target_version: unassigned\n",
+            mode="create",
+        )]
+        self.assertEqual(check_unassigned_fragment(edits), [])
+
+    def test_wired_into_manual_checks_via_apply_edits_with_lint_fix(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            edits = [FileEdit(
+                path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+                content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: unassigned\n---\n\n#### Bedrock Mantle\n",
+                mode="create",
+            )]
+            with patch("scripts.preview.subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                mock_run.return_value.stdout = ""
+                mock_run.return_value.stderr = ""
+                _, lint = apply_edits_with_lint_fix(
+                    repo_path=str(d), branch="docs/test",
+                    impl_repo="traefik/traefik-hub", edits=edits,
+                )
+        self.assertTrue(any("unassigned" in u for u in lint.unresolved))
 
 
 class TestCheckTableCompleteness(unittest.TestCase):

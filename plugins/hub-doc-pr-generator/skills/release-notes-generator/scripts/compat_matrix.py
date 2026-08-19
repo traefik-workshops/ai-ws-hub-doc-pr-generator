@@ -178,6 +178,110 @@ def static_analyzer_version() -> dict:
     }
 
 
+_DISPLAY_NAMES = {
+    "traefik_hub": "Traefik Hub",
+    "helm_chart": "Helm Chart",
+    "traefik_proxy": "Traefik Proxy",
+    "coraza_waf": "Coraza WAF",
+    "owasp_crs": "OWASP CRS",
+    "static_analyzer": "Static Analyzer",
+    "kubernetes_gateway_api": "Kubernetes Gateway API",
+}
+
+
+def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dict]:
+    """Merge per-fragment `compat:` front-matter deltas (release-note fragments'
+    optional component: version bumps -- see the sibling hub-doc-pr-generator
+    skill's SKILL.md step 7) into one row list for the `cut` command's rendered
+    table.
+
+    Fragment deltas win over `matrix`'s go.mod-derived value for the same
+    component: a fragment was written closer to when the bump actually
+    happened, whereas `matrix` reflects go.mod *at the release tag*, which can
+    legitimately be stale for a component whose real version isn't tracked in
+    go.mod at all (a fragment is often the only source for that). Never drops
+    a `matrix` row for a component with no matching delta -- this only adds
+    or overrides, it doesn't shrink the table.
+
+    `fragment_deltas` MUST be ordered newest-first (see
+    `collect_fragments.for_version`, which is what actually feeds this in
+    practice) -- the first delta seen for a given component wins; an older
+    fragment's delta for a component a newer fragment already set is ignored.
+    Without this, two PRs bumping the same component in one release window
+    would let whichever one happens to be processed last silently win
+    regardless of recency -- exactly the class of silent cross-PR corruption
+    fragments exist to prevent, just relocated into the compat matrix instead
+    of the release-note prose (confirmed live: feeding a newest-first list of
+    an older v3.7.8 delta after a newer v3.7.10 one previously produced
+    v3.7.8 in the output).
+
+    A delta's component name is canonicalized (case/whitespace-insensitive)
+    before being used as a dict key: an LLM-authored fragment can plausibly
+    write `traefik proxy` instead of `Traefik Proxy`, and without this a
+    spelling/case variant would silently become a SECOND row instead of
+    overriding the canonical one -- publishing two conflicting version rows
+    for what's actually the same component (verified live: an
+    uncanonicalized `traefik proxy` delta produced both `Traefik Proxy` and
+    `traefik proxy` as separate rows).
+
+    This isn't limited to `_DISPLAY_NAMES`'s known components -- a component
+    the matrix doesn't track at all (a brand-new dependency, not yet in
+    `_DISPLAY_NAMES`) has no *static* canonical form, but still needs one
+    within a single cut: since `fragment_deltas` is newest-first (same
+    ordering guarantee the rest of this function relies on), the first
+    (newest) fragment to name an unrecognized component establishes its
+    spelling as canonical for the rest of this run, and an older fragment's
+    case/whitespace variant of that same component folds into it instead of
+    becoming its own row (verified live: uncanonicalized `Envoy Gateway` and
+    `envoy gateway` deltas produced two separate rows).
+
+    Returns an ordered list of {"component": ..., "version": ..., "note": ...}
+    rows: known components first (matrix's fixed order), any delta naming a
+    component the matrix doesn't track appended after, in the order first seen.
+    """
+    rows: dict[str, dict] = {}
+    order: list[str] = []
+
+    for key, display in _DISPLAY_NAMES.items():
+        if key not in matrix:
+            continue
+        value = matrix[key]
+        # A bare `None` (not a dict) means a go.mod-derived component (coraza_waf/
+        # owasp_crs/kubernetes_gateway_api) whose regex didn't match at this tag --
+        # that's a real "unknown" result, the same as helm_chart/traefik_proxy/
+        # static_analyzer's dict-shaped `{"version": None, ...}`, not a component
+        # to omit from the table. Skipping the row entirely here (checking `value
+        # is None` instead of "is this key even present") silently dropped it from
+        # the published compat matrix instead of rendering it as the `TBD` every
+        # other unknown value gets -- confirmed live with a go.mod snippet missing
+        # the kubernetes_gateway_api line.
+        version, note = (value["version"], value.get("note")) if isinstance(value, dict) else (value, None)
+        rows[display] = {"component": display, "version": version, "note": note}
+        order.append(display)
+
+    canonical_by_lower = {display.lower(): display for display in _DISPLAY_NAMES.values()}
+
+    delta_assigned: set[str] = set()
+    for delta in fragment_deltas:
+        for raw_component, version in delta.get("compat", {}).items():
+            key = raw_component.strip().lower()
+            if key not in canonical_by_lower:
+                # First (newest, since fragment_deltas is newest-first) fragment
+                # to name this component -- its spelling becomes canonical for
+                # the rest of this run, same "first-seen wins" rule the newest-
+                # first ordering already exists to enforce elsewhere.
+                canonical_by_lower[key] = raw_component.strip()
+            component = canonical_by_lower[key]
+            if component in delta_assigned:
+                continue  # a newer fragment already claimed this component -- ignore the older one
+            delta_assigned.add(component)
+            if component not in rows:
+                order.append(component)
+            rows[component] = {"component": component, "version": version, "note": None}
+
+    return [rows[name] for name in order]
+
+
 def build_matrix(tag: str, *, max_chart_tags: int) -> dict:
     deps = go_mod_deps(tag)
     return {

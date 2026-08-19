@@ -5,14 +5,17 @@ Usage:
   python -m scripts.fetch_issue --issue https://github.com/owner/repo/issues/N [--impl-repo owner/repo]
   python -m scripts.fetch_issue --issue N --repo owner/repo
 
-fetch_pr.py has no entry point for a documentation-worthy finding that was
-closed WITHOUT any code change (a QA finding investigated and closed as
-working-as-intended, a config/usage gotcha that never needed a PR) — every
-downstream step assumes a PR's diff exists. This produces a bundle shaped
-closely enough to fetch_pr.py's that classify.py and locate_targets.py run
-against it unmodified: `prs: []`, empty `files_changed`, and a new `issue`
-key that classify() substitutes for its usual PR-derived `primary` when
-`prs` is empty.
+fetch_pr.py has no entry point for a documentation-worthy issue that has no
+implementation PR at all — every downstream step assumes a PR's diff exists.
+That's not one narrow scenario: a QA finding investigated and closed as
+working-as-intended, a config/usage gotcha that never needed a PR, and a
+content gap or correction someone filed directly against the docs (no code
+change involved, ever) all land here the same way. Nothing here is gated on
+the issue's state, labels, or author -- any issue URL works. This produces a
+bundle shaped closely enough to fetch_pr.py's that classify.py and
+locate_targets.py run against it unmodified: `prs: []`, empty
+`files_changed`, and a new `issue` key that classify() substitutes for its
+usual PR-derived `primary` when `prs` is empty.
 
 Emits a single JSON document on stdout.
 """

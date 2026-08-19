@@ -1,12 +1,14 @@
 ---
 name: hub-doc-pr-generator
-description: Use when an engineer or tech writer wants to open a documentation PR in traefik/hub-doc (or amend a traefik/traefik PR with docs) from one or more implementation PRs. Invoke as `/hub-doc-pr-generator <pr-url|pr-number>...` or with no arg when checked out on the impl branch.
+description: Use when an engineer or tech writer wants to open a documentation PR in traefik/hub-doc (or amend a traefik/traefik PR with docs) — either from one or more implementation PRs, or from a GitHub issue alone when there is no implementation PR to point at. The issue-only path covers any case where a doc update is needed without a code change: a content gap or inconsistency a PM/writer/support filed directly, a QA finding closed as working-as-intended, a config/usage gotcha that never needed a fix. Invoke as `/hub-doc-pr-generator <pr-url|pr-number|issue-url>...`, or with no arg when checked out on the impl branch.
 allowed-tools: "AskUserQuestion Read Bash(python3:*) Bash(git:*) Bash(gh:*) Bash(jq:*)"
 ---
 
 # hub-doc-pr-generator
 
-Turns implementation PRs into draft documentation PRs.
+Turns implementation PRs into draft documentation PRs — or, when there's no
+implementation PR at all, turns a plain GitHub issue describing a doc gap into
+one instead (see step 1's issue-URL input form).
 
 ## Bundled resources
 
@@ -64,11 +66,17 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    - PR URL: `https://github.com/<owner>/<repo>/pull/<N>`
    - PR number: requires being inside the impl repo, or `--repo` flag
    - No-arg: auto-detect from current branch (`gh pr view --json number,headRepository`)
-   - Issue URL, no PR: `https://github.com/<owner>/<repo>/issues/<N>` — use when the finding
-     was investigated and resolved WITHOUT a code change (a QA finding closed as
-     working-as-intended, a config/usage gotcha that never needed a PR). Step 2 becomes
-     `scripts.fetch_issue` instead of `scripts.fetch_pr`; every later step still runs, just
-     against a bundle with no diff and no touched files.
+   - Issue URL, no PR: `https://github.com/<owner>/<repo>/issues/<N>` — use for **any**
+     issue that should produce a doc update but has no implementation PR to fetch a diff
+     from. This is broader than one scenario: a QA finding investigated and closed as
+     working-as-intended, a config/usage gotcha that never needed a code fix, or — just
+     as commonly — a content gap, inconsistency, or correction someone (a PM, support, a
+     fellow writer) filed directly against the docs with no code involved at all. Nothing
+     about this path is gated on the issue's labels, state, or who filed it —
+     `fetch_issue.py` accepts any issue URL and hands it to the same pipeline. Step 2
+     becomes `scripts.fetch_issue` instead of `scripts.fetch_pr`; every later step still
+     runs, just against a bundle with no diff and no touched files (see step 2 for what
+     that changes about confidence).
    - `--context <url>`: a supplementary reference (an issue URL, or a PR in a different repo)
      the engineer wants available as background — NOT a primary aggregation PR. Fetch it
      read-only (`gh issue view`/`gh pr view` as appropriate) for context in step 8's
@@ -211,11 +219,16 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    Store the answer as `target_version`. Unlike step 6's picks, this is a genuinely
    unknowable fact rather than a confidence-gated guess, so it stays a real prompt.
 
-   **If the engineer/tech writer doesn't know the version yet**, use the literal
-   placeholder `vNEXT` (heading `## Gateway vNEXT`, date line `**(version TBD)**`) — never
-   improvise something like `vTBD` or leave it blank. `preview.py` mechanically flags any
-   `vNEXT` left in the generated content under "Manual checks required" in step 8, so it
-   can't merge un-replaced without at least one visible flag.
+   **If the engineer/tech writer doesn't know the version yet**, use `unassigned` as
+   `target_version` — this PR writes a release-note *fragment* (see step 7), not the
+   shared `release-notes.mdx` file directly, so there's no heading to park a placeholder
+   on anymore. `release-notes-generator`'s `cut` command prompts interactively over
+   unassigned fragments once a real version is confirmed, instead of requiring anyone to
+   guess it here. This page's own Early Access callout (if the doc kind needs one — see
+   `style-guide.md`'s "Early Access features" section) still uses the literal `vNEXT`
+   placeholder for the same unknown-version case, since that text lives in a real page
+   `preview.py` can grep — `check_placeholder_version` flags any `vNEXT` left in written
+   files under "Manual checks required" in step 8.
 
 7. **Generate.** This is the LLM step — no script. Read:
    - `/tmp/bundle.json` (the PR + diff, linked issues with their `parent`/`siblings`, and `merged.related_prs` — use the parent epic and sibling issues to understand the feature's intent and scope, not just the single PR's diff)
@@ -228,17 +241,12 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
      does not apply to it: dropping existing rows/sections because they were never read is
      exactly the failure this guards against.
    - Template files from `${CLAUDE_SKILL_DIR}/templates/` (Hub or OSS depending on impl repo)
-   - For Hub: locate the target version's section in `docs/api-gateway/release-notes.mdx` by running:
-     ```bash
-     grep -n "## Gateway v<target_version>\|### What's New\|#### Graduated to GA" \
-       <doc-repo>/docs/api-gateway/release-notes.mdx | head -20
-     ```
-     Then read only that section (typically 30–60 lines) with the Read tool, not the full file. If the target version heading doesn't exist, read the first 30 lines to understand the file structure and create the heading. The new entry goes **on top, never at the bottom** — see `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md` ("Insertion order").
    - `/tmp/neighbor_structures.json` (structural summaries of neighbor pages — headings and first sentences). Do NOT read full neighbor pages; the summaries are sufficient for matching structure and tone. (This is about OTHER pages consulted for tone — see the `target_exists` carve-out above for the page actually being edited.)
    - `${CLAUDE_SKILL_DIR}/references/style-guide.md` **Tier 1 — Core rules** (always load). Additionally load on demand:
      - `## Procedure pages` section — if doc kind is a how-to guide or tutorial
      - `## Screenshots and media` section — if `classify.needs_screenshots.verdict == "yes"`
      - `## Tables` section — if the page will include a parameter table, **or** `target_exists` is `true` and the existing page has one being extended (enumerate every row — see that section's completeness rule; `preview.py` also mechanically flags "…"/"etc." placeholders in step 8)
+     - `## Early Access features` section — if `classify.needs_release_note.proposed_shape == "ea-subsection"`. Use `locate.json`'s `target_exists` to pick sidebar-badge-plus-top-of-page-callout (`false`, brand-new topic) vs. inline-heading-badge-plus-callout-under-it (`true`, existing page). State `target_version` in the callout (or the `vNEXT` placeholder if step 6c's answer was `unassigned`).
    - `${CLAUDE_SKILL_DIR}/references/<convention>.md` files on demand (hub-doc-conventions, oss-doc-conventions, release-note-heuristics)
 
    Produce a JSON file `/tmp/edits.json` shaped:
@@ -246,12 +254,28 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    [
      {"path": "docs/...", "content": "...", "mode": "create"},
      {"path": "sidebars.js", "content": "<full new file>", "mode": "overwrite"},
-     {"path": "docs/api-gateway/release-notes.mdx", "content": "<full new file>", "mode": "overwrite"}
+     {"path": "docs/api-gateway/release-notes.d/<pr-number>-<feature-slug>.mdx", "content": "<fragment>", "mode": "create"}
    ]
    ```
-   For each release-note shape (see `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md`), pick the right template and instantiate it. **Skip release notes entirely for OSS impl repos.**
+   The release-note edit is a **fragment file**, never a `release-notes.mdx` overwrite — see
+   `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md` ("Where the entry goes") for
+   why per-PR full-file overwrites were removed. Use
+   `${CLAUDE_SKILL_DIR}/templates/release-note-fragment.mdx.tmpl` for the front matter
+   wrapper and the matching shape template (`release-note-ea.mdx.tmpl` etc., picked per
+   `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md`'s shape-selection table) for
+   the body. The filename's `<pr-number>` is the primary PR's number
+   (`bundle.json → merged.primary_pr`); `<feature-slug>` is the same slug used for the page
+   path. Set the fragment's `compat:` front-matter field only when the diff/grounding
+   clearly shows a component version bump (e.g. a Traefik Proxy dependency update) — leave
+   it out otherwise, don't guess a value. **Skip release notes entirely for OSS impl repos.**
 
-   Also render the PR body: read `${CLAUDE_SKILL_DIR}/templates/pr-body.md.tmpl`, fill in the feature title, source PR numbers (`bundle.json → prs[].number`), a one-paragraph summary of what the new or updated docs cover, the linked issue numbers, and the reviewer checklist from the template. Write the rendered result to `/tmp/pr-body.md`. (This file is consumed by `open_pr.py` in step 10.)
+   Also render the PR body: read `${CLAUDE_SKILL_DIR}/templates/pr-body.md.tmpl` (its inline
+   comments cover the exact shape expected for each section) and fill in the feature title,
+   source PR numbers (`bundle.json → prs[].number`), a 2-3 sentence summary of which files
+   changed and why in plain language, one `Closes:` line per issue in
+   `bundle.merged.linked_issues`/`sub_issues`, and the reviewer checklist from the template.
+   Write the rendered result to `/tmp/pr-body.md`. (This file is consumed by `open_pr.py` in
+   step 10.)
 
    **Before finalizing `/tmp/edits.json`**, if the page adds a row to an existing table for
    a value with documented siblings (see style-guide.md's Tables section), re-check: are

@@ -1,12 +1,24 @@
 ---
 name: release-notes-generator
-description: Use when drafting the traefik/hub-doc release-notes.mdx entry for one or more just-tagged Traefik Hub patch releases. Invoke as `/release-notes-generator <tag> [<tag> ...]`, e.g. `/release-notes-generator v3.19.13 v3.20.8`. Pulls the commit range from GitHub instead of a hand-pasted changelog, dedups fixes shared across lines that release close together, and fills the compatibility matrix from go.mod/traefik.version/traefik-helm-chart instead of carrying forward the previous entry's numbers.
+description: Use when drafting the traefik/hub-doc release-notes.mdx entry for one or more just-tagged Traefik Hub patch releases (`/release-notes-generator <tag> [<tag> ...]`, e.g. `/release-notes-generator v3.19.13 v3.20.8`), or when assembling a confirmed EA/GA release's section from the hub-doc-pr-generator skill's accumulated release-note fragments (`/release-notes-generator cut <version> <date>`, e.g. `/release-notes-generator cut v3.21.0-ea.1 2026-08-10`). Tag mode pulls the commit range from GitHub instead of a hand-pasted changelog and dedups fixes shared across lines that release close together; cut mode gathers `docs/api-gateway/release-notes.d/*.mdx` fragments instead of asking any single doc PR to touch the shared file. Both fill the compatibility matrix from go.mod/traefik.version/traefik-helm-chart instead of carrying forward the previous entry's numbers.
 allowed-tools: "AskUserQuestion Read Bash(python3:*) Bash(git:*) Bash(gh:*) Bash(jq:*)"
 ---
 
 # release-notes-generator
 
-Turns one or more Traefik Hub release tags into a draft release-notes.mdx PR.
+Turns one or more Traefik Hub release tags into a draft release-notes.mdx PR (tag
+mode), or assembles a confirmed release's fragments into one (cut mode).
+
+## Routing
+
+- `/release-notes-generator <tag> [<tag> ...]` (first arg is not the literal word
+  `cut`) → **tag mode**: draft the entry for one or more just-tagged patch
+  releases from their commit range. See "Pipeline (tag mode)".
+- `/release-notes-generator cut <version> <date>` → **cut mode**: assemble the
+  `## Gateway <version>` section from accumulated fragments and open the one PR
+  that touches `release-notes.mdx` directly for that release. See "Pipeline (cut
+  mode)". `<version>` is the full `vX.Y.Z[-ea.N]` string used in fragment front
+  matter (e.g. `v3.21.0-ea.1`); `<date>` is `YYYY-MM-DD`.
 
 ## Why this is a separate skill from hub-doc-pr-generator
 
@@ -66,13 +78,19 @@ paths and `git -C <path>` for git operations.
 
 ## Scope
 
-Always targets `traefik/hub-doc`'s `docs/api-gateway/release-notes.mdx`.
-Always sources commits from `traefik/traefik-hub` (hardcoded `REPO` in
-`fetch_release_range.py`). There's no OSS equivalent — Traefik Proxy patch
-releases aren't documented in this file, so this skill has no OSS flow to
-route to, unlike the sibling skill. A tag that doesn't exist in
+Always targets `traefik/hub-doc`'s `docs/api-gateway/release-notes.mdx`. There's
+no OSS equivalent — Traefik Proxy patch releases aren't documented in this
+file, so this skill has no OSS flow to route to, unlike the sibling skill.
+
+**Tag mode** always sources commits from `traefik/traefik-hub` (hardcoded
+`REPO` in `fetch_release_range.py`). A tag that doesn't exist in
 `traefik/traefik-hub` (e.g. a Proxy-only version) fails naturally at step 2
 with a 404 from `fetch_release_range.py` — no separate validation needed.
+
+**Cut mode** never fetches commits at all — it only reads fragments already
+written by the sibling hub-doc-pr-generator skill and the compatibility
+matrix at the target tag. A `<version>` with no matching fragments fails
+naturally at step 3 ("nothing to cut") — also no separate validation needed.
 
 ## Required environment
 
@@ -84,7 +102,7 @@ Same discovery order and same persisted config file as the sibling skill
 (`~/.config/hub-doc-pr-generator/config.json`) — if you've already configured
 that clone path for `hub-doc-pr-generator`, this skill finds it too.
 
-## Pipeline
+## Pipeline (tag mode — patch releases)
 
 0. **Preflight.**
    ```bash
@@ -246,6 +264,149 @@ that clone path for `hub-doc-pr-generator`, this skill finds it too.
       --title "docs: release notes for v3.20.8 & v3.19.13" --body-file /tmp/pr-body.md
     ```
 
+## Pipeline (cut mode — assembling EA/GA fragments)
+
+Only this pipeline ever writes `release-notes.mdx` directly. Every doc PR that
+contributed a fragment already reviewed and merged its own small file
+independently (see the sibling hub-doc-pr-generator skill's
+references/release-note-heuristics.md, "Where the entry goes") — this assembles
+them into the real section, once, when the release is actually confirmed.
+
+0. **Preflight.** Same as tag mode:
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.setup --check
+   ```
+
+1. **Collect fragments.**
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.collect_fragments \
+     --release-notes-dir <hub-doc-root>/docs/api-gateway/release-notes.d > /tmp/fragments.json
+   ```
+   This returns every fragment in the directory (any version), split into `assigned`
+   and `unassigned`.
+
+2. **Resolve unassigned fragments, if any.** If `/tmp/fragments.json`'s `unassigned`
+   is non-empty, use `AskUserQuestion` (multiSelect) listing each one's filename,
+   `shape`, and `source_prs`:
+   > "These fragments don't have a target_version yet. Which of them ship in
+   > `<version>`?"
+
+   For each fragment the writer selects, rewrite its front matter in place:
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.assign_target_version \
+     --fragment <fragment-path> --version <version>
+   ```
+   Not a shell `sed -i` (its in-place syntax differs between BSD/macOS and
+   GNU/Linux — `sed -i ''` specifically is BSD-only) and not a literal
+   string `.replace` (silently no-ops on a quoted `target_version: "unassigned"`,
+   permanently stranding the fragment with no visible failure — both were real
+   bugs here before). `assign_target_version.py` tolerates the same quoted/bare
+   forms `preview.py`'s `check_unassigned_fragment` recognizes, and **exits
+   non-zero rather than silently doing nothing** if no unassigned line is found
+   — stop and investigate rather than proceeding if that happens. Then re-run
+   step 1 so the updated assignment is picked up. Fragments the writer does
+   *not* select stay `unassigned` for a future cut; never touch them.
+
+3. **Filter and order this release's fragments.**
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -c "
+   import json
+   from scripts.collect_fragments import for_version
+   fragments = json.load(open('/tmp/fragments.json'))['assigned']
+   ordered = for_version(fragments, '<version>')
+   if not ordered:
+       raise SystemExit(f'no fragments found for <version> -- nothing to cut')
+   json.dump(ordered, open('/tmp/fragments_for_version.json', 'w'))
+   "
+   ```
+   `for_version` already orders newest-first (PR-number descending) — this is the
+   mechanical replacement for per-PR "insertion order" guessing (see the sibling
+   skill's release-note-heuristics.md).
+
+4. **Compatibility matrix.**
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.compat_matrix --tag <version> > /tmp/base_matrix.json
+   ```
+   Then merge any fragment-carried `compat:` deltas over it (a fragment can name a
+   component bump go.mod at the tag doesn't reflect — see `compat_matrix.py`'s
+   `merge_fragment_deltas` docstring for why deltas win):
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -c "
+   import json
+   from scripts.compat_matrix import merge_fragment_deltas
+   matrix = json.load(open('/tmp/base_matrix.json'))['tags'][0]
+   fragments = json.load(open('/tmp/fragments_for_version.json'))
+   rows = merge_fragment_deltas(matrix, fragments)
+   json.dump(rows, open('/tmp/compat_rows.json', 'w'))
+   "
+   ```
+   Never fill in a value the scripts reported as unknown/`null` — surface it as a
+   TBD checklist item in step 7 instead, same rule as tag mode.
+
+5. **Assemble the section.**
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.assemble_section \
+     --version <version> --date <date> \
+     --fragments /tmp/fragments_for_version.json --compat-rows /tmp/compat_rows.json \
+     | jq -r '.section' > /tmp/new-section.mdx
+   ```
+   Purely mechanical — `#### Graduated to GA` first, feature subsections
+   newest-first, compatibility matrix last (see `assemble_section.py`'s
+   docstring). No LLM judgment call in this step; the content itself was already
+   written and reviewed when each fragment's doc PR merged.
+
+6. **Splice into release-notes.mdx and preview.** Same splice mechanics as tag
+   mode (`render_entry.py`'s `splice`: always above the first existing
+   `## Gateway v...` heading):
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.render_entry \
+     --release-notes <hub-doc-root>/docs/api-gateway/release-notes.mdx \
+     --entry /tmp/new-section.mdx | jq -r '.content' > /tmp/full-content.mdx
+
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.preview \
+     --repo-path <hub-doc-root> --branch <branch> --content-file /tmp/full-content.mdx \
+     > /tmp/preview.json
+   ```
+
+7. **Render the PR body.** **Never delete the fragment files this cut consumed.**
+   Fragments are the durable source of truth for a version's section, not a
+   one-time input — `cut` must stay safe to re-run any number of times for the
+   same still-open version as new straggler fragments land (an explicitly
+   supported workflow, see step 2), and each re-run has to re-derive the
+   *complete* section from scratch. Deleting a fragment the moment it's first
+   consumed broke that: confirmed live that a second cut of the same version,
+   after the first cut's fragments were deleted, silently wiped the
+   previously-published feature notes (and any compat-matrix override they
+   carried) from the section, leaving only the new straggler's content —
+   `assemble_section`/`merge_fragment_deltas` only ever see what's *currently
+   on disk*, so deleting shrinks what a future re-cut can recover. Leaving
+   fragments in place costs nothing: `collect_fragments`'s `assigned`/
+   `unassigned` split already keys off `target_version`, so an
+   already-assigned fragment is invisible to step 2's interactive prompt
+   forever, and `for_version` only ever pulls in fragments for the *exact*
+   version being cut — a fragment sitting in `release-notes.d/` after its
+   release has shipped is inert, not a bug, and doubles as a durable per-PR
+   record of what shipped in which release. (If `release-notes.d/` ever needs
+   tidying, that's a separate, manual housekeeping decision — not something
+   `cut` should do automatically as a side effect of assembling a section.)
+
+   Read `${CLAUDE_SKILL_DIR}/templates/cut-pr-body.md.tmpl` and fill in the
+   version, fragment filenames/count, aggregated source PR numbers, and a
+   checklist item for every `null`-valued row in `/tmp/compat_rows.json`.
+   Append `preview.json`'s `manual_checks_md` (a plain string append, same as
+   tag mode step 9). Write to `/tmp/pr-body.md`.
+
+8. **Preview presentation, edit loop, push.** Same as tag mode steps 9–11: present
+   the diff, `AskUserQuestion` for push / re-prompt / save-and-exit, then:
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.push \
+     --doc-repo-root <hub-doc-root> --branch <branch> \
+     --title "docs: release notes for <version>" --body-file /tmp/pr-body.md
+   ```
+   `push.py` is unchanged and reused as-is — it commits whatever is staged
+   (just the release-notes.mdx rewrite from step 6; fragment files are never
+   touched) and opens the draft PR.
+
 ## Confirmation gates
 
 - Never push without explicit `y` from the engineer
@@ -254,10 +415,18 @@ that clone path for `hub-doc-pr-generator`, this skill finds it too.
 - If `gh auth status` fails: stop with `gh auth login` instructions
 - Never fill in a compatibility-matrix value the scripts reported as
   unknown/`null` — surface it as a TBD checklist item instead
+- Cut mode: never touch a fragment the writer didn't explicitly select in step 2
+  (leave it `unassigned` for a future cut); never delete or modify a fragment
+  file for any reason — `cut` only ever reads them, never removes them, so a
+  re-run for the same still-open version always has the full set to
+  re-derive a complete section from
 
 ## When to use the AskUserQuestion tool
 
-- Step 4: combine vs. separate entries — always asked when 2+ tags are given,
-  regardless of confidence, because it decides document structure
-- Step 10: edit-loop choice
-- Step 11: push confirmation
+- Tag mode step 4: combine vs. separate entries — always asked when 2+ tags are
+  given, regardless of confidence, because it decides document structure
+- Tag mode step 10 / cut mode step 8: edit-loop choice
+- Tag mode step 11 / cut mode step 8: push confirmation
+- Cut mode step 2: which unassigned fragments belong to this release — always
+  asked when any exist, since guessing wrong means silently shipping (or
+  silently dropping) a feature's release note
