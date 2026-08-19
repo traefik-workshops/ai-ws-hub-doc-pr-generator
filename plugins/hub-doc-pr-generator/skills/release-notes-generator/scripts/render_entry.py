@@ -63,17 +63,26 @@ def _existing_section_span(existing: str, identity: str) -> tuple[int, int] | No
     the `## Earlier releases` archive boundary, or end of file — whichever
     comes first). None if no section with this exact identity exists yet.
 
-    `identity` must match exactly (modulo the optional badge) -- confirmed
-    live this needs to recognize a hub-doc-team-curated combined heading
-    (`## Gateway v3.20.6 & v3.19.11`) as identical to itself when tag mode's
-    edit-loop re-prompt path re-splices a regenerated combined entry against a
-    file that already has that same heading from an earlier splice attempt
-    (previously fell through to the default insert-above-first path and
-    duplicated it -- the very bug this function exists to prevent), while
+    `identity` must match exactly modulo the optional badge AND modulo case --
+    confirmed live this needs to recognize a hub-doc-team-curated combined
+    heading (`## Gateway v3.20.6 & v3.19.11`) as identical to itself when tag
+    mode's edit-loop re-prompt path re-splices a regenerated combined entry
+    against a file that already has that same heading from an earlier splice
+    attempt (previously fell through to the default insert-above-first path
+    and duplicated it -- the very bug this function exists to prevent), while
     still refusing to match a DIFFERENT identity that merely shares a leading
-    version (see `_heading_identity`'s docstring)."""
+    version (see `_heading_identity`'s docstring). Case-insensitive for the
+    same reason collect_fragments.for_version() already matches version
+    strings case-insensitively: a re-cut of the same release invoked with
+    different casing in the `<version>` argument (`v3.21.0-EA.1` vs
+    `v3.21.0-ea.1`) previously failed this exact-case match, fell through to
+    the default insert-above-first path, and produced two headings for one
+    release -- the same duplicate-heading failure this function exists to
+    prevent, just reopened via a casing-drift trigger instead of a spacing or
+    prefix-vs-full-identity one."""
     heading_re = re.compile(
-        rf"^## Gateway {re.escape(identity)}(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE,
+        rf"^## Gateway {re.escape(identity)}(?:\s*<EarlyAccessBadge\s*/>)?\s*$",
+        re.MULTILINE | re.IGNORECASE,
     )
     m = heading_re.search(existing)
     if not m:

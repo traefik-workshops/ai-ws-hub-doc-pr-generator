@@ -73,6 +73,22 @@ class TestSplice(unittest.TestCase):
         self.assertIn("new", result)
         self.assertNotIn("old", result)
 
+    def test_resplice_tolerates_version_casing_drift(self):
+        """Regression test: a re-cut of the same release invoked with
+        different casing in the `<version>` argument (`v3.21.0-EA.1` vs
+        `v3.21.0-ea.1`) previously failed the exact-case heading match,
+        fell through to the default insert-above-first path, and produced
+        two headings for what's logically one release -- same failure class
+        as the badge-spacing-drift bug above, just a different trigger.
+        collect_fragments.for_version() already matches version strings
+        case-insensitively; this brings the heading match in line with it."""
+        existing = "## Gateway v3.21.0-EA.1 <EarlyAccessBadge />\n\n**2026-08-10**\n\nold\n"
+        entry = "## Gateway v3.21.0-ea.1 <EarlyAccessBadge />\n\n**2026-08-12**\n\nnew\n"
+        result = splice(existing, entry)
+        self.assertEqual(result.lower().count("## gateway v3.21.0-ea.1"), 1)
+        self.assertIn("new", result)
+        self.assertNotIn("old", result)
+
     def test_resplice_preserves_ea_badge_in_heading(self):
         existing = "preamble\n\n## Gateway v3.21.0-ea.1 <EarlyAccessBadge />\n\n**2026-08-10**\n\nold\n"
         entry = "## Gateway v3.21.0-ea.1 <EarlyAccessBadge />\n\n**2026-08-11**\n\nnew\n"
