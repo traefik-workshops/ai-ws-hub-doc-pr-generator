@@ -287,6 +287,28 @@ class TestRunLintFix(unittest.TestCase):
         self.assertIn("--fix", commands_joined)
         self.assertIn("node_modules/.bin/alex", commands_joined)
 
+    def test_relative_repo_path_resolves_to_absolute_binary_paths(self):
+        """Regression test: a relative --repo-path (e.g. "hub-doc") previously
+        broke the node_modules/.bin lookup -- subprocess.run(..., cwd=repo_path)
+        chdirs the child into repo_path first, so a relative executable path
+        built from that SAME relative repo_path resolved relative to the
+        already-chdir'd process, doubling the prefix ("hub-doc/hub-doc/node_modules/...")
+        and never finding markdownlint/alex, even though both were installed
+        and ran fine when invoked directly with an absolute --repo-path."""
+        with patch("scripts.preview.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.stderr = ""
+            run_lint_fix(
+                repo_path="hub-doc", impl_repo="traefik/traefik-hub", written=["docs/new.md"],
+            )
+        all_args = [arg for call in mock_run.call_args_list for arg in call.args[0]]
+        markdownlint_paths = [a for a in all_args if a.endswith("node_modules/.bin/markdownlint")]
+        self.assertTrue(markdownlint_paths, "expected a markdownlint invocation")
+        for p in markdownlint_paths:
+            self.assertTrue(Path(p).is_absolute(), f"expected absolute path, got {p!r}")
+            self.assertNotIn("hub-doc/hub-doc", p)
+
     def test_hub_scopes_commands_to_written_markdown_files_only(self):
         """Regression: the lint-fix pass must never run repo-wide -- that's what
         left ~70 unrelated files dirty after every run and crashed the next
@@ -586,6 +608,59 @@ class TestCheckTableCompleteness(unittest.TestCase):
             mode="create",
         )]
         self.assertEqual(check_table_completeness(edits), [])
+
+    def test_pre_existing_untouched_row_is_not_flagged_when_repo_path_given(self):
+        """Regression test for traefik-hub#1435 finding #5: a pre-existing,
+        untouched row containing an example value like "123..." (a truncated-
+        looking STRING, not a truncated row) must not be flagged just because
+        it happens to sit in a file this PR also edits elsewhere."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            existing = (
+                "| Field | Type | Example |\n| --- | --- | --- |\n"
+                "| serial | string | \"123...\" |\n"
+            )
+            (d / "docs/reference.md").parent.mkdir(parents=True, exist_ok=True)
+            (d / "docs/reference.md").write_text(existing)
+            subprocess.run(["git", "add", "docs/reference.md"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                             "commit", "-qm", "existing"], cwd=d, check=True)
+
+            # This PR only appends a genuinely new, complete row -- the
+            # pre-existing "123..." row is carried through unchanged.
+            new_content = existing + "| new_field | string | a real value |\n"
+            edits = [FileEdit(path="docs/reference.md", content=new_content, mode="overwrite")]
+            findings = check_table_completeness(edits, repo_path=str(d))
+        self.assertEqual(findings, [])
+
+    def test_genuinely_new_truncated_row_is_flagged_when_repo_path_given(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            existing = "| Field | Type |\n| --- | --- |\n| old_field | string |\n"
+            (d / "docs/reference.md").parent.mkdir(parents=True, exist_ok=True)
+            (d / "docs/reference.md").write_text(existing)
+            subprocess.run(["git", "add", "docs/reference.md"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                             "commit", "-qm", "existing"], cwd=d, check=True)
+
+            new_content = existing + "| new_field | json, xml, etc. |\n"
+            edits = [FileEdit(path="docs/reference.md", content=new_content, mode="overwrite")]
+            findings = check_table_completeness(edits, repo_path=str(d))
+        self.assertEqual(len(findings), 1)
+        self.assertIn("new_field", findings[0])
+
+    def test_without_repo_path_falls_back_to_flagging_every_matching_line(self):
+        """Backward-compatible default: omitting repo_path keeps the
+        previous (unscoped) behavior."""
+        edits = [FileEdit(
+            path="docs/reference.md",
+            content="| Field | Example |\n| --- | --- |\n| serial | \"123...\" |\n",
+            mode="overwrite",
+        )]
+        findings = check_table_completeness(edits)
+        self.assertEqual(len(findings), 1)
 
     def test_non_markdown_files_are_skipped(self):
         edits = [FileEdit(

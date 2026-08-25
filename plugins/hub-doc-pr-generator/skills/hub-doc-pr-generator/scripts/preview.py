@@ -1,6 +1,7 @@
 """preview.py — write generated files to a working branch, print diff, run linters."""
 from __future__ import annotations
 import argparse
+import difflib
 import json
 import re
 import shutil
@@ -252,7 +253,20 @@ def run_lint_fix(*, repo_path: str, impl_repo: str, written: list[str]) -> LintF
     with the stashed copy of itself on `stash pop`).
     OSS: `mkdocs build --strict` is a structural check with nothing to auto-fix.
     Either way, whatever remains goes to `unresolved` for the PR body, not a blocker.
+
+    `repo_path` is resolved to an absolute path up front: a relative value
+    (e.g. "hub-doc") previously broke the node_modules/.bin lookup below --
+    subprocess.run(..., cwd=repo_path) chdirs the child process into
+    repo_path first, so a relative executable path built from that SAME
+    relative repo_path (e.g. "hub-doc/node_modules/.bin/markdownlint") then
+    resolved relative to the already-chdir'd process, doubling the prefix
+    ("hub-doc/hub-doc/node_modules/...") and never finding the binary, even
+    though markdownlint/alex were installed and ran fine when invoked
+    directly. Resolving once here, rather than relying on every caller to
+    pass an absolute path, fixes it regardless of how run_lint_fix is
+    invoked.
     """
+    repo_path = str(Path(repo_path).resolve())
     fixed = _fix_file_permissions(repo_path, written)
     unresolved: list[str] = []
     commands: list[str] = []
@@ -313,21 +327,58 @@ _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _PLACEHOLDER_RE = re.compile(r"…|\.\.\.|\betc\.?\b", re.IGNORECASE)
 
 
-def check_table_completeness(edits: list[FileEdit]) -> list[str]:
+def _added_or_changed_lines(old_content: str, new_content: str) -> set[str]:
+    """Lines in `new_content` that are genuinely new or changed relative to
+    `old_content` (line-level diff, so an unmodified line that merely sits
+    near an edit isn't swept in). Used to scope check_table_completeness to
+    the PR's actual additions instead of every line in the whole file."""
+    old_lines = old_content.splitlines()
+    new_lines = new_content.splitlines()
+    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    changed: set[str] = set()
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("insert", "replace"):
+            changed.update(new_lines[j1:j2])
+    return changed
+
+
+def check_table_completeness(edits: list[FileEdit], *, repo_path: str | None = None) -> list[str]:
     """Flag markdown table rows that look truncated (an ellipsis or 'etc.'
     placeholder standing in for values) instead of enumerating every row — see
     style-guide.md's Tables section. Purely mechanical: no LLM judgment, so it
-    can't itself introduce a false confirmation prompt."""
+    can't itself introduce a false confirmation prompt.
+
+    Confirmed live (traefik-hub#1435 finding #5): without scoping, this flagged
+    ANY matching table row anywhere in a touched file, including a pre-existing,
+    untouched row this PR never changed (e.g. an example value like "123..." —
+    a truncated-looking string, not a truncated row). When `repo_path` is given
+    and an edit is an `overwrite` of an existing file, this diffs the new
+    content against the pre-PR version (`git show HEAD:<path>`) and only checks
+    lines that are genuinely new or changed. Without `repo_path` (or for a
+    `create` edit, which has no prior version to diff against — everything in
+    it is new by definition), every matching line is checked, same as before
+    this fix."""
     findings: list[str] = []
     for e in edits:
         if not (e.path.endswith(".md") or e.path.endswith(".mdx")):
             continue
+        checkable_lines: set[str] | None = None
+        if repo_path is not None and e.mode == "overwrite":
+            try:
+                old_content = _git.run(repo_path, ["show", f"HEAD:{e.path}"])
+            except _git.GitError:
+                old_content = None
+            if old_content is not None:
+                checkable_lines = _added_or_changed_lines(old_content, e.content)
         for line in e.content.splitlines():
-            if _TABLE_ROW_RE.match(line) and _PLACEHOLDER_RE.search(line):
-                findings.append(
-                    f"{e.path}: table row looks truncated (ellipsis/'etc.' placeholder "
-                    f"instead of an enumerated value): {line.strip()}"
-                )
+            if not (_TABLE_ROW_RE.match(line) and _PLACEHOLDER_RE.search(line)):
+                continue
+            if checkable_lines is not None and line not in checkable_lines:
+                continue
+            findings.append(
+                f"{e.path}: table row looks truncated (ellipsis/'etc.' placeholder "
+                f"instead of an enumerated value): {line.strip()}"
+            )
     return findings
 
 
@@ -397,7 +448,7 @@ def apply_edits_with_lint_fix(
     permissions actually show up in the staged diff apply_edits already prepared."""
     written = apply_edits(repo_path=repo_path, branch=branch, edits=edits)
     lint = run_lint_fix(repo_path=repo_path, impl_repo=impl_repo, written=written)
-    lint.unresolved.extend(check_table_completeness(edits))
+    lint.unresolved.extend(check_table_completeness(edits, repo_path=repo_path))
     lint.unresolved.extend(check_placeholder_version(edits))
     lint.unresolved.extend(check_unassigned_fragment(edits))
     if lint.fixed and written:
@@ -429,6 +480,17 @@ def main(argv: list[str]) -> int:
                              "pages to stdout (uses delta/glow/bat if installed). Does not "
                              "re-apply edits or emit JSON; run the default mode first.")
     args = parser.parse_args(argv)
+    # A relative --repo-path (e.g. "hub-doc") previously broke the
+    # node_modules/.bin lookup in run_lint_fix(): subprocess.run(..., cwd=repo_path)
+    # chdirs the child process into repo_path first, so a relative executable
+    # path built from the SAME relative repo_path (e.g.
+    # "hub-doc/node_modules/.bin/markdownlint") then resolved relative to the
+    # already-chdir'd process -- i.e. "hub-doc/hub-doc/node_modules/...",
+    # doubling the prefix and never finding the binary, even though
+    # markdownlint/alex were installed and ran fine when invoked directly.
+    # Resolving to an absolute path once, here, removes the ambiguity for
+    # every downstream use of repo_path in this module.
+    args.repo_path = str(Path(args.repo_path).resolve())
     raw_edits = json.loads(Path(args.edits).read_text())
     edits = [FileEdit(**e) for e in raw_edits]
 
