@@ -254,7 +254,7 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    [
      {"path": "docs/...", "content": "...", "mode": "create"},
      {"path": "sidebars.js", "content": "<full new file>", "mode": "overwrite"},
-     {"path": "docs/api-gateway/release-notes.d/<pr-number>-<feature-slug>.mdx", "content": "<fragment>", "mode": "create"}
+     {"path": "docs/api-gateway/release-notes.d/_<pr-number>-<feature-slug>.mdx", "content": "<fragment>", "mode": "create"}
    ]
    ```
    The release-note edit is a **fragment file**, never a `release-notes.mdx` overwrite — see
@@ -263,7 +263,12 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    `${CLAUDE_SKILL_DIR}/templates/release-note-fragment.mdx.tmpl` for the front matter
    wrapper and the matching shape template (`release-note-ea.mdx.tmpl` etc., picked per
    `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md`'s shape-selection table) for
-   the body. The filename's `<pr-number>` is the primary PR's number
+   the body. The filename MUST start with a leading underscore —
+   `_<pr-number>-<feature-slug>.mdx` — so Docusaurus's default `**/_*.{md,mdx}` exclude glob
+   skips the fragment during the docs build (fragments contain relative links written for
+   their *post-assembly* location one directory up, which don't resolve from the fragment's
+   own location — omitting the underscore breaks the site build, see
+   `release-note-heuristics.md`). `<pr-number>` is the primary PR's number
    (`bundle.json → merged.primary_pr`); `<feature-slug>` is the same slug used for the page
    path. Set the fragment's `compat:` front-matter field only when the diff/grounding
    clearly shows a component version bump (e.g. a Traefik Proxy dependency update) — leave

@@ -33,7 +33,7 @@ from scripts._frontmatter import split_front_matter, unquote
 
 _SCALAR_RE = re.compile(r"^(?P<k>[A-Za-z0-9_]+):\s*(?P<v>.*)$")
 _NESTED_KV_RE = re.compile(r"^\s+(?P<k>[^:]+):\s*(?P<v>.+)$")
-_PR_NUMBER_RE = re.compile(r"^(\d+)-")
+_PR_NUMBER_RE = re.compile(r"^_?(\d+)-")
 
 
 def parse_fragment(text: str) -> dict:
@@ -114,12 +114,21 @@ def _pr_number(filename: str) -> int:
     consistent with parse_fragment's and assign_target_version.assign's loud-
     failure behavior elsewhere in this pipeline -- silently defaulting to 0
     would let a misnamed fragment sort as if it were the oldest possible PR
-    instead of surfacing that its ordering can't actually be trusted."""
+    instead of surfacing that its ordering can't actually be trusted.
+
+    Accepts both the current `_<pr-number>-<slug>.mdx` convention (the
+    leading underscore is required so Docusaurus's default exclude glob skips
+    fragments during the docs build -- see hub-doc-pr-generator's
+    release-note-heuristics.md) and the older `<pr-number>-<slug>.mdx` form
+    without it, so fragments written before this convention changed are still
+    collectible during the transition. New fragments must always use the
+    underscore form -- that's enforced on the write side (SKILL.md step 7),
+    not here."""
     m = _PR_NUMBER_RE.match(filename)
     if not m:
         raise ValueError(
             f"{filename}: fragment filename doesn't start with a PR number "
-            "(expected '<pr-number>-<slug>.mdx') -- can't determine its position "
+            "(expected '_<pr-number>-<slug>.mdx') -- can't determine its position "
             "in newest-first ordering"
         )
     return int(m.group(1))

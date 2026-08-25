@@ -28,10 +28,76 @@ from pathlib import Path
 
 _EA_VERSION_RE = re.compile(r"-ea(\.|$)", re.IGNORECASE)
 
-# ga-bullet fragments render as a single bullet line each (see
-# hub-doc-pr-generator's templates/release-note-ga-bullet.mdx.tmpl); every
-# other shape renders as a full `#### <Feature>` subsection body, verbatim.
+# ga-bullet fragments render as a single bullet line each, grouped under
+# "#### Graduated to GA" below (see hub-doc-pr-generator's
+# templates/release-note-ga-bullet.mdx.tmpl); every other shape -- including
+# plain-bullet -- renders as its own body block, verbatim, under "### What's
+# New". plain-bullet's body also happens to be a single bullet line (see
+# templates/release-note-plain-bullet.mdx.tmpl), but it's deliberately NOT
+# grouped under "Graduated to GA" -- that heading is reserved for actual GA
+# graduations, and a plain-bullet entry (a small enhancement the
+# engineer/reviewer explicitly declined EA/GA framing for) isn't one.
 _BULLET_SHAPE = "ga-bullet"
+
+# Matches markdown link targets, e.g. `[text](../foo/bar.md#anchor)`. Only the
+# target (group 1) is used -- link text can contain nested brackets/parens we
+# don't need to parse correctly here.
+_MD_LINK_RE = re.compile(r"\]\(([^)]+)\)")
+
+
+def _is_checkable_relative_link(target: str) -> bool:
+    """Skip anything that isn't a plain relative filesystem path: absolute
+    URLs (http/https/mailto), site-absolute paths (leading '/', which
+    Docusaurus resolves against the doc root, not the fragment's directory),
+    and pure in-page anchors (`#foo`, no path component)."""
+    target = target.strip()
+    if not target or target.startswith("#"):
+        return False
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", target):  # any URI scheme
+        return False
+    if target.startswith("/"):
+        return False
+    return True
+
+
+def check_fragment_links(fragments: list[dict], docs_dir: Path) -> list[str]:
+    """Defense-in-depth check for the exact class of bug behind
+    traefik/hub-doc#988's first real CI failure: a fragment's relative
+    markdown links are deliberately written for where the fragment's content
+    will live *after* `cut` splices it into release-notes.mdx (one directory
+    up from release-notes.d/, i.e. `docs_dir` -- the same directory
+    release-notes.mdx itself lives in), not for the fragment's own location.
+    That mismatch isn't visible from the fragment file alone; it only shows up
+    once something tries to resolve the link from the wrong base directory.
+
+    This resolves each fragment body's relative links against `docs_dir` (the
+    post-assembly location) and flags any that don't point to an existing
+    file, the same non-blocking "surface it, don't fail the run" pattern
+    check_table_completeness/check_vnext_placeholder already use in
+    preview.py. It does NOT catch the underscore-filename build-exclusion bug
+    itself (that's fixed structurally by the filename convention, see
+    hub-doc-pr-generator's release-note-heuristics.md) -- this is a second,
+    independent safety net for a fragment whose link target is simply wrong
+    or was written assuming the wrong base directory."""
+    findings: list[str] = []
+    for fragment in fragments:
+        body = fragment.get("body", "")
+        filename = fragment.get("filename", "<unknown fragment>")
+        for match in _MD_LINK_RE.finditer(body):
+            target = match.group(1).split(" ", 1)[0]  # drop an optional "title" suffix
+            if not _is_checkable_relative_link(target):
+                continue
+            path_part = target.split("#", 1)[0]
+            if not path_part:
+                continue
+            resolved = (docs_dir / path_part).resolve()
+            if not resolved.is_file():
+                findings.append(
+                    f"{filename}: relative link '{target}' does not resolve to an existing "
+                    f"file at its post-assembly location ({docs_dir}) -- double-check the "
+                    "path before this fragment is cut into release-notes.mdx"
+                )
+    return findings
 
 
 def _escape_table_cell(value: object) -> str:
@@ -79,11 +145,19 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--date", required=True)
     parser.add_argument("--fragments", required=True, help="path to a JSON list of fragments for this version, newest-first")
     parser.add_argument("--compat-rows", required=True, help="path to a JSON list of {component, version, note} rows")
+    parser.add_argument(
+        "--docs-dir",
+        help="the directory release-notes.mdx lives in (fragments' post-assembly location), "
+             "e.g. <hub-doc-root>/docs/api-gateway -- if given, fragment relative links are "
+             "checked against it and any unresolvable ones are surfaced as link_warnings "
+             "(non-blocking; omit to skip the check)",
+    )
     args = parser.parse_args(argv)
     fragments = json.loads(Path(args.fragments).read_text(encoding="utf-8"))
     compat_rows = json.loads(Path(args.compat_rows).read_text(encoding="utf-8"))
     section = assemble(version=args.version, date=args.date, fragments=fragments, compat_rows=compat_rows)
-    print(json.dumps({"section": section}, indent=2))
+    link_warnings = check_fragment_links(fragments, Path(args.docs_dir)) if args.docs_dir else []
+    print(json.dumps({"section": section, "link_warnings": link_warnings}, indent=2))
     return 0
 
 

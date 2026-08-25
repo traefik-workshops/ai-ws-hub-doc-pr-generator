@@ -1,6 +1,8 @@
 import re
+import tempfile
 import unittest
-from scripts.assemble_section import assemble, render_compat_table
+from pathlib import Path
+from scripts.assemble_section import assemble, check_fragment_links, render_compat_table
 
 _UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 
@@ -94,6 +96,113 @@ class TestAssemble(unittest.TestCase):
             fragments=[newer, EA_FRAGMENT], compat_rows=COMPAT_ROWS,
         )
         self.assertLess(section.index("Newer Feature"), section.index("Bedrock Mantle"))
+
+
+class TestPlainBulletShape(unittest.TestCase):
+    """Regression coverage for traefik-hub#1435 finding #2: no template shape
+    existed for a small non-EA/non-GA enhancement (real precedent in
+    release-notes.mdx for a plain bullet with no badge/callout)."""
+
+    PLAIN_BULLET_FRAGMENT = {
+        "shape": "plain-bullet",
+        "pr_number": 1435,
+        "body": "- **License expiration metric**: adds a Prometheus gauge for license expiry.",
+    }
+
+    def test_plain_bullet_is_not_grouped_under_graduated_to_ga(self):
+        section = assemble(
+            version="v3.21.0-ea.1", date="2026-08-10",
+            fragments=[self.PLAIN_BULLET_FRAGMENT, GA_BULLET_FRAGMENT],
+            compat_rows=COMPAT_ROWS,
+        )
+        ga_heading_idx = section.index("#### Graduated to GA")
+        ga_bullet_idx = section.index("Hardened Image")
+        plain_idx = section.index("License expiration metric")
+        # The real GA bullet is grouped under the heading; the plain-bullet
+        # entry appears in the section but is NOT swept into that group.
+        self.assertGreater(ga_bullet_idx, ga_heading_idx)
+        self.assertNotIn("License expiration metric", section[ga_heading_idx:ga_bullet_idx])
+        self.assertIn("License expiration metric", section)
+        self.assertGreaterEqual(plain_idx, 0)
+
+
+class TestCheckFragmentLinks(unittest.TestCase):
+    """Defense-in-depth check for the traefik/hub-doc#988 class of bug: a
+    fragment's relative link is written for its post-assembly location (the
+    same directory release-notes.mdx lives in), not the fragment's own
+    directory one level deeper. These tests resolve against a real temp
+    directory tree rather than mocking Path so a genuine filesystem-existence
+    check is exercised, matching how the underlying bug actually manifested."""
+
+    def test_flags_link_that_does_not_resolve_post_assembly(self):
+        with tempfile.TemporaryDirectory() as td:
+            docs_dir = Path(td)
+            fragment = {
+                "filename": "_1234-broken-link.mdx",
+                "body": "See the [Foo](../ai-gateway/guides/foo.md) documentation.",
+            }
+            findings = check_fragment_links([fragment], docs_dir)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("_1234-broken-link.mdx", findings[0])
+        self.assertIn("../ai-gateway/guides/foo.md", findings[0])
+
+    def test_does_not_flag_link_that_resolves_post_assembly(self):
+        with tempfile.TemporaryDirectory() as td:
+            # docs_dir stands in for docs/api-gateway/ (where release-notes.mdx
+            # lives); ai-gateway/ is its sibling under docs/, one level up --
+            # matching a real cross-gateway link like the Bedrock Mantle one.
+            docs_dir = Path(td) / "docs" / "api-gateway"
+            docs_dir.mkdir(parents=True)
+            target = Path(td) / "docs" / "ai-gateway" / "middlewares" / "bedrock-mantle.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# Bedrock Mantle\n")
+            fragment = {
+                "filename": "_964-bedrock-mantle.mdx",
+                "body": "See the [Bedrock Mantle](../ai-gateway/middlewares/bedrock-mantle.md) documentation.",
+            }
+            findings = check_fragment_links([fragment], docs_dir)
+        self.assertEqual(findings, [])
+
+    def test_ignores_anchor_only_and_absolute_and_external_links(self):
+        with tempfile.TemporaryDirectory() as td:
+            docs_dir = Path(td)
+            fragment = {
+                "filename": "_970-messages-api.mdx",
+                "body": (
+                    "See [above](#above), the [site root](/traefik-hub/api-gateway/x.md), "
+                    "and [external](https://example.com/docs) for more."
+                ),
+            }
+            findings = check_fragment_links([fragment], docs_dir)
+        self.assertEqual(findings, [])
+
+    def test_flags_by_filename_across_multiple_fragments(self):
+        with tempfile.TemporaryDirectory() as td:
+            docs_dir = Path(td)
+            good = {
+                "filename": "_964-good.mdx",
+                "body": "",
+            }
+            bad = {
+                "filename": "_980-bad.mdx",
+                "body": "[missing](../nowhere/missing.md)",
+            }
+            findings = check_fragment_links([good, bad], docs_dir)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("_980-bad.mdx", findings[0])
+
+    def test_checks_link_with_anchor_against_path_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            docs_dir = Path(td)
+            target = docs_dir / "reference" / "metrics.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("# Metrics\n")
+            fragment = {
+                "filename": "_1435-metric.mdx",
+                "body": "See the [Global Metrics](reference/metrics.md#global-metrics) table.",
+            }
+            findings = check_fragment_links([fragment], docs_dir)
+        self.assertEqual(findings, [])
 
 
 if __name__ == "__main__":

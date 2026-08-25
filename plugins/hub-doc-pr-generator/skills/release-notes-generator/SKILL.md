@@ -348,12 +348,26 @@ them into the real section, once, when the release is actually confirmed.
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.assemble_section \
      --version <version> --date <date> \
      --fragments /tmp/fragments_for_version.json --compat-rows /tmp/compat_rows.json \
-     | jq -r '.section' > /tmp/new-section.mdx
+     --docs-dir <hub-doc-root>/docs/api-gateway \
+     > /tmp/assembled.json
+   jq -r '.section' /tmp/assembled.json > /tmp/new-section.mdx
    ```
    Purely mechanical — `#### Graduated to GA` first, feature subsections
    newest-first, compatibility matrix last (see `assemble_section.py`'s
    docstring). No LLM judgment call in this step; the content itself was already
    written and reviewed when each fragment's doc PR merged.
+
+   `--docs-dir` also runs a mechanical defense-in-depth check
+   (`check_fragment_links`): each fragment's relative markdown links are
+   resolved against this directory — the same one `release-notes.mdx` lives
+   in, i.e. where the fragment's content will actually sit once spliced in —
+   and any that don't resolve to a real file land in `/tmp/assembled.json`'s
+   `link_warnings`. This doesn't replace the underscore-prefix filename fix
+   (that's what keeps Docusaurus from building the fragment as its own page
+   in the first place — see the sibling hub-doc-pr-generator skill's
+   release-note-heuristics.md); it's a second, independent check for a link
+   target that's simply wrong. Non-blocking: carry any `link_warnings` into
+   step 7's manual-checks list, same as `preview.json`'s `lint_unresolved`.
 
 6. **Splice into release-notes.mdx and preview.** Same splice mechanics as tag
    mode (`render_entry.py`'s `splice`: always above the first existing
@@ -392,7 +406,8 @@ them into the real section, once, when the release is actually confirmed.
 
    Read `${CLAUDE_SKILL_DIR}/templates/cut-pr-body.md.tmpl` and fill in the
    version, fragment filenames/count, aggregated source PR numbers, and a
-   checklist item for every `null`-valued row in `/tmp/compat_rows.json`.
+   checklist item for every `null`-valued row in `/tmp/compat_rows.json`, plus
+   one for every entry in `/tmp/assembled.json`'s `link_warnings` (step 5).
    Append `preview.json`'s `manual_checks_md` (a plain string append, same as
    tag mode step 9). Write to `/tmp/pr-body.md`.
 

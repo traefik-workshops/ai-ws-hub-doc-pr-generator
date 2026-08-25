@@ -147,14 +147,14 @@ class TestCollect(unittest.TestCase):
     def test_splits_assigned_and_unassigned(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / "964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
-            (d / "970-messages-api.mdx").write_text(FRAGMENT_UNASSIGNED)
+            (d / "_964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
+            (d / "_970-messages-api.mdx").write_text(FRAGMENT_UNASSIGNED)
             result = collect(d)
         self.assertEqual(len(result["fragments"]), 2)
         self.assertEqual(len(result["assigned"]), 1)
         self.assertEqual(len(result["unassigned"]), 1)
         self.assertEqual(result["assigned"][0]["target_version"], "v3.21.0-ea.1")
-        self.assertEqual(result["unassigned"][0]["filename"], "970-messages-api.mdx")
+        self.assertEqual(result["unassigned"][0]["filename"], "_970-messages-api.mdx")
 
     def test_missing_directory_returns_empty(self):
         result = collect(Path("/nonexistent/release-notes.d"))
@@ -163,7 +163,7 @@ class TestCollect(unittest.TestCase):
     def test_pr_number_extracted_from_filename(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / "964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
+            (d / "_964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
             result = collect(d)
         self.assertEqual(result["fragments"][0]["pr_number"], 964)
 
@@ -189,8 +189,8 @@ class TestCollect(unittest.TestCase):
         it's the older one."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / "10-second.mdx").write_text(FRAGMENT_UNASSIGNED.replace("970", "10"))
-            (d / "9-first.mdx").write_text(FRAGMENT_UNASSIGNED.replace("970", "9"))
+            (d / "_10-second.mdx").write_text(FRAGMENT_UNASSIGNED.replace("970", "10"))
+            (d / "_9-first.mdx").write_text(FRAGMENT_UNASSIGNED.replace("970", "9"))
             result = collect(d)
         self.assertEqual([f["pr_number"] for f in result["fragments"]], [9, 10])
 
@@ -202,10 +202,10 @@ class TestCollect(unittest.TestCase):
         the round-7 no-delete design) that referred to."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / "990-blank-version.mdx").write_text(FRAGMENT_BLANK_TARGET_VERSION)
+            (d / "_990-blank-version.mdx").write_text(FRAGMENT_BLANK_TARGET_VERSION)
             with self.assertRaises(ValueError) as ctx:
                 collect(d)
-        self.assertIn("990-blank-version.mdx", str(ctx.exception))
+        self.assertIn("_990-blank-version.mdx", str(ctx.exception))
 
 
 class TestPrNumber(unittest.TestCase):
@@ -214,6 +214,15 @@ class TestPrNumber(unittest.TestCase):
             _pr_number("bedrock-mantle-no-pr-prefix.mdx")
 
     def test_extracts_leading_number(self):
+        self.assertEqual(_pr_number("_964-bedrock-mantle.mdx"), 964)
+
+    def test_accepts_legacy_filename_without_underscore(self):
+        """Regression/transition test: fragments written before the
+        underscore-prefix filename convention (see release-note-heuristics.md
+        -- the prefix keeps Docusaurus's default exclude glob from trying to
+        build fragments as real pages) must still be collectible so an
+        in-flight fragment from before the fix isn't silently dropped from a
+        cut."""
         self.assertEqual(_pr_number("964-bedrock-mantle.mdx"), 964)
 
 
@@ -221,9 +230,9 @@ class TestForVersion(unittest.TestCase):
     def test_filters_and_orders_newest_first_by_pr_number(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / "964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
-            (d / "980-hardened-image.mdx").write_text(FRAGMENT_GA_BULLET)
-            (d / "970-messages-api.mdx").write_text(FRAGMENT_UNASSIGNED)
+            (d / "_964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
+            (d / "_980-hardened-image.mdx").write_text(FRAGMENT_GA_BULLET)
+            (d / "_970-messages-api.mdx").write_text(FRAGMENT_UNASSIGNED)
             fragments = collect(d)["fragments"]
         ordered = for_version(fragments, "v3.21.0-ea.1")
         self.assertEqual([f["pr_number"] for f in ordered], [980, 964])
@@ -272,7 +281,7 @@ class TestMain(unittest.TestCase):
     def test_returns_zero_and_prints_json_on_success(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / "964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
+            (d / "_964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
             rc = main(["--release-notes-dir", str(d)])
         self.assertEqual(rc, 0)
 

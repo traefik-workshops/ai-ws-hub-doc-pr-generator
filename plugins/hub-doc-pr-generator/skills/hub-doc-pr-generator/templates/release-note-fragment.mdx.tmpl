@@ -16,11 +16,19 @@ must never touch docs/api-gateway/release-notes.mdx directly (see
 references/release-note-heuristics.md, "Where the entry goes"). Body below
 this front matter is exactly the shape template's content for {{shape}}
 (release-note-ea.mdx.tmpl / release-note-ga-bullet.mdx.tmpl /
-release-note-ga-subsection.mdx.tmpl / release-note-breaking.mdx.tmpl) --
-this wrapper only adds the front matter that lets `release-notes-generator
-cut` find, group, and order fragments later. Don't duplicate insertion-order
-logic here: that's the cut step's job, done once, centrally, not a per-PR
-decision.
+release-note-ga-subsection.mdx.tmpl / release-note-breaking.mdx.tmpl /
+release-note-plain-bullet.mdx.tmpl) -- this wrapper only adds the front
+matter that lets `release-notes-generator cut` find, group, and order
+fragments later. Don't duplicate insertion-order logic here: that's the cut
+step's job, done once, centrally, not a per-PR decision.
+
+Write this file to
+docs/api-gateway/release-notes.d/_<pr-number>-<feature-slug>.mdx -- the
+leading underscore is required so Docusaurus's default exclude glob
+(`**/_*.{md,mdx}`) skips it during the docs build. Without it, Docusaurus
+tries to build the fragment as a real page and fails to resolve its relative
+links, which are deliberately written for the fragment's *post-assembly*
+location (one directory up) rather than its own.
 
 target_version is `unassigned` when the engineer/tech writer doesn't know the
 release yet (see SKILL.md step 6c) -- never invent a version, and never use
