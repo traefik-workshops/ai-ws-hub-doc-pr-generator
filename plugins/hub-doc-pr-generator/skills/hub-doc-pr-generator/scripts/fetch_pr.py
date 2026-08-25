@@ -153,9 +153,18 @@ def parse_pr_inputs(args: list[str], cwd_remote: Optional[str]) -> list[PrRef]:
             continue
         if arg.isdigit():
             if cwd_remote is None:
+                # Confirmed live (traefik-hub#1435 finding #3): running from a
+                # directory that isn't a checkout of the impl repo raised this
+                # with no pointer to either working alternative -- a full PR
+                # URL (no repo inference needed at all), or `--repo
+                # owner/name` (main() already threads this into cwd_remote
+                # ahead of the git-remote lookup, so it doesn't require being
+                # inside any particular checkout).
                 raise ValueError(
-                    f"PR number {arg!r} given without a cwd remote — pass a full URL "
-                    "or run from inside the impl repo."
+                    f"PR number {arg!r} given without a way to resolve which repo it's "
+                    "in — this only works when running from inside a checkout of the "
+                    "impl repo (so its git remote can be inferred). Either pass the full "
+                    f"PR URL instead of {arg!r}, or add --repo owner/name."
                 )
             refs.append(PrRef(cwd_remote, int(arg)))
             continue

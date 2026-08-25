@@ -95,6 +95,17 @@ class TestParsePrInputs(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_pr_inputs(["1234"], cwd_remote=None)
 
+    def test_number_without_cwd_error_points_at_working_alternatives(self):
+        """Regression test for traefik-hub#1435 finding #3: the error
+        previously gave no pointer to either working alternative (a full PR
+        URL, or the already-existing --repo flag) when run from a directory
+        that isn't a checkout of the impl repo."""
+        with self.assertRaises(ValueError) as ctx:
+            parse_pr_inputs(["1234"], cwd_remote=None)
+        message = str(ctx.exception)
+        self.assertIn("--repo", message)
+        self.assertIn("URL", message)
+
     def test_mixed_repos_raises(self):
         with self.assertRaises(ValueError):
             parse_pr_inputs(
