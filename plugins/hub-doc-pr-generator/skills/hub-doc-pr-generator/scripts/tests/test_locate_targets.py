@@ -5,6 +5,7 @@ from scripts.locate_targets import propose_paths
 from scripts.locate_targets import select_neighbors
 from scripts.locate_targets import sidebar_insertion_point, build_locate
 from scripts.locate_targets import existing_doc_refs, issue_texts_from_bundle
+from scripts.locate_targets import build_id_index
 from scripts.locate_targets import find_transcluded_partials
 from scripts import locate_targets
 
@@ -44,6 +45,42 @@ class TestProposePaths(unittest.TestCase):
         )
         self.assertEqual(len(cands), 1)
         self.assertLess(cands[0]["confidence"], 0.75)
+
+    def test_unmapped_internal_go_paths_do_not_default_to_ai_gateway(self):
+        """Regression test for traefik-hub#1435 finding #1: touched files with
+        no doc-adjacent mapping at all (pure internal Go: license claims,
+        profile resolution, OTel registration) previously defaulted to an AI
+        Gateway path with 0.7 confidence -- a confidently wrong guess in a
+        specific, unrelated product area. The real target was an existing
+        API Gateway observability reference page."""
+        cands = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="reference",
+            feature_slug="license-expiration-observability",
+            touched_paths=[
+                "hub/pkg/hub/license/claims.go",
+                "hub/pkg/profile/profile.go",
+                "hub/pkg/traefik/register.go",
+            ],
+        )
+        self.assertFalse(any("ai-gateway" in c["path"] for c in cands))
+        self.assertLess(cands[0]["confidence"], 0.75)
+
+    def test_authzen_cross_gateway_paths_do_not_default_to_ai_gateway(self):
+        """Regression test for the 2026-08-24 AuthZEN finding: AuthZEN spans
+        API Gateway + MCP Gateway, neither of which is AI Gateway, but the
+        heuristic's only fallback confidently guessed AI Gateway anyway."""
+        cands = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="user-guide",
+            feature_slug="understanding-authzen",
+            touched_paths=["hub/pkg/mcp/authzen/policy.go"],
+        )
+        # The generic "hub/pkg/" mapping still surfaces an ai-gateway/guides
+        # candidate as a demoted secondary option (it isn't ruled out
+        # entirely -- this really could be AI Gateway-relevant), but it must
+        # not be the confident top pick the way it was before this fix.
+        self.assertNotIn("ai-gateway", cands[0]["path"])
 
     def test_conflicting_prefixes_lower_confidence(self):
         # Touched paths spanning two unrelated mapped prefixes is a genuinely
@@ -285,6 +322,89 @@ class TestExistingDocRefs(unittest.TestCase):
                 doc_repo_root=td,
             )
         self.assertEqual(refs, ["docs/api-management/api-auth.md"])
+
+    def test_resolves_doc_url_slug_via_frontmatter_id_when_filename_differs(self):
+        """Regression test for traefik/hub-issues#3075: the URL a human pastes
+        into an issue is the rendered site's front-matter `id`, not the
+        filename Docusaurus built it from. Real repro: URL ends in
+        'ref-oidc', but the file is oidc.md with `id: ref-oidc` -- a
+        filename-only scan can't resolve that and falls through to the much
+        weaker path heuristic."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway/reference/routing/http/middlewares"
+            d.mkdir(parents=True)
+            (d / "oidc.md").write_text("---\nid: ref-oidc\ntitle: OIDC\n---\n\nContent.\n")
+            id_index = build_id_index(td)
+            refs = existing_doc_refs(
+                ["See https://doc.traefik.io/traefik-hub/api-gateway/reference/routing/"
+                 "http/middlewares/ref-oidc for details."],
+                doc_repo_root=td,
+                id_index=id_index,
+            )
+        self.assertEqual(refs, ["docs/api-gateway/reference/routing/http/middlewares/oidc.md"])
+
+    def test_filename_match_takes_priority_over_id_index(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-management"
+            d.mkdir(parents=True)
+            (d / "api-auth.md").write_text("---\nid: something-else\n---\n\nx\n")
+            id_index = {"api-auth": "docs/api-management/wrong-page.md"}
+            refs = existing_doc_refs(
+                ["docs/api-management/api-auth.md"],
+                doc_repo_root=td,
+                id_index=id_index,
+            )
+        self.assertEqual(refs, ["docs/api-management/api-auth.md"])
+
+    def test_no_id_index_falls_back_to_previous_behavior(self):
+        with tempfile.TemporaryDirectory() as td:
+            refs = existing_doc_refs(
+                ["https://doc.traefik.io/traefik-hub/api-gateway/reference/ref-oidc"],
+                doc_repo_root=td,
+            )
+        self.assertEqual(refs, [])
+
+
+class TestBuildIdIndex(unittest.TestCase):
+    def test_indexes_declared_front_matter_id(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway/reference/routing/http/middlewares"
+            d.mkdir(parents=True)
+            (d / "oidc.md").write_text("---\nid: ref-oidc\ntitle: OIDC\n---\n\nContent.\n")
+            index = build_id_index(td)
+        self.assertEqual(
+            index.get("ref-oidc"),
+            "docs/api-gateway/reference/routing/http/middlewares/oidc.md",
+        )
+
+    def test_skips_pages_without_id_field(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway"
+            d.mkdir(parents=True)
+            (d / "no-id.md").write_text("---\ntitle: No Id\n---\n\nContent.\n")
+            index = build_id_index(td)
+        self.assertEqual(index, {})
+
+    def test_skips_pages_with_no_front_matter(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway"
+            d.mkdir(parents=True)
+            (d / "plain.md").write_text("# No front matter here\n")
+            index = build_id_index(td)
+        self.assertEqual(index, {})
+
+    def test_missing_docs_dir_returns_empty(self):
+        with tempfile.TemporaryDirectory() as td:
+            index = build_id_index(td)
+        self.assertEqual(index, {})
+
+    def test_unquotes_quoted_id_value(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway"
+            d.mkdir(parents=True)
+            (d / "quoted.md").write_text('---\nid: "ref-quoted"\n---\n\nx\n')
+            index = build_id_index(td)
+        self.assertEqual(index.get("ref-quoted"), "docs/api-gateway/quoted.md")
 
 
 class TestBuildLocate(unittest.TestCase):

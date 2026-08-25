@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from scripts._frontmatter import split_front_matter, unquote
+
 # A small static map of impl-repo Go-path prefixes → likely doc section.
 _HUB_REF_MAP = {
     "hub/pkg/middleware/": ("docs/ai-gateway/middlewares/", "docs/api-gateway/reference/routing/http/middlewares/"),
@@ -16,7 +18,13 @@ _HUB_REF_MAP = {
 }
 _HUB_GUIDE_MAP = {
     "hub/dashboard/": ("docs/dashboard/guides/",),
-    "hub/pkg/":       ("docs/ai-gateway/guides/", "docs/api-gateway/guides/"),
+    # "hub/pkg/" is broad enough to match almost any Hub Go package -- it is
+    # NOT a specific-gateway signal despite counting as one matched prefix.
+    # api-gateway listed first (not ai-gateway): confirmed live this generic
+    # prefix confidently mis-picked AI Gateway for touched paths that were
+    # actually API/MCP Gateway territory (AuthZEN, 2026-08-24) -- see
+    # _section_dirs' fallback comment for the same reasoning applied there.
+    "hub/pkg/":       ("docs/api-gateway/guides/", "docs/ai-gateway/guides/"),
 }
 _OSS_REF_MAP = {
     "pkg/middlewares/": ("docs/content/reference/routing/http/middlewares/",),
@@ -25,6 +33,47 @@ _OSS_REF_MAP = {
 
 _DOC_URL_RE = re.compile(r"https?://doc\.traefik\.io/(?:traefik-hub|traefik)/([a-zA-Z0-9\-/_]+)")
 _REPO_PATH_RE = re.compile(r"\b(docs/[a-zA-Z0-9][a-zA-Z0-9\-_/]*\.mdx?)\b")
+_FM_ID_RE = re.compile(r"^id:\s*(.+)$", re.MULTILINE)
+
+
+def build_id_index(doc_repo_root: str) -> dict[str, str]:
+    """Map a page's declared front-matter `id` -> its repo-relative path, built
+    once per run over every `.md`/`.mdx` file under `docs/`.
+
+    Exists because a `doc.traefik.io/.../<slug>` URL a human pastes into an
+    issue is the rendered site's `id` slug, not the filename Docusaurus built
+    it from -- those two only coincide by convention, not by rule. Confirmed
+    live (traefik/hub-issues#3075): the URL named `ref-oidc`, but the real
+    file is `oidc.md` with front matter `id: ref-oidc` — a filename-only scan
+    (the pre-existing `existing_doc_refs` path check) can't resolve that and
+    silently falls through to the much weaker path heuristic, which guessed
+    the wrong product area entirely (AI Gateway instead of API Gateway).
+
+    Malformed/unreadable pages are skipped rather than raising — a single bad
+    front-matter block in an unrelated page shouldn't take down path
+    resolution for everything else."""
+    index: dict[str, str] = {}
+    docs_dir = Path(doc_repo_root) / "docs"
+    if not docs_dir.is_dir():
+        return index
+    for path in docs_dir.rglob("*"):
+        if not (path.is_file() and path.suffix in {".md", ".mdx"}):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        try:
+            fm_text, _ = split_front_matter(text)
+        except ValueError:
+            continue
+        m = _FM_ID_RE.search(fm_text)
+        if not m:
+            continue
+        doc_id = unquote(m.group(1).strip())
+        if doc_id and doc_id not in index:
+            index[doc_id] = str(path.relative_to(doc_repo_root))
+    return index
 
 
 def issue_texts_from_bundle(bundle: dict) -> list[str]:
@@ -40,14 +89,22 @@ def issue_texts_from_bundle(bundle: dict) -> list[str]:
     return texts
 
 
-def existing_doc_refs(issue_texts: list[str], *, doc_repo_root: str) -> list[str]:
+def existing_doc_refs(issue_texts: list[str], *, doc_repo_root: str,
+                       id_index: dict[str, str] | None = None) -> list[str]:
     """Doc pages a human already pointed to in linked-issue text — a doc.traefik.io
     URL or a literal repo-relative path — verified to actually exist in the doc
     repo, not guessed. This is the strongest possible placement signal: someone
     already named the target, so path-heuristic inference shouldn't override it
     (see the keyless-authentication mis-placement: the linked issue pointed
     straight at docs/api-management/api-auth, an existing page, while the path
-    heuristic proposed a brand-new page in an unrelated directory)."""
+    heuristic proposed a brand-new page in an unrelated directory).
+
+    `id_index` (see build_id_index) resolves the common case where the URL's
+    last segment is the page's declared front-matter `id`, not its filename —
+    the two only coincide by convention. Filenames/paths are checked first
+    (the cheaper, more literal signal); the id index is only consulted when
+    that doesn't resolve, so a page that happens to share its `id` with
+    another page's filename doesn't shadow a direct filename match."""
     root = Path(doc_repo_root)
     found: list[str] = []
     seen: set[str] = set()
@@ -59,14 +116,18 @@ def existing_doc_refs(issue_texts: list[str], *, doc_repo_root: str) -> list[str
                 found.append(path)
         for m in _DOC_URL_RE.finditer(text):
             slug = m.group(1).strip("/")
+            resolved = None
             for ext in (".md", ".mdx"):
                 path = f"docs/{slug}{ext}"
-                if path in seen:
-                    break
                 if (root / path).is_file():
-                    seen.add(path)
-                    found.append(path)
+                    resolved = path
                     break
+            if resolved is None and id_index:
+                doc_id = slug.rsplit("/", 1)[-1]
+                resolved = id_index.get(doc_id)
+            if resolved and resolved not in seen:
+                seen.add(resolved)
+                found.append(resolved)
     return found
 
 
@@ -83,9 +144,19 @@ def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tu
         if any(p.startswith(prefix) for p in touched_paths):
             dirs.extend(sections)
             matched_prefixes += 1
-    # Generic fallback for Hub if nothing matched
+    # Generic fallback for Hub if nothing matched. Deliberately NOT an AI
+    # Gateway directory: confirmed live (traefik-hub#1435, pure internal Go
+    # paths like hub/pkg/hub/license with zero doc-adjacent mapping; and the
+    # AuthZEN feature, which spans API+MCP gateways) that defaulting here to
+    # AI Gateway produced a confidently wrong product-area guess both times,
+    # in the same direction. API Gateway is the more general/foundational
+    # layer in Hub's stack (Traefik Proxy -> Hub Gateway (API/AI/MCP) ->
+    # optional Hub API Management) rather than one specific capability, so it
+    # is the safer generic bucket when the touched paths give no real signal
+    # -- still just a low-confidence guess (matched_prefixes stays 0, so this
+    # never clears the auto-accept gates), not a confident pick.
     if not dirs and impl_repo == "traefik/traefik-hub":
-        dirs = ["docs/ai-gateway/middlewares/"] if doc_kind == "reference" else ["docs/ai-gateway/guides/"]
+        dirs = ["docs/api-gateway/reference/"] if doc_kind == "reference" else ["docs/api-gateway/guides/"]
     if not dirs and impl_repo == "traefik/traefik":
         dirs = ["docs/content/reference/"]
     return dirs, matched_prefixes
@@ -215,7 +286,11 @@ def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
     #    a genuinely ambiguous signal -> confidence split across them.
     if matched_prefixes == 0:
         base = 0.3
-        rationale = "No touched-path prefix matched — generic fallback directory"
+        rationale = (
+            "No touched-path prefix matched a specific gateway product area — "
+            "generic fallback directory, not a confident guess; verify the "
+            "product area by hand before accepting"
+        )
     elif matched_prefixes == 1:
         base = 0.9
         rationale = None
@@ -331,7 +406,10 @@ def build_locate(*, impl_repo: str, doc_repo_root: str, doc_kind: str,
     # guess — but only when the scan turns up exactly ONE distinct page. Multiple
     # distinct references is itself ambiguous, so don't arbitrarily pick one;
     # fall through to the heuristic candidates instead.
-    doc_refs = existing_doc_refs(list(issue_texts), doc_repo_root=doc_repo_root)
+    doc_refs = existing_doc_refs(
+        list(issue_texts), doc_repo_root=doc_repo_root,
+        id_index=build_id_index(doc_repo_root),
+    )
     # Check membership across the WHOLE candidate list, not just index 0 --
     # find_existing_middleware_pages() can already surface the human-referenced
     # page at index 1+ (e.g. ranked behind another touched middleware's page),
