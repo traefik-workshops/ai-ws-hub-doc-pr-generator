@@ -113,6 +113,33 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
 
    The bundle gathers issue context in both directions: each linked issue carries its `parent` epic (with body) and `siblings` (the parent's other sub-issues), and `merged.related_prs` lists the other PRs that implement the same feature (the PRs closing the linked issue and its siblings). Use this for the *why* behind the feature in step 8. If a `related_prs` entry looks load-bearing for the docs and the bundle's diff isn't enough, fetch that specific PR with `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.fetch_pr --pr <related-N>` — don't pull them all by default.
 
+   **Before continuing to step 3 on the issue-only path, confirm there is actually
+   something to document.** This is a real, expected outcome for this entry point, not
+   an edge case to route around: an issue can describe a feature that has no
+   implementation yet, or won't for a while, in which case running classify/locate_targets
+   would just force a confident-looking doc kind and target path for content that doesn't
+   exist — worse than not running them at all. Check, in order:
+   - `merged.related_prs` — does any entry look like the actual implementation (not just
+     a discussion thread or a QA/investigation issue)? A **merged** PR is the strongest
+     signal; an **open** PR is acceptable if it's genuinely close to landing (check its
+     state/recency) — don't wait for merge if the engineer wants docs drafted in parallel.
+   - `sub_issues` / `siblings` — does one of them read as "implementation" rather than
+     "investigation" or "QA finding"? (Compare: a sibling titled "QA Findings — X is
+     broken" is not an implementation; one titled "Implement X" or linked to a merged PR
+     is.)
+   - Search the impl repo directly for anything load-bearing the bundle didn't surface
+     (a CRD field, a config schema entry, a Go package matching the feature name) — the
+     Transparency Logs investigation (2026-08-24) found this necessary: the bundle's own
+     `related_prs`/`sub_issues` didn't mention the one loosely-related infra ticket that
+     did exist, and that ticket turned out to be a witness-service *deployment* task, not
+     a customer-facing gateway feature — a different kind of "not actually ready to
+     document" than simply having zero hits.
+   If none of this turns up a merged/near-merged implementation PR or genuinely
+   customer-facing infra work, **stop here.** Report back: "No implementation exists yet
+   for <issue> — nothing to document. [brief summary of what was checked]." Do not run
+   classify.py or locate_targets.py against an issue with nothing behind it; do not draft
+   a page speculatively. This is a valid, complete outcome for this skill, not a failure.
+
 3. **Fetch grounding.**
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.fetch_grounding --impl-repo "$(jq -r '.impl_repo' /tmp/bundle.json)" --touched-files $(jq -r '.merged.files_changed[].path' /tmp/bundle.json) > /tmp/grounding.json
