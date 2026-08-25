@@ -164,11 +164,17 @@ class TestScreenshots(unittest.TestCase):
 
 
 class TestDocKindCandidatesNoSignal(unittest.TestCase):
-    def test_no_signal_returns_user_guide_default(self):
-        # When neither path nor title provides any signal, we should get a clear
-        # default (user-guide at 0.5) rather than two 0.0 candidates.
+    def test_no_signal_returns_reference_default(self):
+        """Regression test for traefik-hub#1435 finding #4: a diff with zero
+        doc-adjacent signal at all (no markdown/UI/config-schema files) used
+        to tie-break toward user-guide at 0.5/0.5 confidence, but the real
+        case this represents -- pure internal Go with nothing guide-shaped to
+        write about (license claims, profile resolution, OTel registration) --
+        was actually a reference-table extension. We should still get a clear
+        default (reference at 0.5) rather than two 0.0 candidates, but
+        reference now wins the tie."""
         cands = doc_kind_candidates(title="", touched_paths=[])
-        self.assertEqual(cands[0]["kind"], "user-guide")
+        self.assertEqual(cands[0]["kind"], "reference")
         self.assertEqual(cands[0]["confidence"], 0.5)
 
     def test_single_signal_stays_absolute_below_gate(self):

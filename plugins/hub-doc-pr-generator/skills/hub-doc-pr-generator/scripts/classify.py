@@ -175,12 +175,23 @@ def doc_kind_candidates(*, title: str, touched_paths: list[str]) -> list[dict]:
 
     # When no signals fire at all, return a clear default rather than two 0.0 candidates
     # that leave the LLM with no useful ordering. 0.5 is below the auto-accept gate,
-    # so this correctly forces a confirmation prompt.
+    # so this correctly forces a confirmation prompt either way -- the tie-break only
+    # decides which candidate is LISTED first (the LLM's default suggestion in that
+    # prompt), not an auto-accepted outcome.
+    #
+    # Tie-break favors reference, not user-guide: confirmed live (traefik-hub#1435
+    # finding #4) that a diff with zero doc-adjacent signal at all -- no markdown, UI,
+    # or config-schema files, e.g. pure internal Go like license claims, profile
+    # resolution, OTel registration -- is exactly the "nothing to build a guide's
+    # narrative around" case, and the real answer there was extending an existing
+    # reference table, not writing a new user-guide page. A diff that actually reads
+    # as guide-shaped (UI code, a "guide"/"tutorial" title) already scores a positive
+    # score_guide signal above and never reaches this branch at all.
     if score_ref == 0.0 and score_guide == 0.0:
         return [
-            {"kind": "user-guide", "confidence": 0.5,
-             "rationale": "no signal — defaulting to user-guide"},
             {"kind": "reference", "confidence": 0.5,
+             "rationale": "no doc-adjacent signal — defaulting to reference"},
+            {"kind": "user-guide", "confidence": 0.5,
              "rationale": "no signal"},
         ]
 
