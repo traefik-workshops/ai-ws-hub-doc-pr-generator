@@ -92,5 +92,58 @@ class TestPersistHubDoc(unittest.TestCase):
         self.assertEqual(saved["hub_doc_path"], "/some/path")
 
 
+class TestReexecTarget(unittest.TestCase):
+    """See the identical test class in the sibling hub-doc-pr-generator
+    skill's test_discover.py for the full regression context
+    (traefik-hub#1435 finding #6) -- duplicated here since this skill keeps
+    its own independent, trimmed _discover.py copy, not a symlink."""
+
+    def test_already_compatible_version_needs_no_reexec(self):
+        self.assertIsNone(
+            _discover.reexec_target(current_version=(3, 11), persisted_path="/opt/homebrew/bin/python3.11")
+        )
+
+    def test_too_old_with_no_persisted_path_does_nothing(self):
+        self.assertIsNone(_discover.reexec_target(current_version=(3, 9), persisted_path=None))
+
+    def test_too_old_with_persisted_path_re_execs(self):
+        self.assertEqual(
+            _discover.reexec_target(current_version=(3, 9), persisted_path="/opt/homebrew/bin/python3.11"),
+            "/opt/homebrew/bin/python3.11",
+        )
+
+    def test_persisted_path_same_as_current_executable_does_not_loop(self):
+        self.assertIsNone(
+            _discover.reexec_target(
+                current_version=(3, 9),
+                persisted_path="/usr/bin/python3",
+                current_executable="/usr/bin/python3",
+            )
+        )
+
+
+class TestMaybeReexec(unittest.TestCase):
+    def test_calls_execv_when_reexec_target_found(self):
+        with patch("scripts._discover.sys") as mock_sys, \
+             patch("scripts._discover.discover_python_path", return_value="/opt/homebrew/bin/python3.11"), \
+             patch("scripts._discover.os.execv") as mock_execv:
+            mock_sys.version_info = (3, 9, 0)
+            mock_sys.executable = "/usr/bin/python3"
+            mock_sys.argv = ["-m", "scripts.foo"]
+            _discover.maybe_reexec()
+        mock_execv.assert_called_once_with(
+            "/opt/homebrew/bin/python3.11",
+            ["/opt/homebrew/bin/python3.11", "-m", "scripts.foo"],
+        )
+
+    def test_does_not_call_execv_when_already_compatible(self):
+        with patch("scripts._discover.sys") as mock_sys, \
+             patch("scripts._discover.discover_python_path", return_value="/opt/homebrew/bin/python3.11"), \
+             patch("scripts._discover.os.execv") as mock_execv:
+            mock_sys.version_info = (3, 11, 0)
+            _discover.maybe_reexec()
+        mock_execv.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

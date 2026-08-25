@@ -146,6 +146,61 @@ def persist_python_path(path: str) -> None:
     _save_config(cfg)
 
 
+# Kept in sync with setup.py's check_python_version()/find_compatible_python()
+# gate -- this is the same minimum, just consulted by the re-exec guard below
+# instead of by the interactive preflight check.
+MIN_PYTHON = (3, 11)
+
+
+def reexec_target(*, current_version: tuple[int, int],
+                   persisted_path: Optional[str],
+                   current_executable: Optional[str] = None) -> Optional[str]:
+    """Pure decision function: which interpreter path (if any) a script
+    running under `current_version` should re-exec itself under.
+
+    Extracted from the actual re-exec side effect (os.execv, in
+    maybe_reexec() below) so the decision itself -- "should I re-exec, and to
+    what path" -- is unit-testable without actually replacing the process.
+
+    Returns None (no re-exec) when:
+    - `current_version` already meets MIN_PYTHON (nothing to fix), or
+    - no `persisted_path` is on file (setup.py's preflight hasn't discovered
+      and saved one yet -- nothing to re-exec to), or
+    - `persisted_path` is the same interpreter already running (would
+      re-exec into an identical, still-too-old process forever)."""
+    if current_version >= MIN_PYTHON:
+        return None
+    if not persisted_path:
+        return None
+    if current_executable and persisted_path == current_executable:
+        return None
+    return persisted_path
+
+
+def maybe_reexec() -> None:
+    """Startup guard a script can call before doing any real work: if running
+    under a Python older than MIN_PYTHON and a persisted `python_path` exists
+    (saved by setup.py's check_python_version() after a previous run
+    discovered it), transparently re-exec the exact same invocation under
+    that interpreter via os.execv, so a stray `python3 -m scripts.foo`
+    self-corrects instead of failing outright or requiring the operator to
+    remember and retype the full interpreter path every session (see
+    traefik-hub#1435 finding #6).
+
+    Deliberately narrow: this does not restructure the CLI surface or change
+    argv in any way, and does nothing at all when there's no persisted path
+    to fall back to -- the existing "Python 3.11+ required" error from
+    setup.py's own preflight still fires normally in that case."""
+    target = reexec_target(
+        current_version=sys.version_info[:2],
+        persisted_path=discover_python_path(),
+        current_executable=sys.executable,
+    )
+    if target is None:
+        return
+    os.execv(target, [target, *sys.argv])
+
+
 def discover_oss(*, cwd: Optional[str] = None) -> Optional[str]:
     """Return the OSS impl repo root by walking up from cwd. None if cwd isn't in a git repo."""
     cwd_p = Path(cwd) if cwd else Path.cwd()

@@ -121,6 +121,60 @@ def persist_hub_doc(path: str) -> None:
     _save_config(cfg)
 
 
+def discover_python_path() -> Optional[str]:
+    """A previously-resolved Python 3.11+ interpreter path, if one was saved
+    (by the sibling hub-doc-pr-generator skill's setup.py, or this skill's
+    own equivalent check) after the default `python3` on PATH turned out to
+    be too old -- same persisted config file/key as that sibling skill, see
+    this module's docstring."""
+    return _load_config().get("python_path")
+
+
+def persist_python_path(path: str) -> None:
+    cfg = _load_config()
+    cfg["python_path"] = path
+    _save_config(cfg)
+
+
+# Kept in sync with setup.py's check_python_version() gate.
+MIN_PYTHON = (3, 11)
+
+
+def reexec_target(*, current_version: tuple[int, int],
+                   persisted_path: Optional[str],
+                   current_executable: Optional[str] = None) -> Optional[str]:
+    """Pure decision function: which interpreter path (if any) a script
+    running under `current_version` should re-exec itself under. See the
+    identical function in the sibling hub-doc-pr-generator skill's
+    _discover.py for the full rationale (traefik-hub#1435 finding #6) --
+    duplicated here rather than imported since this module is a deliberately
+    independent, trimmed copy (see module docstring), not a symlink."""
+    if current_version >= MIN_PYTHON:
+        return None
+    if not persisted_path:
+        return None
+    if current_executable and persisted_path == current_executable:
+        return None
+    return persisted_path
+
+
+def maybe_reexec() -> None:
+    """Startup guard a script can call before doing any real work: if running
+    under a Python older than MIN_PYTHON and a persisted `python_path` exists,
+    transparently re-exec the exact same invocation under that interpreter via
+    os.execv, so a stray `python3 -m scripts.foo` self-corrects instead of
+    failing outright or requiring the operator to retype the full interpreter
+    path every session."""
+    target = reexec_target(
+        current_version=sys.version_info[:2],
+        persisted_path=discover_python_path(),
+        current_executable=sys.executable,
+    )
+    if target is None:
+        return
+    os.execv(target, [target, *sys.argv])
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Locate the local hub-doc clone.")
     sub = parser.add_subparsers(dest="target", required=True)
