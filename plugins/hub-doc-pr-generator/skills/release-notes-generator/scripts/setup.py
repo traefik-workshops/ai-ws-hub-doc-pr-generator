@@ -38,10 +38,87 @@ def _print_error(msg: str) -> None:
     print(f"[setup] ERROR: {msg}", file=sys.stderr)
 
 
+def _import_discover():
+    """Import _discover lazily so we only fail here if the package is broken.
+    Same pattern as the sibling hub-doc-pr-generator skill's setup.py."""
+    try:
+        from scripts import _discover  # type: ignore[import]
+        return _discover
+    except ImportError:
+        import importlib
+        return importlib.import_module("scripts._discover")
+
+
+# ---------------------------------------------------------------------------
+# Interpreter discovery -- ported from the sibling hub-doc-pr-generator
+# skill's setup.py (Fix E, PR #30 round 2 review): this skill previously had
+# no find_compatible_python()-equivalent and never persisted a discovered
+# interpreter path, so an engineer who only ever ran THIS skill's setup left
+# nothing on disk for the re-exec guard in _discover.py to act on later.
+# ---------------------------------------------------------------------------
+
+_PYTHON_CANDIDATE_NAMES = ["python3.14", "python3.13", "python3.12", "python3.11"]
+_PYTHON_CANDIDATE_ABS_PATHS = [
+    f"{prefix}/bin/{name}"
+    for prefix in ("/opt/homebrew", "/usr/local", "/usr")
+    for name in _PYTHON_CANDIDATE_NAMES
+]
+
+
+def _python_version_at(path: str) -> tuple[int, int] | None:
+    result = _run([path, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"])
+    if result.returncode != 0:
+        return None
+    try:
+        major_s, minor_s = result.stdout.strip().split(".")
+        return int(major_s), int(minor_s)
+    except (ValueError, AttributeError):
+        return None
+
+
+def find_compatible_python() -> str | None:
+    """Search common locations for a Python 3.11+ interpreter when the default
+    `python3` on PATH is too old. Returns the first candidate's resolved
+    absolute path, or None if nothing qualifies."""
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for name in _PYTHON_CANDIDATE_NAMES:
+        which = _run(["which", name])
+        resolved = which.stdout.strip() if which.returncode == 0 else ""
+        if resolved and resolved not in seen:
+            seen.add(resolved)
+            candidates.append(resolved)
+    for abs_path in _PYTHON_CANDIDATE_ABS_PATHS:
+        if abs_path not in seen and Path(abs_path).is_file():
+            seen.add(abs_path)
+            candidates.append(abs_path)
+
+    for candidate in candidates:
+        version = _python_version_at(candidate)
+        if version and version >= (3, 11):
+            return candidate
+    return None
+
+
 def check_python_version() -> bool:
     major, minor = sys.version_info[:2]
     if (major, minor) < (3, 11):
         _print_error(f"Python 3.11 or newer is required (found {major}.{minor}).")
+        found = find_compatible_python()
+        if found:
+            _discover = _import_discover()
+            _discover.persist_python_path(found)
+            _print_info(f"Found a compatible interpreter: {found}")
+            _print_info(
+                f"Saved to {_discover.CONFIG_PATH} as 'python_path' — use it in place of "
+                f"the literal `python3` for every subsequent command in this run, e.g.:"
+            )
+            _print_info(f'  PYTHONPATH="${{CLAUDE_SKILL_DIR}}" {found} -m scripts.X')
+        else:
+            _print_error(
+                "No Python 3.11+ interpreter found in common locations either. "
+                "Install one (e.g. `brew install python@3.11`) and re-run."
+            )
         return False
     _print_ok(f"Python {major}.{minor} detected.")
     return True
@@ -154,7 +231,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    from scripts import _discover
-
-    _discover.maybe_reexec()
+    # Deliberately NOT calling the _discover re-exec guard here (see Fix F,
+    # PR #30 round 2 review): this script's job is to observe and report on
+    # the REAL invoked interpreter's version via check_python_version().
+    # Silently re-exec'ing into a persisted good interpreter first would
+    # make that check report success from under the already-correct
+    # interpreter, masking that the operator's actual `python3` on PATH is
+    # still too old.
     sys.exit(main())

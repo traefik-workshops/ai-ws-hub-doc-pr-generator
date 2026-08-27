@@ -112,6 +112,53 @@ class TestCheckTableCompleteness(unittest.TestCase):
         content = "| Component | Version |\n| --- | --- |\n| Traefik Hub | v3.20.8 |\n"
         self.assertEqual(check_table_completeness(content, DEFAULT_REL_PATH), [])
 
+    def test_pre_existing_untouched_row_is_not_flagged_when_repo_path_given(self):
+        """Fix D (PR #30 round 2 review): the sibling hub-doc-pr-generator
+        skill's preview.py got a position-based scoping fix for this same
+        false-positive (traefik-hub#1435 finding #5) but this skill's copy
+        never did -- a pre-existing, untouched row containing an example
+        value like "123..." must not be flagged just because this `cut` run
+        also touches the same file elsewhere."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            existing = (
+                "| Field | Type | Example |\n| --- | --- | --- |\n"
+                "| serial | string | \"123...\" |\n"
+            )
+            (d / DEFAULT_REL_PATH).parent.mkdir(parents=True, exist_ok=True)
+            (d / DEFAULT_REL_PATH).write_text(existing)
+            subprocess.run(["git", "add", DEFAULT_REL_PATH], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                             "commit", "-qm", "existing"], cwd=d, check=True)
+
+            new_content = existing + "| Gateway | v3.21.0-ea.1 |\n"
+            findings = check_table_completeness(new_content, DEFAULT_REL_PATH, repo_path=str(d))
+        self.assertEqual(findings, [])
+
+    def test_genuinely_new_truncated_row_is_flagged_when_repo_path_given(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            existing = "| Component | Version |\n| --- | --- |\n| Traefik Hub | v3.20.8 |\n"
+            (d / DEFAULT_REL_PATH).parent.mkdir(parents=True, exist_ok=True)
+            (d / DEFAULT_REL_PATH).write_text(existing)
+            subprocess.run(["git", "add", DEFAULT_REL_PATH], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                             "commit", "-qm", "existing"], cwd=d, check=True)
+
+            new_content = existing + "| Traefik Proxy, etc. | v3.5.0 |\n"
+            findings = check_table_completeness(new_content, DEFAULT_REL_PATH, repo_path=str(d))
+        self.assertEqual(len(findings), 1)
+        self.assertIn("Proxy", findings[0])
+
+    def test_without_repo_path_falls_back_to_flagging_every_matching_line(self):
+        """Backward-compatible default: omitting repo_path keeps the
+        previous (unscoped) behavior."""
+        content = "| Field | Example |\n| --- | --- |\n| serial | \"123...\" |\n"
+        findings = check_table_completeness(content, DEFAULT_REL_PATH)
+        self.assertEqual(len(findings), 1)
+
 
 class TestCheckVnextPlaceholder(unittest.TestCase):
     def test_flags_vnext_left_in_fragment_body_prose(self):

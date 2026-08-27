@@ -21,6 +21,16 @@ _PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 # Every script with a `def main(argv...` CLI entrypoint, across both skills,
 # that is expected to call _discover.maybe_reexec() as the first statement
 # inside its `if __name__ == "__main__":` guard.
+#
+# Both skills' setup.py are deliberately EXCLUDED (see Fix F, PR #30 round 2
+# review): setup.py's whole job is to observe and report on the REAL invoked
+# interpreter's version via check_python_version(). If maybe_reexec() ran
+# first and a persisted good interpreter path already existed, it would
+# silently jump to that interpreter before check_python_version() ran,
+# making the check report success from under the already-correct
+# interpreter -- masking that the operator's actual invoked `python3` is
+# still too old. That's exactly backwards for the one script whose entire
+# purpose is diagnosing that.
 _WIRED_SCRIPTS = [
     "hub-doc-pr-generator/scripts/_discover.py",
     "hub-doc-pr-generator/scripts/fetch_issue.py",
@@ -29,7 +39,6 @@ _WIRED_SCRIPTS = [
     "hub-doc-pr-generator/scripts/fetch_pr.py",
     "hub-doc-pr-generator/scripts/preview.py",
     "hub-doc-pr-generator/scripts/locate_targets.py",
-    "hub-doc-pr-generator/scripts/setup.py",
     "hub-doc-pr-generator/scripts/fetch_grounding.py",
     "hub-doc-pr-generator/scripts/write_flags.py",
     "hub-doc-pr-generator/scripts/open_pr.py",
@@ -43,8 +52,14 @@ _WIRED_SCRIPTS = [
     "release-notes-generator/scripts/classify_commits.py",
     "release-notes-generator/scripts/fetch_release_range.py",
     "release-notes-generator/scripts/dedup_versions.py",
-    "release-notes-generator/scripts/setup.py",
     "release-notes-generator/scripts/render_entry.py",
+]
+
+# Both skills' setup.py, checked separately below for the OPPOSITE property:
+# they must exist and must NOT call maybe_reexec() in their __main__ guard.
+_SETUP_SCRIPTS_EXCLUDED_FROM_REEXEC = [
+    "hub-doc-pr-generator/scripts/setup.py",
+    "release-notes-generator/scripts/setup.py",
 ]
 
 # Matches the `if __name__ == "__main__":` guard block up to end of file (these
@@ -76,6 +91,24 @@ class TestReexecWiring(unittest.TestCase):
                 continue
             if main_match and reexec_match.start() > main_match.start():
                 failures.append(f"{rel}: maybe_reexec() called after main(), not before")
+        self.assertEqual(failures, [], "\n".join(failures))
+
+
+class TestSetupPyExcludedFromReexec(unittest.TestCase):
+    """Fix F (PR #30 round 2 review): both skills' setup.py must exist, but
+    must NOT call maybe_reexec() in their __main__ guard -- see the module
+    docstring's note on _SETUP_SCRIPTS_EXCLUDED_FROM_REEXEC for why."""
+
+    def test_both_setup_scripts_exist(self):
+        for rel in _SETUP_SCRIPTS_EXCLUDED_FROM_REEXEC:
+            self.assertTrue((_PLUGIN_ROOT / rel).is_file(), f"missing {rel}")
+
+    def test_neither_setup_script_calls_maybe_reexec(self):
+        failures = []
+        for rel in _SETUP_SCRIPTS_EXCLUDED_FROM_REEXEC:
+            text = (_PLUGIN_ROOT / rel).read_text()
+            if _REEXEC_CALL_RE.search(text):
+                failures.append(f"{rel}: must not call maybe_reexec() (see Fix F)")
         self.assertEqual(failures, [], "\n".join(failures))
 
 

@@ -151,6 +151,15 @@ def persist_python_path(path: str) -> None:
 # instead of by the interactive preflight check.
 MIN_PYTHON = (3, 11)
 
+# Set in os.environ (inherited automatically by os.execv's child process
+# image, since it replaces the process but not its environment) the first
+# time maybe_reexec() actually re-execs. A hard, structural one-shot guard
+# against an infinite re-exec loop -- independent of reexec_target()'s own
+# path-equality check below, which can be defeated by a symlink/PATH
+# mismatch that points at the same physical binary under two different
+# strings. See maybe_reexec()'s docstring.
+_REEXEC_ENV_SENTINEL = "_HUB_DOC_PR_GEN_REEXECED"
+
 
 def reexec_target(*, current_version: tuple[int, int],
                    persisted_path: Optional[str],
@@ -167,12 +176,15 @@ def reexec_target(*, current_version: tuple[int, int],
     - no `persisted_path` is on file (setup.py's preflight hasn't discovered
       and saved one yet -- nothing to re-exec to), or
     - `persisted_path` is the same interpreter already running (would
-      re-exec into an identical, still-too-old process forever)."""
+      re-exec into an identical, still-too-old process forever). Compared via
+      realpath, not raw string equality, so a symlink or PATH-resolved alias
+      pointing at the same physical binary is still recognized as "same
+      interpreter" -- plain string comparison could miss that and loop."""
     if current_version >= MIN_PYTHON:
         return None
     if not persisted_path:
         return None
-    if current_executable and persisted_path == current_executable:
+    if current_executable and os.path.realpath(persisted_path) == os.path.realpath(current_executable):
         return None
     return persisted_path
 
@@ -190,15 +202,68 @@ def maybe_reexec() -> None:
     Deliberately narrow: this does not restructure the CLI surface or change
     argv in any way, and does nothing at all when there's no persisted path
     to fall back to -- the existing "Python 3.11+ required" error from
-    setup.py's own preflight still fires normally in that case."""
+    setup.py's own preflight still fires normally in that case.
+
+    Version check runs first and returns immediately when already
+    compatible, before discover_python_path() (a file read + JSON parse) is
+    even called -- that I/O is wasted work on every invocation of every
+    wired-in script when the interpreter is already fine, which is the
+    common case.
+
+    Two independent guards against ever looping forever:
+    - reexec_target()'s own realpath-based "already this interpreter" check, and
+    - the _REEXEC_ENV_SENTINEL env var below: set right before the one
+      os.execv attempt this process will ever make, and inherited by the
+      child process image os.execv replaces this one with. If it's already
+      set, this process IS the result of a prior re-exec earlier in this same
+      invocation chain -- re-exec'ing again, no matter what reexec_target()
+      says, would risk looping. This is the load-bearing guard: it holds even
+      if something outside reexec_target()'s own comparison caused it to keep
+      returning a target.
+
+    If the persisted interpreter path turns out to be stale (e.g. moved or
+    removed since it was discovered), os.execv raises OSError; that's caught
+    so a confusing raw traceback doesn't replace the clear diagnostic below,
+    and this process simply continues running under the current (too-old)
+    interpreter -- the same fallback behavior that existed before
+    maybe_reexec() did, when a script just ran under whatever interpreter
+    invoked it."""
+    current_version = sys.version_info[:2]
+    if current_version >= MIN_PYTHON:
+        return
+
+    if os.environ.get(_REEXEC_ENV_SENTINEL):
+        print(
+            "[hub-doc-pr-generator] Already re-exec'd once this invocation chain "
+            f"and still running under Python {current_version[0]}.{current_version[1]} "
+            f"(need {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+) -- the persisted interpreter "
+            "path still isn't new enough, or re-exec didn't fix the version. "
+            "Re-run setup.py to rediscover a valid Python 3.11+ interpreter. "
+            "Continuing under the current interpreter, which may not work correctly.",
+            file=sys.stderr,
+        )
+        return
+
     target = reexec_target(
-        current_version=sys.version_info[:2],
+        current_version=current_version,
         persisted_path=discover_python_path(),
         current_executable=sys.executable,
     )
     if target is None:
         return
-    os.execv(target, [target, *sys.argv])
+
+    os.environ[_REEXEC_ENV_SENTINEL] = "1"
+    try:
+        os.execv(target, [target, *sys.argv])
+    except OSError as e:
+        print(
+            f"[hub-doc-pr-generator] Could not re-exec into the persisted interpreter "
+            f"{target!r} ({e}) -- it may have been moved or removed. Re-run setup.py "
+            "to rediscover a valid Python 3.11+ interpreter. Continuing under the "
+            "current interpreter, which may not work correctly.",
+            file=sys.stderr,
+        )
+        return
 
 
 def discover_oss(*, cwd: Optional[str] = None) -> Optional[str]:

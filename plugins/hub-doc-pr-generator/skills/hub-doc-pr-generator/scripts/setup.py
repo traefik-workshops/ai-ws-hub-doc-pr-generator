@@ -375,5 +375,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    _import_discover().maybe_reexec()
+    # Deliberately NOT calling the _discover re-exec guard here (see Fix F,
+    # PR #30 round 2 review): this script's entire job is to observe and
+    # report on the REAL invoked interpreter's version via
+    # check_python_version(). If a persisted good interpreter path already
+    # exists, silently re-exec'ing into it first would make
+    # check_python_version() report success from under the already-correct
+    # interpreter -- masking the fact that the operator's actual `python3`
+    # on PATH is still too old, which is exactly the failure this preflight
+    # exists to surface.
     sys.exit(main())

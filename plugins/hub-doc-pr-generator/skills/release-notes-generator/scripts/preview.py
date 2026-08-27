@@ -15,6 +15,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import difflib
 import json
 import re
 import shutil
@@ -113,13 +114,60 @@ def run_lint_fix(*, repo_path: str) -> tuple[list[str], list[str]]:
     return fixed, unresolved
 
 
-def check_table_completeness(content: str, rel_path: str) -> list[str]:
+def _added_or_changed_line_indices(old_content: str, new_content: str) -> set[int]:
+    """Line INDICES (0-based, into new_content.splitlines()) that are genuinely
+    new or changed relative to `old_content` (line-level diff, so an
+    unmodified line that merely sits near an edit isn't swept in). Used to
+    scope check_table_completeness to this run's actual additions instead of
+    every line in the whole assembled file.
+
+    Ported from the sibling hub-doc-pr-generator skill's preview.py (Fix D,
+    PR #30 round 2 review) -- same rationale, including tracking POSITION
+    rather than line TEXT: difflib.SequenceMatcher aligns by content
+    similarity, so if a genuinely new/changed row's exact text happens to
+    match an unrelated PRE-EXISTING row elsewhere in the same file, a
+    text-based `set[str]` of changed line content would flag BOTH rows --
+    checking by index instead ties each opcode strictly to the specific line
+    it actually describes."""
+    old_lines = old_content.splitlines()
+    new_lines = new_content.splitlines()
+    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    changed: set[int] = set()
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("insert", "replace"):
+            changed.update(range(j1, j2))
+    return changed
+
+
+def check_table_completeness(content: str, rel_path: str, *, repo_path: str | None = None) -> list[str]:
     """Flag compatibility-matrix (or any) table rows abbreviated with an
-    ellipsis/'etc.' placeholder instead of an enumerated value."""
+    ellipsis/'etc.' placeholder instead of an enumerated value.
+
+    Confirmed live (traefik-hub#1435 finding #5, ported here as Fix D, PR #30
+    round 2 review): without scoping, this flagged ANY matching table row
+    anywhere in the assembled content, including a pre-existing, untouched
+    row this `cut` run never changed (e.g. an example value like "123..." --
+    a truncated-looking string, not a truncated row). When `repo_path` is
+    given, this diffs `content` against the pre-run version of `rel_path`
+    (`git show HEAD:<rel_path>`) and only checks lines that are genuinely new
+    or changed. Without `repo_path`, every matching line is checked, same as
+    before this fix."""
+    checkable_indices: set[int] | None = None
+    if repo_path is not None:
+        try:
+            old_content = _git.run(repo_path, ["show", f"HEAD:{rel_path}"])
+        except _git.GitError:
+            old_content = None
+        if old_content is not None:
+            checkable_indices = _added_or_changed_line_indices(old_content, content)
+
     findings = []
-    for line in content.splitlines():
-        if _TABLE_ROW_RE.match(line) and _PLACEHOLDER_RE.search(line):
-            findings.append(f"{rel_path}: table row looks truncated: {line.strip()}")
+    for idx, line in enumerate(content.splitlines()):
+        if not (_TABLE_ROW_RE.match(line) and _PLACEHOLDER_RE.search(line)):
+            continue
+        if checkable_indices is not None and idx not in checkable_indices:
+            continue
+        findings.append(f"{rel_path}: table row looks truncated: {line.strip()}")
     return findings
 
 
@@ -171,7 +219,7 @@ def main(argv: list[str]) -> int:
 
     apply_edit(repo_path=args.repo_path, branch=args.branch, rel_path=args.rel_path, content=content)
     fixed, unresolved = run_lint_fix(repo_path=args.repo_path)
-    unresolved.extend(check_table_completeness(content, args.rel_path))
+    unresolved.extend(check_table_completeness(content, args.rel_path, repo_path=args.repo_path))
     unresolved.extend(check_vnext_placeholder(content, args.rel_path))
     if fixed:
         _git.run(args.repo_path, ["add", "--", args.rel_path])

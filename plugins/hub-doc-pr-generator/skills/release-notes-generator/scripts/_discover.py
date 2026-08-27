@@ -139,6 +139,13 @@ def persist_python_path(path: str) -> None:
 # Kept in sync with setup.py's check_python_version() gate.
 MIN_PYTHON = (3, 11)
 
+# Set in os.environ (inherited by os.execv's child process image) the first
+# time maybe_reexec() actually re-execs -- a hard, structural one-shot guard
+# against an infinite re-exec loop, independent of reexec_target()'s own
+# realpath-based check. See maybe_reexec()'s docstring and the identical
+# guard in the sibling hub-doc-pr-generator skill's _discover.py.
+_REEXEC_ENV_SENTINEL = "_HUB_DOC_PR_GEN_REEXECED"
+
 
 def reexec_target(*, current_version: tuple[int, int],
                    persisted_path: Optional[str],
@@ -148,12 +155,17 @@ def reexec_target(*, current_version: tuple[int, int],
     identical function in the sibling hub-doc-pr-generator skill's
     _discover.py for the full rationale (traefik-hub#1435 finding #6) --
     duplicated here rather than imported since this module is a deliberately
-    independent, trimmed copy (see module docstring), not a symlink."""
+    independent, trimmed copy (see module docstring), not a symlink.
+
+    `persisted_path`/`current_executable` are compared via realpath, not raw
+    string equality, so a symlink or PATH-resolved alias pointing at the same
+    physical binary is still recognized as "same interpreter" -- plain string
+    comparison could miss that and loop."""
     if current_version >= MIN_PYTHON:
         return None
     if not persisted_path:
         return None
-    if current_executable and persisted_path == current_executable:
+    if current_executable and os.path.realpath(persisted_path) == os.path.realpath(current_executable):
         return None
     return persisted_path
 
@@ -164,15 +176,59 @@ def maybe_reexec() -> None:
     transparently re-exec the exact same invocation under that interpreter via
     os.execv, so a stray `python3 -m scripts.foo` self-corrects instead of
     failing outright or requiring the operator to retype the full interpreter
-    path every session."""
+    path every session.
+
+    Version check runs first and returns immediately when already
+    compatible, before discover_python_path() (a file read + JSON parse) is
+    even called -- wasted I/O on every invocation otherwise.
+
+    Two independent guards against ever looping forever: reexec_target()'s
+    own realpath-based check, and the _REEXEC_ENV_SENTINEL env var below
+    (load-bearing -- holds even if something else caused reexec_target() to
+    keep returning a target). See the sibling hub-doc-pr-generator skill's
+    _discover.py for the full rationale.
+
+    If the persisted interpreter path is stale (moved or removed), os.execv
+    raises OSError; that's caught so a raw traceback doesn't replace the
+    clear diagnostic below, and this process just continues running under
+    the current (too-old) interpreter -- the original pre-maybe_reexec()
+    fallback behavior."""
+    current_version = sys.version_info[:2]
+    if current_version >= MIN_PYTHON:
+        return
+
+    if os.environ.get(_REEXEC_ENV_SENTINEL):
+        print(
+            "[release-notes-generator] Already re-exec'd once this invocation chain "
+            f"and still running under Python {current_version[0]}.{current_version[1]} "
+            f"(need {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+) -- the persisted interpreter "
+            "path still isn't new enough, or re-exec didn't fix the version. "
+            "Re-run setup.py to rediscover a valid Python 3.11+ interpreter. "
+            "Continuing under the current interpreter, which may not work correctly.",
+            file=sys.stderr,
+        )
+        return
+
     target = reexec_target(
-        current_version=sys.version_info[:2],
+        current_version=current_version,
         persisted_path=discover_python_path(),
         current_executable=sys.executable,
     )
     if target is None:
         return
-    os.execv(target, [target, *sys.argv])
+
+    os.environ[_REEXEC_ENV_SENTINEL] = "1"
+    try:
+        os.execv(target, [target, *sys.argv])
+    except OSError as e:
+        print(
+            f"[release-notes-generator] Could not re-exec into the persisted interpreter "
+            f"{target!r} ({e}) -- it may have been moved or removed. Re-run setup.py "
+            "to rediscover a valid Python 3.11+ interpreter. Continuing under the "
+            "current interpreter, which may not work correctly.",
+            file=sys.stderr,
+        )
+        return
 
 
 def main(argv: list[str]) -> int:
