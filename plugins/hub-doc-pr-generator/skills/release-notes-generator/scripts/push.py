@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from scripts import _gh, _git
+from scripts import _discover, _gh, _git
 
 UPSTREAM_HUB_DOC = "traefik/hub-doc"
 
@@ -114,4 +114,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

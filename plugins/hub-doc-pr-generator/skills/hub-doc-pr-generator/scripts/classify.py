@@ -10,6 +10,8 @@ import re
 import sys
 from pathlib import Path
 
+from scripts import _discover
+
 _PREFIX_RE = re.compile(r"^(?P<type>feat|fix|chore|refactor|test|docs|style|perf|build|ci)\b")
 
 _NON_NOTE_PREFIXES = {"fix", "chore", "refactor", "test", "docs", "style", "perf", "build", "ci"}
@@ -269,4 +271,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

@@ -26,6 +26,8 @@ import re
 import sys
 from pathlib import Path
 
+from scripts import _discover
+
 _EA_VERSION_RE = re.compile(r"-ea(\.|$)", re.IGNORECASE)
 
 # ga-bullet fragments render as a single bullet line each, grouped under
@@ -162,4 +164,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

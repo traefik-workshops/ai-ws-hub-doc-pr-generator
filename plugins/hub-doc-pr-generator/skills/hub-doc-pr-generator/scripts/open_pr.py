@@ -6,7 +6,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Optional
-from scripts import _gh, _git
+from scripts import _discover, _gh, _git
 
 
 def _parent_full_name(parent: dict) -> str:
@@ -172,4 +172,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

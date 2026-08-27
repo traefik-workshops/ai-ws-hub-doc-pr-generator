@@ -28,7 +28,7 @@ import re
 import sys
 from pathlib import Path
 
-from scripts import _semver
+from scripts import _discover, _semver
 from scripts._frontmatter import split_front_matter, unquote
 
 _SCALAR_RE = re.compile(r"^(?P<k>[A-Za-z0-9_]+):\s*(?P<v>.*)$")
@@ -245,4 +245,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

@@ -27,6 +27,7 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
+from scripts import _discover
 from scripts.fetch_pr import (
     _fetch_issue,
     _fetch_sub_issues,
@@ -141,4 +142,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

@@ -21,6 +21,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from scripts import _discover
 from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE, split_front_matter
 
 
@@ -89,4 +90,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

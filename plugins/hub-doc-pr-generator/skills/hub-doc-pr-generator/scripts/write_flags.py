@@ -21,6 +21,8 @@ import json
 import sys
 from pathlib import Path
 
+from scripts import _discover
+
 KIND_THRESHOLD = 0.85
 PATH_THRESHOLD = 0.75
 
@@ -100,4 +102,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

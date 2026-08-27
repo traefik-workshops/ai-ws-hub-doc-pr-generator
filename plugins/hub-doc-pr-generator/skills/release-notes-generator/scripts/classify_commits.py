@@ -25,7 +25,7 @@ import re
 import sys
 from pathlib import Path
 
-from scripts import _gh
+from scripts import _discover, _gh
 
 # A branch-management artifact, never a user-facing change.
 _MERGE_RE = re.compile(r"^Merge v\d", re.IGNORECASE)
@@ -128,4 +128,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

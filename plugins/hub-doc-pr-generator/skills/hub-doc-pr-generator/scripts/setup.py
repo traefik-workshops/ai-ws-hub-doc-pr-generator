@@ -375,4 +375,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    _import_discover().maybe_reexec()
     sys.exit(main())

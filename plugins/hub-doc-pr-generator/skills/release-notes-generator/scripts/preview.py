@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts import _git
+from scripts import _discover, _git
 from scripts._frontmatter import VNEXT_RE
 
 _HUB_LINT_AUTOFIX = [["yarn", "docs:markdown", "--fix"]]
@@ -189,4 +189,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))
