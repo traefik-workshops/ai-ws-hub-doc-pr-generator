@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
-from scripts import _gh
+from scripts import _discover, _gh
 
 
 DIFF_LINE_CAP = 2000
@@ -322,7 +322,9 @@ def fetch_issue_graph(repo: str, number: int) -> dict:
     if not issue:
         return empty
 
-    related = _pr_refs(issue.get("closedByPullRequestsReferences"))
+    related_by_key: dict[tuple, dict] = {}
+    for rp in _pr_refs(issue.get("closedByPullRequestsReferences")):
+        related_by_key[(rp["repo"], rp["number"])] = rp
     parent = None
     siblings: list[dict] = []
     parent_raw = issue.get("parent")
@@ -336,9 +338,16 @@ def fetch_issue_graph(repo: str, number: int) -> dict:
             if s["number"] == number:
                 continue  # skip the issue itself
             siblings.append({"number": s["number"], "title": s.get("title", "")})
-            related.extend(_pr_refs(s.get("closedByPullRequestsReferences")))
+            # (repo, number)-keyed dedup: a PR that closes both this issue and
+            # a sibling issue under the same epic is a realistic shape (e.g.
+            # traefik/hub-issues#2971's sub-issues), not hypothetical -- keep
+            # it once here rather than requiring every caller (build_bundle,
+            # here in fetch_pr.py's own build_bundle) to remember to dedup
+            # related_prs downstream.
+            for rp in _pr_refs(s.get("closedByPullRequestsReferences")):
+                related_by_key.setdefault((rp["repo"], rp["number"]), rp)
 
-    return {"parent": parent, "siblings": siblings, "related_prs": related}
+    return {"parent": parent, "siblings": siblings, "related_prs": list(related_by_key.values())}
 
 
 def merge_prs(prs: list[dict]) -> dict:
@@ -489,4 +498,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

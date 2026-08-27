@@ -283,6 +283,26 @@ class TestFetchIssueGraph(unittest.TestCase):
         self.assertIsNone(g["parent"])
         self.assertEqual(g["siblings"], [])
 
+    def test_pr_closing_both_the_issue_and_a_sibling_is_not_duplicated(self):
+        """fetch_pr.py's own related_prs merge already dedups by (repo,
+        number) (see merge_prs' related_by_key) -- fetch_issue_graph's own
+        `related` list construction previously didn't, even though it feeds
+        the same kind of cap-limited related_prs list. A PR that closes both
+        the main issue and a sibling issue under the same epic is a realistic
+        shape (e.g. traefik/hub-issues#2971's sub-issues), not hypothetical,
+        and previously wasted a RELATED_PR_CAP slot by counting twice."""
+        env = _graph_envelope(
+            parent=(5000, "Epic: AI gateway rate limiting", "Decision context here."),
+            issue_prs=[(1234, "feat: token rate limit")],
+            sibling_specs=[
+                (5681, "sub: store backend", [(1234, "feat: token rate limit")]),
+            ],
+        )
+        with patch("scripts.fetch_pr._gh.run_json", return_value=env):
+            g = fetch_issue_graph("traefik/traefik-hub", 5678)
+        related_nums = [p["number"] for p in g["related_prs"]]
+        self.assertEqual(related_nums, [1234])
+
     def test_graphql_error_is_graceful(self):
         from scripts import _gh
         with patch("scripts.fetch_pr._gh.run_json", side_effect=_gh.GhError("boom")):
