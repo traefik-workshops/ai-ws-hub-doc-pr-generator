@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal
 
-from scripts import _git
+from scripts import _discover, _git
 from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE, VNEXT_RE, split_front_matter
 
 
@@ -327,18 +327,28 @@ _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _PLACEHOLDER_RE = re.compile(r"…|\.\.\.|\betc\.?\b", re.IGNORECASE)
 
 
-def _added_or_changed_lines(old_content: str, new_content: str) -> set[str]:
-    """Lines in `new_content` that are genuinely new or changed relative to
-    `old_content` (line-level diff, so an unmodified line that merely sits
-    near an edit isn't swept in). Used to scope check_table_completeness to
-    the PR's actual additions instead of every line in the whole file."""
+def _added_or_changed_line_indices(old_content: str, new_content: str) -> set[int]:
+    """Line INDICES (0-based, into new_content.splitlines()) that are genuinely
+    new or changed relative to `old_content` (line-level diff, so an
+    unmodified line that merely sits near an edit isn't swept in). Used to
+    scope check_table_completeness to the PR's actual additions instead of
+    every line in the whole file.
+
+    Tracks POSITION rather than line TEXT: difflib.SequenceMatcher aligns by
+    content similarity, so if a genuinely new/changed row's exact text
+    happens to match an unrelated PRE-EXISTING row elsewhere in the same file
+    (plausible for boilerplate-shaped table rows), a text-based `set[str]` of
+    changed line content would flag BOTH the truly-new row and the untouched
+    one that merely shares its text -- a false positive. Checking by index
+    instead ties each opcode strictly to the specific line it actually
+    describes."""
     old_lines = old_content.splitlines()
     new_lines = new_content.splitlines()
     matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
-    changed: set[str] = set()
+    changed: set[int] = set()
     for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
         if tag in ("insert", "replace"):
-            changed.update(new_lines[j1:j2])
+            changed.update(range(j1, j2))
     return changed
 
 
@@ -362,18 +372,18 @@ def check_table_completeness(edits: list[FileEdit], *, repo_path: str | None = N
     for e in edits:
         if not (e.path.endswith(".md") or e.path.endswith(".mdx")):
             continue
-        checkable_lines: set[str] | None = None
+        checkable_indices: set[int] | None = None
         if repo_path is not None and e.mode == "overwrite":
             try:
                 old_content = _git.run(repo_path, ["show", f"HEAD:{e.path}"])
             except _git.GitError:
                 old_content = None
             if old_content is not None:
-                checkable_lines = _added_or_changed_lines(old_content, e.content)
-        for line in e.content.splitlines():
+                checkable_indices = _added_or_changed_line_indices(old_content, e.content)
+        for idx, line in enumerate(e.content.splitlines()):
             if not (_TABLE_ROW_RE.match(line) and _PLACEHOLDER_RE.search(line)):
                 continue
-            if checkable_lines is not None and line not in checkable_lines:
+            if checkable_indices is not None and idx not in checkable_indices:
                 continue
             findings.append(
                 f"{e.path}: table row looks truncated (ellipsis/'etc.' placeholder "
@@ -441,6 +451,42 @@ def check_unassigned_fragment(edits: list[FileEdit]) -> list[str]:
     return findings
 
 
+def check_fragment_filename_prefix(edits: list[FileEdit]) -> list[str]:
+    """Flag a newly-created release-note fragment (docs/api-gateway/release-notes.d/*.mdx)
+    whose filename doesn't start with an underscore.
+
+    hub-doc#988 broke CI because a fragment named like a normal page
+    (`1234-slug.mdx`, no leading underscore) got picked up and built as a
+    standalone Docusaurus page. The fix is the `_<pr-number>-<slug>.mdx`
+    naming convention -- collect_fragments.py's _PR_NUMBER_RE deliberately
+    still reads both prefixed and unprefixed names (a graceful transition
+    for fragments already on disk from before this convention existed), but
+    until now nothing on the WRITE side enforced the prefix going forward.
+    That left this enforced only by SKILL.md prose and the template's
+    example -- nothing in code stopped a future non-underscore fragment from
+    being generated and merged, silently reproducing the exact bug this PR
+    exists to fix.
+
+    Scoped to `create`-mode edits only: a fragment's filename is chosen once,
+    at creation, so an `overwrite` of an existing (already-named) fragment
+    isn't introducing a new filename to check."""
+    findings: list[str] = []
+    for e in edits:
+        if e.mode != "create":
+            continue
+        if not _FRAGMENT_PATH_RE.search(e.path):
+            continue
+        filename = e.path.rsplit("/", 1)[-1]
+        if not filename.startswith("_"):
+            findings.append(
+                f"{e.path}: release-note fragment filename must start with an "
+                f"underscore (e.g. `_{filename}`) -- see hub-doc#988; an "
+                f"unprefixed fragment can be picked up as a standalone page and "
+                f"break the Docusaurus build"
+            )
+    return findings
+
+
 def apply_edits_with_lint_fix(
     *, repo_path: str, branch: str, impl_repo: str, edits: list[FileEdit],
 ) -> tuple[list[str], LintFixResult]:
@@ -451,6 +497,7 @@ def apply_edits_with_lint_fix(
     lint.unresolved.extend(check_table_completeness(edits, repo_path=repo_path))
     lint.unresolved.extend(check_placeholder_version(edits))
     lint.unresolved.extend(check_unassigned_fragment(edits))
+    lint.unresolved.extend(check_fragment_filename_prefix(edits))
     if lint.fixed and written:
         _git.run(repo_path, ["add", "--", *written])
     return written, lint
@@ -522,4 +569,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

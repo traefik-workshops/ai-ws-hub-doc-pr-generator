@@ -12,7 +12,7 @@ from scripts.preview import (
     render_diff_to_stdout, render_pages_to_stdout,
     _fix_file_permissions, run_lint_fix, LintFixResult, render_manual_checks_section,
     apply_edits_with_lint_fix, check_table_completeness, check_placeholder_version,
-    check_unassigned_fragment,
+    check_unassigned_fragment, check_fragment_filename_prefix,
     _dirty_paths, _stash_unrelated_changes, _filter_to_written_paths, _checkout_branch,
 )
 
@@ -574,6 +574,71 @@ class TestCheckUnassignedFragment(unittest.TestCase):
         self.assertTrue(any("unassigned" in u for u in lint.unresolved))
 
 
+class TestCheckFragmentFilenamePrefix(unittest.TestCase):
+    """hub-doc#988: release-note fragments must be named
+    `_<pr-number>-<slug>.mdx` (leading underscore) so Docusaurus doesn't try
+    to build them as standalone pages. collect_fragments.py's read side
+    already tolerates both prefixed and unprefixed names during the
+    transition, but nothing previously flagged a WRITE of an unprefixed
+    fragment -- so a future generation run could still reproduce the exact
+    CI break this whole PR exists to fix, with zero warning in the PR body."""
+
+    def test_flags_fragment_filename_missing_underscore_prefix(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+            content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: unassigned\n---\n\n#### Bedrock Mantle\n",
+            mode="create",
+        )]
+        findings = check_fragment_filename_prefix(edits)
+        self.assertTrue(any("1234-bedrock-mantle.mdx" in f for f in findings))
+
+    def test_does_not_flag_underscore_prefixed_fragment_filename(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/_1234-bedrock-mantle.mdx",
+            content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: unassigned\n---\n\n#### Bedrock Mantle\n",
+            mode="create",
+        )]
+        self.assertEqual(check_fragment_filename_prefix(edits), [])
+
+    def test_non_fragment_paths_are_skipped(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/some-page.md",
+            content="anything",
+            mode="create",
+        )]
+        self.assertEqual(check_fragment_filename_prefix(edits), [])
+
+    def test_only_flags_create_mode_edits(self):
+        """An overwrite of an already-existing (already-named) fragment isn't
+        a new filename being introduced -- scope this to `create` mode only,
+        same as how a fragment's filename is only ever chosen once."""
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+            content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: v3.21.0-ea.1\n---\n\n#### Bedrock Mantle\n",
+            mode="overwrite",
+        )]
+        self.assertEqual(check_fragment_filename_prefix(edits), [])
+
+    def test_wired_into_manual_checks_via_apply_edits_with_lint_fix(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            edits = [FileEdit(
+                path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+                content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: v3.21.0-ea.1\n---\n\n#### Bedrock Mantle\n",
+                mode="create",
+            )]
+            with patch("scripts.preview.subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                mock_run.return_value.stdout = ""
+                mock_run.return_value.stderr = ""
+                _, lint = apply_edits_with_lint_fix(
+                    repo_path=str(d), branch="docs/test",
+                    impl_repo="traefik/traefik-hub", edits=edits,
+                )
+        self.assertTrue(any("underscore" in u or "_1234" in u for u in lint.unresolved))
+
+
 class TestCheckTableCompleteness(unittest.TestCase):
     def test_flags_ellipsis_placeholder_in_table_row(self):
         edits = [FileEdit(
@@ -650,6 +715,43 @@ class TestCheckTableCompleteness(unittest.TestCase):
             findings = check_table_completeness(edits, repo_path=str(d))
         self.assertEqual(len(findings), 1)
         self.assertIn("new_field", findings[0])
+
+    def test_new_row_with_identical_text_to_untouched_row_does_not_also_flag_the_untouched_one(self):
+        """Regression test: _added_or_changed_lines previously tracked CHANGED
+        LINE TEXT in a set, not position -- difflib.SequenceMatcher aligns by
+        content similarity, so a genuinely new row whose exact text happens to
+        match an unrelated PRE-EXISTING, untouched row (plausible for
+        boilerplate-shaped table rows) got its text added to the "changed"
+        set. Since the check was membership-by-text, that text then matched
+        BOTH the truly new row's line AND the untouched row's identical line
+        elsewhere in the file, flagging the untouched row too -- a false
+        positive introduced by the very fix meant to reduce false positives.
+        Position (index)-based checking must flag only the genuinely new
+        occurrence."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            existing = (
+                "| Field | Type |\n| --- | --- |\n"
+                "| row_a | string |\n"
+                "| row_x | json, xml, etc. |\n"
+            )
+            (d / "docs/reference.md").parent.mkdir(parents=True, exist_ok=True)
+            (d / "docs/reference.md").write_text(existing)
+            subprocess.run(["git", "add", "docs/reference.md"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                             "commit", "-qm", "existing"], cwd=d, check=True)
+
+            # row_a and row_x are carried through unchanged; a genuinely new
+            # row is appended whose text is IDENTICAL to row_x's.
+            new_content = existing + "| row_x | json, xml, etc. |\n"
+            edits = [FileEdit(path="docs/reference.md", content=new_content, mode="overwrite")]
+            findings = check_table_completeness(edits, repo_path=str(d))
+        # The genuinely new row (last line) must be flagged...
+        self.assertEqual(len(findings), 1)
+        # ...but the pre-existing, untouched row_x must NOT be double-counted
+        # or otherwise cause the untouched occurrence to be separately
+        # reported -- there is exactly one finding, for the new row only.
 
     def test_without_repo_path_falls_back_to_flagging_every_matching_line(self):
         """Backward-compatible default: omitting repo_path keeps the
