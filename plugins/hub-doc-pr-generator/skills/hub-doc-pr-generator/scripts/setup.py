@@ -83,8 +83,28 @@ _PYTHON_CANDIDATE_ABS_PATHS = [
 ]
 
 
-def _python_version_at(path: str) -> tuple[int, int] | None:
-    result = _run([path, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"])
+def python_version_at(path: str) -> tuple[int, int] | None:
+    """What Python version the interpreter at `path` actually reports right
+    now, or None if it can't be run / doesn't answer sanely. No leading
+    underscore: also imported by _discover.py's reexec_target() to verify a
+    *persisted* interpreter path is still actually compatible before
+    re-exec'ing into it -- a path recorded as good when it was discovered is
+    not a standing guarantee it still resolves to the same, or any,
+    compatible interpreter (moved, removed, or replaced since).
+
+    Every candidate this function was originally written for (find_compatible_
+    python()'s `which`/is_file()-checked list) is known to exist by the time
+    it's called here, so a missing binary was never a real path through this
+    function before. reexec_target()'s persisted-path use is exactly the
+    "moved or removed since" case, so a missing/non-executable path is
+    expected input here now, not an exceptional one -- OSError (e.g.
+    FileNotFoundError, PermissionError) from subprocess.run itself is caught
+    the same as a bad exit code, both meaning "not usable", not left to
+    propagate as a crash."""
+    try:
+        result = _run([path, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"])
+    except OSError:
+        return None
     if result.returncode != 0:
         return None
     try:
@@ -114,7 +134,7 @@ def find_compatible_python() -> str | None:
             candidates.append(abs_path)
 
     for candidate in candidates:
-        version = _python_version_at(candidate)
+        version = python_version_at(candidate)
         if version and version >= (3, 11):
             return candidate
     return None

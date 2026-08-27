@@ -25,8 +25,23 @@ _HUB_GUIDE_MAP = {
     # prefix confidently mis-picked AI Gateway for touched paths that were
     # actually API/MCP Gateway territory (AuthZEN, 2026-08-24) -- see
     # _section_dirs' fallback comment for the same reasoning applied there.
+    # Also listed in _GENERIC_PREFIXES below so a match here never scores as
+    # high as a real product-area signal (see that set's docstring).
     "hub/pkg/":       ("docs/api-gateway/guides/", "docs/ai-gateway/guides/"),
 }
+# Prefixes that are structurally too broad to be a real product-area signal,
+# even though they live in one of the maps above and can be the ONLY thing
+# that matches. Confirmed live (AuthZEN, 2026-08-24): touched_paths=["hub/pkg/
+# mcp/authzen/policy.go"] matches only "hub/pkg/" in _HUB_GUIDE_MAP, so
+# _section_dirs saw exactly one matched prefix and propose_paths scored it
+# 0.9 -- the same confidence as a genuinely specific single-prefix match like
+# "hub/dashboard/" -- even though the comment on "hub/pkg/" itself admits
+# it isn't one. Since SKILL.md auto-accepts candidates[0] without looking at
+# the confidence number, that 0.9 shipped a wrong product-area guess
+# silently. A prefix listed here still contributes its dirs to the candidate
+# list (it may well be right), but never counts toward "specific prefix
+# matched" -- see matched_specific_prefixes in _section_dirs/propose_paths.
+_GENERIC_PREFIXES = {"hub/pkg/"}
 _OSS_REF_MAP = {
     "pkg/middlewares/": ("docs/content/reference/routing/http/middlewares/",),
     "pkg/provider/":    ("docs/content/reference/install-configuration/providers/",),
@@ -157,19 +172,26 @@ def existing_doc_refs(issue_texts: list[str], *, doc_repo_root: str,
     return found
 
 
-def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tuple[list[str], int]:
-    """Returns (dirs, matched_prefix_count). matched_prefix_count == 0 means no
-    touched-path prefix matched and the generic single-dir fallback was used."""
+def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tuple[list[str], int, int]:
+    """Returns (dirs, matched_prefix_count, matched_specific_prefix_count).
+    matched_prefix_count == 0 means no touched-path prefix matched and the
+    generic single-dir fallback was used. matched_specific_prefix_count
+    excludes prefixes in _GENERIC_PREFIXES (e.g. "hub/pkg/") -- a broad
+    catch-all matching is not a grounded product-area signal even though it
+    counts toward matched_prefix_count and still contributes dirs."""
     if impl_repo == "traefik/traefik-hub":
         m = _HUB_REF_MAP if doc_kind == "reference" else _HUB_GUIDE_MAP
     else:
         m = _OSS_REF_MAP
     dirs: list[str] = []
     matched_prefixes = 0
+    matched_specific_prefixes = 0
     for prefix, sections in m.items():
         if any(p.startswith(prefix) for p in touched_paths):
             dirs.extend(sections)
             matched_prefixes += 1
+            if prefix not in _GENERIC_PREFIXES:
+                matched_specific_prefixes += 1
     # Generic fallback for Hub if nothing matched. Deliberately NOT an AI
     # Gateway directory: confirmed live (traefik-hub#1435, pure internal Go
     # paths like hub/pkg/hub/license with zero doc-adjacent mapping; and the
@@ -185,7 +207,7 @@ def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tu
         dirs = ["docs/api-gateway/reference/"] if doc_kind == "reference" else ["docs/api-gateway/guides/"]
     if not dirs and impl_repo == "traefik/traefik":
         dirs = ["docs/content/reference/"]
-    return dirs, matched_prefixes
+    return dirs, matched_prefixes, matched_specific_prefixes
 
 
 _MIDDLEWARE_PKG_PREFIXES = {
@@ -299,29 +321,36 @@ def find_transcluded_partials(*, doc_repo_root: str, candidate_paths: list[str])
 
 def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
                   touched_paths: list[str], doc_repo_root: str | None = None) -> list[dict]:
-    section_dirs, matched_prefixes = _section_dirs(impl_repo, doc_kind, touched_paths)
+    section_dirs, matched_prefixes, matched_specific_prefixes = _section_dirs(
+        impl_repo, doc_kind, touched_paths
+    )
     # Confidence reflects how GROUNDED the match is, not how many directories a
-    # single matched prefix happens to map to. Directory count alone is the wrong
-    # denominator: one matched prefix that fans out to two candidate dirs (e.g.
-    # middleware reference pages living in two places) is still one solid signal,
-    # not two competing guesses.
-    #  - 0 prefixes matched -> generic single-dir fallback, the LEAST grounded
-    #    guess -> low confidence (must clear the 0.75 auto-accept gate honestly).
-    #  - 1 prefix matched -> specific, well-grounded match -> high confidence.
-    #  - >1 distinct prefixes matched -> touched paths span unrelated sections,
-    #    a genuinely ambiguous signal -> confidence split across them.
-    if matched_prefixes == 0:
+    # single matched prefix happens to map to, and not how many prefixes
+    # matched at all -- a prefix in _GENERIC_PREFIXES (e.g. "hub/pkg/") is
+    # structurally too broad to be a real product-area signal, so it must
+    # never move the needle here even when it's the only thing that matched
+    # (confirmed live, AuthZEN 2026-08-24: see _GENERIC_PREFIXES' docstring).
+    # Tiering is on matched_specific_prefixes, not matched_prefixes:
+    #  - 0 specific prefixes matched -> either nothing matched at all, or only
+    #    a generic catch-all did -> the LEAST grounded guess either way ->
+    #    low confidence (must clear the 0.75 auto-accept gate honestly).
+    #  - 1 specific prefix matched -> well-grounded match -> high confidence,
+    #    regardless of how many directories that one prefix fans out to, and
+    #    regardless of a generic prefix also matching alongside it.
+    #  - >1 distinct specific prefixes matched -> touched paths span unrelated
+    #    sections, a genuinely ambiguous signal -> confidence split across them.
+    if matched_specific_prefixes == 0:
         base = 0.3
         rationale = (
             "No touched-path prefix matched a specific gateway product area — "
             "generic fallback directory, not a confident guess; verify the "
             "product area by hand before accepting"
         )
-    elif matched_prefixes == 1:
+    elif matched_specific_prefixes == 1:
         base = 0.9
         rationale = None
     else:
-        base = round(0.9 / matched_prefixes, 2)
+        base = round(0.9 / matched_specific_prefixes, 2)
         rationale = None
     out = []
     for i, d in enumerate(section_dirs):

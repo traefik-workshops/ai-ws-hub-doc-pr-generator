@@ -147,27 +147,71 @@ MIN_PYTHON = (3, 11)
 _REEXEC_ENV_SENTINEL = "_HUB_DOC_PR_GEN_REEXECED"
 
 
+def _default_probe_version(path: str) -> Optional[tuple[int, int]]:
+    """Real-world probe used by reexec_target() in production -- shells out
+    to `path -c ...` via this skill's own setup.py.python_version_at().
+    Injectable default so tests can substitute a fake instead of actually
+    spawning a process. See the identical helper in the sibling
+    hub-doc-pr-generator skill's _discover.py."""
+    from scripts.setup import python_version_at
+    return python_version_at(path)
+
+
 def reexec_target(*, current_version: tuple[int, int],
                    persisted_path: Optional[str],
-                   current_executable: Optional[str] = None) -> Optional[str]:
-    """Pure decision function: which interpreter path (if any) a script
+                   current_executable: Optional[str] = None,
+                   probe_version=_default_probe_version) -> Optional[str]:
+    """Pure(ish) decision function: which interpreter path (if any) a script
     running under `current_version` should re-exec itself under. See the
     identical function in the sibling hub-doc-pr-generator skill's
-    _discover.py for the full rationale (traefik-hub#1435 finding #6) --
-    duplicated here rather than imported since this module is a deliberately
-    independent, trimmed copy (see module docstring), not a symlink.
+    _discover.py for the full rationale (traefik-hub#1435 finding #6;
+    traefik/hub-doc PR #988 round-3 findings #3/#4) -- duplicated here rather
+    than imported since this module is a deliberately independent, trimmed
+    copy (see module docstring), not a symlink.
 
     `persisted_path`/`current_executable` are compared via realpath, not raw
     string equality, so a symlink or PATH-resolved alias pointing at the same
     physical binary is still recognized as "same interpreter" -- plain string
-    comparison could miss that and loop."""
+    comparison could miss that and loop.
+
+    `probe_version` (injectable for tests, see _default_probe_version) checks
+    that `persisted_path` still actually reports a MIN_PYTHON-or-newer
+    version right now -- a persisted path can go stale (moved, removed,
+    downgraded) between when it was saved and this run; returning it anyway
+    would waste an os.execv into a still-too-old interpreter before the same
+    problem surfaces again."""
     if current_version >= MIN_PYTHON:
         return None
     if not persisted_path:
         return None
     if current_executable and os.path.realpath(persisted_path) == os.path.realpath(current_executable):
         return None
+    persisted_version = probe_version(persisted_path)
+    if persisted_version is None or persisted_version < MIN_PYTHON:
+        return None
     return persisted_path
+
+
+def _reexec_argv(target: str, *, orig_argv: list[str],
+                  main_module_name: Optional[str]) -> list[str]:
+    """Build the argv for os.execv(target, ...) preserving the original -m
+    invocation semantics rather than replaying sys.argv verbatim. See the
+    identical function (and its full rationale, traefik/hub-doc PR #988
+    round-3 finding #3) in the sibling hub-doc-pr-generator skill's
+    _discover.py."""
+    if main_module_name:
+        return [target, "-m", main_module_name, *orig_argv[1:]]
+    return [target, *orig_argv]
+
+
+def _current_main_module_name() -> Optional[str]:
+    """The dotted module name this process was started as via `-m`, read
+    from sys.modules["__main__"].__spec__. None for a bare script/REPL
+    invocation. See the identical helper in the sibling hub-doc-pr-generator
+    skill's _discover.py."""
+    main = sys.modules.get("__main__")
+    spec = getattr(main, "__spec__", None)
+    return getattr(spec, "name", None) if spec is not None else None
 
 
 def maybe_reexec() -> None:
@@ -176,7 +220,9 @@ def maybe_reexec() -> None:
     transparently re-exec the exact same invocation under that interpreter via
     os.execv, so a stray `python3 -m scripts.foo` self-corrects instead of
     failing outright or requiring the operator to retype the full interpreter
-    path every session.
+    path every session. Rebuilds argv (see _reexec_argv()) to preserve the
+    original `-m scripts.foo` invocation style rather than assuming
+    PYTHONPATH will paper over the difference for a bare re-exec.
 
     Version check runs first and returns immediately when already
     compatible, before discover_python_path() (a file read + JSON parse) is
@@ -219,7 +265,9 @@ def maybe_reexec() -> None:
 
     os.environ[_REEXEC_ENV_SENTINEL] = "1"
     try:
-        os.execv(target, [target, *sys.argv])
+        os.execv(target, _reexec_argv(
+            target, orig_argv=sys.argv, main_module_name=_current_main_module_name(),
+        ))
     except OSError as e:
         print(
             f"[release-notes-generator] Could not re-exec into the persisted interpreter "

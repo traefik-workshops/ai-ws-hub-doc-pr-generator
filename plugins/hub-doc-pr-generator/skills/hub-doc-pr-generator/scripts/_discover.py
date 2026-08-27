@@ -161,15 +161,30 @@ MIN_PYTHON = (3, 11)
 _REEXEC_ENV_SENTINEL = "_HUB_DOC_PR_GEN_REEXECED"
 
 
+def _default_probe_version(path: str) -> Optional[tuple[int, int]]:
+    """Real-world probe used by reexec_target() in production: shells out to
+    `path -c ...`, the same technique setup.py's own preflight uses to
+    discover a candidate in the first place. Kept as an injectable default
+    (not hardcoded into reexec_target()) so tests can substitute a fake and
+    keep exercising the decision logic without actually spawning a process."""
+    from scripts.setup import python_version_at
+    return python_version_at(path)
+
+
 def reexec_target(*, current_version: tuple[int, int],
                    persisted_path: Optional[str],
-                   current_executable: Optional[str] = None) -> Optional[str]:
-    """Pure decision function: which interpreter path (if any) a script
+                   current_executable: Optional[str] = None,
+                   probe_version=_default_probe_version) -> Optional[str]:
+    """Pure(ish) decision function: which interpreter path (if any) a script
     running under `current_version` should re-exec itself under.
 
     Extracted from the actual re-exec side effect (os.execv, in
     maybe_reexec() below) so the decision itself -- "should I re-exec, and to
     what path" -- is unit-testable without actually replacing the process.
+    `probe_version` is the one real-world side effect left in this function
+    (it shells out to the candidate interpreter) -- it's injectable for the
+    same reason, so tests can fake "the persisted path reports version X"
+    without a real interpreter at that path.
 
     Returns None (no re-exec) when:
     - `current_version` already meets MIN_PYTHON (nothing to fix), or
@@ -179,14 +194,68 @@ def reexec_target(*, current_version: tuple[int, int],
       re-exec into an identical, still-too-old process forever). Compared via
       realpath, not raw string equality, so a symlink or PATH-resolved alias
       pointing at the same physical binary is still recognized as "same
-      interpreter" -- plain string comparison could miss that and loop."""
+      interpreter" -- plain string comparison could miss that and loop.
+    - `persisted_path` no longer actually reports a MIN_PYTHON-or-newer
+      version when probed right now. A persisted path records where a
+      compatible interpreter WAS found, not a standing guarantee it still is
+      one -- it can go stale (moved, removed, downgraded, or the discovery
+      that saved it was itself wrong) between when setup.py saved it and this
+      run. Re-exec'ing into it anyway would still fire the one-shot
+      _REEXEC_ENV_SENTINEL guard below and burn a wasted process replacement
+      before the same too-old-Python problem surfaces again -- checking here
+      catches it up front instead."""
     if current_version >= MIN_PYTHON:
         return None
     if not persisted_path:
         return None
     if current_executable and os.path.realpath(persisted_path) == os.path.realpath(current_executable):
         return None
+    persisted_version = probe_version(persisted_path)
+    if persisted_version is None or persisted_version < MIN_PYTHON:
+        return None
     return persisted_path
+
+
+def _reexec_argv(target: str, *, orig_argv: list[str],
+                  main_module_name: Optional[str]) -> list[str]:
+    """Build the argv for os.execv(target, ...) that preserves the ORIGINAL
+    invocation's -m semantics, rather than replaying sys.argv verbatim.
+
+    Under `python -m scripts.foo ...`, sys.argv[0] is the resolved absolute
+    path to scripts/foo.py -- there is no "-m" in argv to reuse. Naively
+    building [target, *sys.argv] therefore re-execs as a BARE script
+    (`target /abs/path/scripts/foo.py ...`), not the original `-m
+    scripts.foo` invocation. That changes what Python puts at sys.path[0]:
+    -m sets it to the current working directory, so `from scripts import
+    ...` resolves relative to cwd (plus PYTHONPATH); a bare script path sets
+    it to the script's OWN containing directory instead, which does not
+    contain the `scripts` package. The only reason a bare re-exec works
+    today is that SKILL.md always sets PYTHONPATH="${CLAUDE_SKILL_DIR}"
+    before invoking these scripts, so `scripts` stays importable via
+    PYTHONPATH regardless of sys.path[0] -- any invocation that reaches
+    maybe_reexec() without that prefix set breaks with ModuleNotFoundError
+    immediately after re-exec fires (traefik/hub-doc PR #988 round-3 finding
+    #3). `main_module_name` -- from sys.modules["__main__"].__spec__.name,
+    which is only populated when the process was actually started via -m --
+    lets the re-exec faithfully reproduce -m semantics instead of assuming
+    PYTHONPATH will paper over the difference."""
+    if main_module_name:
+        return [target, "-m", main_module_name, *orig_argv[1:]]
+    return [target, *orig_argv]
+
+
+def _current_main_module_name() -> Optional[str]:
+    """The dotted module name this process was started as via `-m`, e.g.
+    "scripts.locate_targets" -- read from sys.modules["__main__"].__spec__,
+    which runpy populates only for a `-m` invocation. None for a bare
+    `python scripts/foo.py` run, a REPL, or anything else that leaves
+    __main__ without a __spec__. Split out from maybe_reexec() as its own
+    seam so tests can fake "this was/wasn't a -m invocation" directly,
+    without having to fight a wholesale `sys` mock's auto-generated
+    attributes on sys.modules."""
+    main = sys.modules.get("__main__")
+    spec = getattr(main, "__spec__", None)
+    return getattr(spec, "name", None) if spec is not None else None
 
 
 def maybe_reexec() -> None:
@@ -199,10 +268,14 @@ def maybe_reexec() -> None:
     remember and retype the full interpreter path every session (see
     traefik-hub#1435 finding #6).
 
-    Deliberately narrow: this does not restructure the CLI surface or change
-    argv in any way, and does nothing at all when there's no persisted path
-    to fall back to -- the existing "Python 3.11+ required" error from
-    setup.py's own preflight still fires normally in that case.
+    Deliberately narrow: this does not restructure the CLI surface, and does
+    nothing at all when there's no persisted path to fall back to -- the
+    existing "Python 3.11+ required" error from setup.py's own preflight
+    still fires normally in that case. It DOES rebuild argv (see
+    _reexec_argv()) to preserve the original `-m scripts.foo` invocation
+    style rather than replaying sys.argv byte-for-byte, so the re-exec'd
+    process resolves imports the same way the original invocation did
+    instead of quietly depending on PYTHONPATH to paper over the difference.
 
     Version check runs first and returns immediately when already
     compatible, before discover_python_path() (a file read + JSON parse) is
@@ -254,7 +327,9 @@ def maybe_reexec() -> None:
 
     os.environ[_REEXEC_ENV_SENTINEL] = "1"
     try:
-        os.execv(target, [target, *sys.argv])
+        os.execv(target, _reexec_argv(
+            target, orig_argv=sys.argv, main_module_name=_current_main_module_name(),
+        ))
     except OSError as e:
         print(
             f"[hub-doc-pr-generator] Could not re-exec into the persisted interpreter "

@@ -65,8 +65,19 @@ _PYTHON_CANDIDATE_ABS_PATHS = [
 ]
 
 
-def _python_version_at(path: str) -> tuple[int, int] | None:
-    result = _run([path, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"])
+def python_version_at(path: str) -> tuple[int, int] | None:
+    """What Python version the interpreter at `path` actually reports right
+    now, or None if it can't be run / doesn't answer sanely. No leading
+    underscore: also imported by _discover.py's reexec_target() to verify a
+    *persisted* interpreter path is still actually compatible before
+    re-exec'ing into it (same pattern as the sibling hub-doc-pr-generator
+    skill's setup.py). OSError from subprocess.run (e.g. the path was moved
+    or removed since it was persisted) is caught the same as a bad exit
+    code -- both just mean "not usable"."""
+    try:
+        result = _run([path, "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"])
+    except OSError:
+        return None
     if result.returncode != 0:
         return None
     try:
@@ -94,7 +105,7 @@ def find_compatible_python() -> str | None:
             candidates.append(abs_path)
 
     for candidate in candidates:
-        version = _python_version_at(candidate)
+        version = python_version_at(candidate)
         if version and version >= (3, 11):
             return candidate
     return None

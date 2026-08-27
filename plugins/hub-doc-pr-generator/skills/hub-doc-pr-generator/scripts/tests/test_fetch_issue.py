@@ -87,6 +87,37 @@ class TestBuildBundle(unittest.TestCase):
         self.assertEqual(bundle["merged"]["sub_issues"][0]["number"], 2931)
         self.assertTrue(bundle["merged"]["sub_issues"][0]["is_sub_issue"])
 
+    def test_all_three_fetches_called_exactly_once_with_correct_args(self):
+        """Regression for traefik/hub-doc PR #988 round-3 finding #6: the
+        three independent `gh` fetches now run through a ThreadPoolExecutor
+        instead of sequential calls -- confirm the refactor still calls each
+        exactly once, with the same (repo, number) args, and that
+        _fetch_sub_issues' result isn't accidentally re-fetched (or dropped)
+        when building `sub_issues` further down."""
+        sub = [{"number": 2931, "title": "Follow-up", "body": "detail"}]
+        with patch("scripts.fetch_issue._fetch_issue", return_value=self._RAW_ISSUE) as mock_issue, \
+             patch("scripts.fetch_issue._fetch_sub_issues", return_value=sub) as mock_subs, \
+             patch("scripts.fetch_issue.fetch_issue_graph", return_value=_EMPTY_GRAPH) as mock_graph:
+            bundle = build_bundle(
+                IssueRef("traefik/hub-issues", 2930), impl_repo="traefik/traefik-hub",
+            )
+        mock_issue.assert_called_once_with("traefik/hub-issues", 2930)
+        mock_graph.assert_called_once_with("traefik/hub-issues", 2930)
+        mock_subs.assert_called_once_with("traefik/hub-issues", 2930)
+        self.assertEqual(bundle["merged"]["sub_issues"][0]["number"], 2931)
+
+    def test_exception_in_one_concurrent_fetch_propagates(self):
+        """A failure in any one of the three concurrent fetches (e.g. gh API
+        error) must still surface as an exception out of build_bundle(), not
+        be silently swallowed by the ThreadPoolExecutor."""
+        with patch("scripts.fetch_issue._fetch_issue", side_effect=RuntimeError("gh boom")), \
+             patch("scripts.fetch_issue._fetch_sub_issues", return_value=[]), \
+             patch("scripts.fetch_issue.fetch_issue_graph", return_value=_EMPTY_GRAPH):
+            with self.assertRaises(RuntimeError):
+                build_bundle(
+                    IssueRef("traefik/hub-issues", 2930), impl_repo="traefik/traefik-hub",
+                )
+
     def test_parent_and_siblings_populated_from_issue_graph(self):
         """Regression test for the 2026-08-24 finding: fetch_issue.py never
         queried GitHub's native parent/sub-issue relationship at all, so

@@ -82,6 +82,53 @@ class TestProposePaths(unittest.TestCase):
         # entirely -- this really could be AI Gateway-relevant), but it must
         # not be the confident top pick the way it was before this fix.
         self.assertNotIn("ai-gateway", cands[0]["path"])
+        # Regression for traefik/hub-doc PR #988 round-3 finding #1: this
+        # touched-path set matches only the generic "hub/pkg/" catch-all, not
+        # a real product-area-specific prefix. That must score as low
+        # confidence like any other ungrounded guess -- SKILL.md auto-accepts
+        # candidates[0] without ever looking at doc_kind or the touched paths
+        # again, so a high confidence number here would ship a wrong
+        # product-area guess silently instead of routing to manual review.
+        self.assertLess(cands[0]["confidence"], 0.75)
+
+    def test_generic_catchall_prefix_alone_scores_as_low_as_no_match(self):
+        """Regression for traefik/hub-doc PR #988 round-3 finding #1: a
+        touched-path set that matches ONLY the generic "hub/pkg/" prefix
+        must not be scored the same as a genuinely specific single-prefix
+        match (base 0.9) just because it's the only thing that matched --
+        it carries exactly as little product-area signal as no match at all,
+        so it must score in the same low-confidence band as the
+        no-prefix-matched fallback."""
+        generic_only = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="user-guide",
+            feature_slug="mystery-feature",
+            touched_paths=["hub/pkg/some/internal/thing.go"],
+        )
+        no_match = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="user-guide",
+            feature_slug="mystery-feature",
+            touched_paths=["hub/totally/unmapped/thing.go"],
+        )
+        self.assertLess(generic_only[0]["confidence"], 0.75)
+        self.assertEqual(generic_only[0]["confidence"], no_match[0]["confidence"])
+
+    def test_specific_prefix_alongside_generic_catchall_still_high_confidence(self):
+        """A real specific-prefix match must still score high confidence even
+        when the generic "hub/pkg/" catch-all also happens to match one of
+        the other touched paths -- the generic prefix must never drag down a
+        genuinely grounded signal, only fail to substitute for one."""
+        cands = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="user-guide",
+            feature_slug="quota-panel",
+            touched_paths=[
+                "hub/dashboard/src/QuotaPanel.tsx",
+                "hub/pkg/some/internal/thing.go",
+            ],
+        )
+        self.assertGreaterEqual(cands[0]["confidence"], 0.85)
 
     def test_conflicting_prefixes_lower_confidence(self):
         # Touched paths spanning two unrelated mapped prefixes is a genuinely
