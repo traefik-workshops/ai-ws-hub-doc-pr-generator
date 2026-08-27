@@ -8,6 +8,7 @@ import re
 import sys
 from pathlib import Path
 
+from scripts import _discover
 from scripts._frontmatter import split_front_matter, unquote
 
 # A small static map of impl-repo Go-path prefixes → likely doc section.
@@ -51,8 +52,23 @@ def build_id_index(doc_repo_root: str) -> dict[str, str]:
 
     Malformed/unreadable pages are skipped rather than raising — a single bad
     front-matter block in an unrelated page shouldn't take down path
-    resolution for everything else."""
+    resolution for everything else.
+
+    On a genuine `id` collision across two different pages -- confirmed live
+    against the real hub-doc repo: `id: oidc` is declared by both
+    docs/api-gateway/secure/middleware/oidc.md and
+    docs/authentication-authorization/idp/generic-oidc.md, and there are at
+    least 10 such collisions total -- the id is deliberately left OUT of the
+    returned index rather than picking whichever page `Path.rglob` happened
+    to visit first (rglob's iteration order isn't guaranteed stable or
+    meaningful, so that pick would be silent and effectively random). A
+    missing id and an ambiguous id both come back as `.get(doc_id) is None`
+    from the caller's point of view -- existing_doc_refs already falls
+    through to the heuristic candidates in that case, which is exactly the
+    same "don't arbitrarily pick one" rule build_locate() already applies a
+    few lines up for multiple distinct issue-text references."""
     index: dict[str, str] = {}
+    ambiguous: set[str] = set()
     docs_dir = Path(doc_repo_root) / "docs"
     if not docs_dir.is_dir():
         return index
@@ -71,8 +87,18 @@ def build_id_index(doc_repo_root: str) -> dict[str, str]:
         if not m:
             continue
         doc_id = unquote(m.group(1).strip())
-        if doc_id and doc_id not in index:
-            index[doc_id] = str(path.relative_to(doc_repo_root))
+        if not doc_id:
+            continue
+        if doc_id in ambiguous:
+            continue
+        if doc_id in index:
+            # Second sighting of this id on a DIFFERENT page: it's ambiguous,
+            # not resolvable -- drop it from the index entirely rather than
+            # keeping the first (arbitrary, rglob-order-dependent) match.
+            del index[doc_id]
+            ambiguous.add(doc_id)
+            continue
+        index[doc_id] = str(path.relative_to(doc_repo_root))
     return index
 
 
@@ -406,9 +432,17 @@ def build_locate(*, impl_repo: str, doc_repo_root: str, doc_kind: str,
     # guess — but only when the scan turns up exactly ONE distinct page. Multiple
     # distinct references is itself ambiguous, so don't arbitrarily pick one;
     # fall through to the heuristic candidates instead.
+    # build_id_index() does a full docs/ rglob + front-matter parse of every
+    # page (~245 in the real hub-doc repo) -- only worth paying for when
+    # issue_texts actually contains a doc.traefik.io/... URL that could need
+    # id-resolution at all (existing_doc_refs' id_index fallback only ever
+    # fires for that URL form; a bare repo-relative path match never
+    # consults it). Reuses the same _DOC_URL_RE existing_doc_refs matches
+    # against, rather than duplicating the pattern.
+    needs_id_index = any(_DOC_URL_RE.search(t) for t in issue_texts)
     doc_refs = existing_doc_refs(
         list(issue_texts), doc_repo_root=doc_repo_root,
-        id_index=build_id_index(doc_repo_root),
+        id_index=build_id_index(doc_repo_root) if needs_id_index else None,
     )
     # Check membership across the WHOLE candidate list, not just index 0 --
     # find_existing_middleware_pages() can already surface the human-referenced
@@ -472,4 +506,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

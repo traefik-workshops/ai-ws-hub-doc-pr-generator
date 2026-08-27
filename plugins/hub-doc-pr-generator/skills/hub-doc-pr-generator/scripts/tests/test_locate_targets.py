@@ -1,6 +1,7 @@
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 from scripts.locate_targets import propose_paths
 from scripts.locate_targets import select_neighbors
 from scripts.locate_targets import sidebar_insertion_point, build_locate
@@ -398,6 +399,36 @@ class TestBuildIdIndex(unittest.TestCase):
             index = build_id_index(td)
         self.assertEqual(index, {})
 
+    def test_colliding_id_across_two_pages_is_not_silently_resolved(self):
+        """Real, live-verified case (not theoretical): the actual hub-doc repo
+        currently has >=10 duplicate front-matter `id` values across genuinely
+        different pages -- e.g. `id: oidc` used by both
+        docs/api-gateway/secure/middleware/oidc.md AND
+        docs/authentication-authorization/idp/generic-oidc.md. Since
+        Path.rglob("*") iteration order isn't guaranteed stable/meaningful,
+        first-writer-wins would non-deterministically resolve a
+        doc.traefik.io/.../oidc URL to the WRONG one of those two unrelated
+        pages, with zero warning. A colliding id must not appear in the index
+        at all -- existing_doc_refs must then fall through to the heuristic
+        candidates instead of arbitrarily picking one, exactly like the
+        already-established "multiple distinct references is itself
+        ambiguous" rule a few lines up in build_locate()."""
+        with tempfile.TemporaryDirectory() as td:
+            d1 = Path(td) / "docs/api-gateway/secure/middleware"
+            d1.mkdir(parents=True)
+            (d1 / "oidc.md").write_text("---\nid: oidc\ntitle: OIDC (API Gateway)\n---\n\nx\n")
+            d2 = Path(td) / "docs/authentication-authorization/idp"
+            d2.mkdir(parents=True)
+            (d2 / "generic-oidc.md").write_text("---\nid: oidc\ntitle: Generic OIDC\n---\n\nx\n")
+            index = build_id_index(td)
+            refs = existing_doc_refs(
+                ["See https://doc.traefik.io/traefik-hub/oidc for details."],
+                doc_repo_root=td,
+                id_index=index,
+            )
+        self.assertNotIn("oidc", index)
+        self.assertEqual(refs, [])
+
     def test_unquotes_quoted_id_value(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td) / "docs/api-gateway"
@@ -405,6 +436,49 @@ class TestBuildIdIndex(unittest.TestCase):
             (d / "quoted.md").write_text('---\nid: "ref-quoted"\n---\n\nx\n')
             index = build_id_index(td)
         self.assertEqual(index.get("ref-quoted"), "docs/api-gateway/quoted.md")
+
+
+class TestBuildIdIndexShortCircuit(unittest.TestCase):
+    """build_locate() previously called build_id_index(doc_repo_root)
+    unconditionally -- a full docs/ rglob + front-matter parse of every page
+    (~245 in the real hub-doc repo) on EVERY run, even when issue_texts
+    contains no doc.traefik.io/... URL that could ever need id-resolution at
+    all. Short-circuit on the existing _DOC_URL_RE (already used by
+    existing_doc_refs) instead of duplicating that pattern."""
+
+    def test_id_index_not_built_when_no_doc_url_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway"
+            d.mkdir(parents=True)
+            (d / "page.md").write_text("---\nid: some-id\n---\n\nx\n")
+            with patch("scripts.locate_targets.build_id_index") as mock_build:
+                build_locate(
+                    impl_repo="traefik/traefik-hub",
+                    doc_repo_root=td,
+                    doc_kind="reference",
+                    feature_slug="some-feature",
+                    touched_paths=["hub/pkg/middleware/foo/config.go"],
+                    issue_texts=["Just some prose with no doc URL, and a repo path docs/api-gateway/page.md"],
+                )
+            mock_build.assert_not_called()
+
+    def test_id_index_built_when_doc_url_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway"
+            d.mkdir(parents=True)
+            (d / "page.md").write_text("---\nid: some-id\n---\n\nx\n")
+            with patch(
+                "scripts.locate_targets.build_id_index", wraps=build_id_index
+            ) as mock_build:
+                build_locate(
+                    impl_repo="traefik/traefik-hub",
+                    doc_repo_root=td,
+                    doc_kind="reference",
+                    feature_slug="some-feature",
+                    touched_paths=["hub/pkg/middleware/foo/config.go"],
+                    issue_texts=["See https://doc.traefik.io/traefik-hub/api-gateway/some-id for details."],
+                )
+            mock_build.assert_called_once_with(td)
 
 
 class TestBuildLocate(unittest.TestCase):
