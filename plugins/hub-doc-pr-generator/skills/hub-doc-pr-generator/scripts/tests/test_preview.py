@@ -12,7 +12,7 @@ from scripts.preview import (
     render_diff_to_stdout, render_pages_to_stdout,
     _fix_file_permissions, run_lint_fix, LintFixResult, render_manual_checks_section,
     apply_edits_with_lint_fix, check_table_completeness, check_placeholder_version,
-    check_unassigned_fragment,
+    check_unassigned_fragment, check_fragment_filename_prefix,
     _dirty_paths, _stash_unrelated_changes, _filter_to_written_paths, _checkout_branch,
 )
 
@@ -287,6 +287,28 @@ class TestRunLintFix(unittest.TestCase):
         self.assertIn("--fix", commands_joined)
         self.assertIn("node_modules/.bin/alex", commands_joined)
 
+    def test_relative_repo_path_resolves_to_absolute_binary_paths(self):
+        """Regression test: a relative --repo-path (e.g. "hub-doc") previously
+        broke the node_modules/.bin lookup -- subprocess.run(..., cwd=repo_path)
+        chdirs the child into repo_path first, so a relative executable path
+        built from that SAME relative repo_path resolved relative to the
+        already-chdir'd process, doubling the prefix ("hub-doc/hub-doc/node_modules/...")
+        and never finding markdownlint/alex, even though both were installed
+        and ran fine when invoked directly with an absolute --repo-path."""
+        with patch("scripts.preview.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.stderr = ""
+            run_lint_fix(
+                repo_path="hub-doc", impl_repo="traefik/traefik-hub", written=["docs/new.md"],
+            )
+        all_args = [arg for call in mock_run.call_args_list for arg in call.args[0]]
+        markdownlint_paths = [a for a in all_args if a.endswith("node_modules/.bin/markdownlint")]
+        self.assertTrue(markdownlint_paths, "expected a markdownlint invocation")
+        for p in markdownlint_paths:
+            self.assertTrue(Path(p).is_absolute(), f"expected absolute path, got {p!r}")
+            self.assertNotIn("hub-doc/hub-doc", p)
+
     def test_hub_scopes_commands_to_written_markdown_files_only(self):
         """Regression: the lint-fix pass must never run repo-wide -- that's what
         left ~70 unrelated files dirty after every run and crashed the next
@@ -552,6 +574,71 @@ class TestCheckUnassignedFragment(unittest.TestCase):
         self.assertTrue(any("unassigned" in u for u in lint.unresolved))
 
 
+class TestCheckFragmentFilenamePrefix(unittest.TestCase):
+    """hub-doc#988: release-note fragments must be named
+    `_<pr-number>-<slug>.mdx` (leading underscore) so Docusaurus doesn't try
+    to build them as standalone pages. collect_fragments.py's read side
+    already tolerates both prefixed and unprefixed names during the
+    transition, but nothing previously flagged a WRITE of an unprefixed
+    fragment -- so a future generation run could still reproduce the exact
+    CI break this whole PR exists to fix, with zero warning in the PR body."""
+
+    def test_flags_fragment_filename_missing_underscore_prefix(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+            content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: unassigned\n---\n\n#### Bedrock Mantle\n",
+            mode="create",
+        )]
+        findings = check_fragment_filename_prefix(edits)
+        self.assertTrue(any("1234-bedrock-mantle.mdx" in f for f in findings))
+
+    def test_does_not_flag_underscore_prefixed_fragment_filename(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/_1234-bedrock-mantle.mdx",
+            content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: unassigned\n---\n\n#### Bedrock Mantle\n",
+            mode="create",
+        )]
+        self.assertEqual(check_fragment_filename_prefix(edits), [])
+
+    def test_non_fragment_paths_are_skipped(self):
+        edits = [FileEdit(
+            path="docs/api-gateway/some-page.md",
+            content="anything",
+            mode="create",
+        )]
+        self.assertEqual(check_fragment_filename_prefix(edits), [])
+
+    def test_only_flags_create_mode_edits(self):
+        """An overwrite of an already-existing (already-named) fragment isn't
+        a new filename being introduced -- scope this to `create` mode only,
+        same as how a fragment's filename is only ever chosen once."""
+        edits = [FileEdit(
+            path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+            content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: v3.21.0-ea.1\n---\n\n#### Bedrock Mantle\n",
+            mode="overwrite",
+        )]
+        self.assertEqual(check_fragment_filename_prefix(edits), [])
+
+    def test_wired_into_manual_checks_via_apply_edits_with_lint_fix(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            edits = [FileEdit(
+                path="docs/api-gateway/release-notes.d/1234-bedrock-mantle.mdx",
+                content="---\nshape: ea-subsection\nsource_prs: [1234]\ntarget_version: v3.21.0-ea.1\n---\n\n#### Bedrock Mantle\n",
+                mode="create",
+            )]
+            with patch("scripts.preview.subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                mock_run.return_value.stdout = ""
+                mock_run.return_value.stderr = ""
+                _, lint = apply_edits_with_lint_fix(
+                    repo_path=str(d), branch="docs/test",
+                    impl_repo="traefik/traefik-hub", edits=edits,
+                )
+        self.assertTrue(any("underscore" in u or "_1234" in u for u in lint.unresolved))
+
+
 class TestCheckTableCompleteness(unittest.TestCase):
     def test_flags_ellipsis_placeholder_in_table_row(self):
         edits = [FileEdit(
@@ -587,6 +674,96 @@ class TestCheckTableCompleteness(unittest.TestCase):
         )]
         self.assertEqual(check_table_completeness(edits), [])
 
+    def test_pre_existing_untouched_row_is_not_flagged_when_repo_path_given(self):
+        """Regression test for traefik-hub#1435 finding #5: a pre-existing,
+        untouched row containing an example value like "123..." (a truncated-
+        looking STRING, not a truncated row) must not be flagged just because
+        it happens to sit in a file this PR also edits elsewhere."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            existing = (
+                "| Field | Type | Example |\n| --- | --- | --- |\n"
+                "| serial | string | \"123...\" |\n"
+            )
+            (d / "docs/reference.md").parent.mkdir(parents=True, exist_ok=True)
+            (d / "docs/reference.md").write_text(existing)
+            subprocess.run(["git", "add", "docs/reference.md"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                             "commit", "-qm", "existing"], cwd=d, check=True)
+
+            # This PR only appends a genuinely new, complete row -- the
+            # pre-existing "123..." row is carried through unchanged.
+            new_content = existing + "| new_field | string | a real value |\n"
+            edits = [FileEdit(path="docs/reference.md", content=new_content, mode="overwrite")]
+            findings = check_table_completeness(edits, repo_path=str(d))
+        self.assertEqual(findings, [])
+
+    def test_genuinely_new_truncated_row_is_flagged_when_repo_path_given(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            existing = "| Field | Type |\n| --- | --- |\n| old_field | string |\n"
+            (d / "docs/reference.md").parent.mkdir(parents=True, exist_ok=True)
+            (d / "docs/reference.md").write_text(existing)
+            subprocess.run(["git", "add", "docs/reference.md"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                             "commit", "-qm", "existing"], cwd=d, check=True)
+
+            new_content = existing + "| new_field | json, xml, etc. |\n"
+            edits = [FileEdit(path="docs/reference.md", content=new_content, mode="overwrite")]
+            findings = check_table_completeness(edits, repo_path=str(d))
+        self.assertEqual(len(findings), 1)
+        self.assertIn("new_field", findings[0])
+
+    def test_new_row_with_identical_text_to_untouched_row_does_not_also_flag_the_untouched_one(self):
+        """Regression test: _added_or_changed_lines previously tracked CHANGED
+        LINE TEXT in a set, not position -- difflib.SequenceMatcher aligns by
+        content similarity, so a genuinely new row whose exact text happens to
+        match an unrelated PRE-EXISTING, untouched row (plausible for
+        boilerplate-shaped table rows) got its text added to the "changed"
+        set. Since the check was membership-by-text, that text then matched
+        BOTH the truly new row's line AND the untouched row's identical line
+        elsewhere in the file, flagging the untouched row too -- a false
+        positive introduced by the very fix meant to reduce false positives.
+        Position (index)-based checking must flag only the genuinely new
+        occurrence."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            existing = (
+                "| Field | Type |\n| --- | --- |\n"
+                "| row_a | string |\n"
+                "| row_x | json, xml, etc. |\n"
+            )
+            (d / "docs/reference.md").parent.mkdir(parents=True, exist_ok=True)
+            (d / "docs/reference.md").write_text(existing)
+            subprocess.run(["git", "add", "docs/reference.md"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                             "commit", "-qm", "existing"], cwd=d, check=True)
+
+            # row_a and row_x are carried through unchanged; a genuinely new
+            # row is appended whose text is IDENTICAL to row_x's.
+            new_content = existing + "| row_x | json, xml, etc. |\n"
+            edits = [FileEdit(path="docs/reference.md", content=new_content, mode="overwrite")]
+            findings = check_table_completeness(edits, repo_path=str(d))
+        # The genuinely new row (last line) must be flagged...
+        self.assertEqual(len(findings), 1)
+        # ...but the pre-existing, untouched row_x must NOT be double-counted
+        # or otherwise cause the untouched occurrence to be separately
+        # reported -- there is exactly one finding, for the new row only.
+
+    def test_without_repo_path_falls_back_to_flagging_every_matching_line(self):
+        """Backward-compatible default: omitting repo_path keeps the
+        previous (unscoped) behavior."""
+        edits = [FileEdit(
+            path="docs/reference.md",
+            content="| Field | Example |\n| --- | --- |\n| serial | \"123...\" |\n",
+            mode="overwrite",
+        )]
+        findings = check_table_completeness(edits)
+        self.assertEqual(len(findings), 1)
+
     def test_non_markdown_files_are_skipped(self):
         edits = [FileEdit(
             path="sidebars.js",
@@ -594,6 +771,62 @@ class TestCheckTableCompleteness(unittest.TestCase):
             mode="overwrite",
         )]
         self.assertEqual(check_table_completeness(edits), [])
+
+    def test_multiple_overwritten_files_are_batch_fetched_in_one_git_call(self):
+        """Regression test: this used to shell out to `git show` once per
+        overwritten file; now it's one `git cat-file --batch` call
+        (_git.show_many) for all of them. Behavior must stay identical for a
+        multi-file PR -- each file's genuinely-new row is flagged, each
+        file's untouched pre-existing row is not."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            for name in ("a.md", "b.md"):
+                (d / name).write_text("| Field |\n| --- |\n| old |\n")
+                subprocess.run(["git", "add", name], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                             "commit", "-qm", "existing"], cwd=d, check=True)
+
+            with patch("scripts.preview._git.show_many", wraps=_git.show_many) as mock_show_many:
+                edits = [
+                    FileEdit(path="a.md", content="| Field |\n| --- |\n| old |\n| new, etc. |\n", mode="overwrite"),
+                    FileEdit(path="b.md", content="| Field |\n| --- |\n| old |\n| more, etc. |\n", mode="overwrite"),
+                ]
+                findings = check_table_completeness(edits, repo_path=str(d))
+            mock_show_many.assert_called_once()
+            called_specs = mock_show_many.call_args[0][1]
+            self.assertEqual(set(called_specs), {"HEAD:a.md", "HEAD:b.md"})
+        self.assertEqual(len(findings), 2)
+
+    def test_brand_new_file_at_head_does_not_crash_the_batch(self):
+        """An `overwrite` edit whose path doesn't exist at HEAD yet (e.g. the
+        working tree has an uncommitted new file, or the path check ran
+        against a slightly stale ref) must fall back to flagging every
+        matching line, same as before batching -- not raise or silently
+        drop the file's edit entirely."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            edits = [FileEdit(
+                path="docs/does-not-exist-at-head.md",
+                content="| Field |\n| --- |\n| val, etc. |\n",
+                mode="overwrite",
+            )]
+            findings = check_table_completeness(edits, repo_path=str(d))
+        self.assertEqual(len(findings), 1)
+
+    def test_invalid_repo_path_falls_back_gracefully(self):
+        with tempfile.TemporaryDirectory() as td:
+            edits = [FileEdit(
+                path="docs/reference.md",
+                content="| Field |\n| --- |\n| val, etc. |\n",
+                mode="overwrite",
+            )]
+            # td is a real directory but not a git repo -- show_many raises
+            # GitError; the check must degrade to the unscoped full-file scan
+            # rather than propagate the error.
+            findings = check_table_completeness(edits, repo_path=td)
+        self.assertEqual(len(findings), 1)
 
     def test_wired_into_manual_checks_via_apply_edits_with_lint_fix(self):
         with tempfile.TemporaryDirectory() as td:

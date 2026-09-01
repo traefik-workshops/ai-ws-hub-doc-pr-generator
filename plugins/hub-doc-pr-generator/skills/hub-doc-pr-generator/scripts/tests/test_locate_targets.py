@@ -1,10 +1,12 @@
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 from scripts.locate_targets import propose_paths
 from scripts.locate_targets import select_neighbors
 from scripts.locate_targets import sidebar_insertion_point, build_locate
 from scripts.locate_targets import existing_doc_refs, issue_texts_from_bundle
+from scripts.locate_targets import build_id_index
 from scripts.locate_targets import find_transcluded_partials
 from scripts import locate_targets
 
@@ -44,6 +46,89 @@ class TestProposePaths(unittest.TestCase):
         )
         self.assertEqual(len(cands), 1)
         self.assertLess(cands[0]["confidence"], 0.75)
+
+    def test_unmapped_internal_go_paths_do_not_default_to_ai_gateway(self):
+        """Regression test for traefik-hub#1435 finding #1: touched files with
+        no doc-adjacent mapping at all (pure internal Go: license claims,
+        profile resolution, OTel registration) previously defaulted to an AI
+        Gateway path with 0.7 confidence -- a confidently wrong guess in a
+        specific, unrelated product area. The real target was an existing
+        API Gateway observability reference page."""
+        cands = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="reference",
+            feature_slug="license-expiration-observability",
+            touched_paths=[
+                "hub/pkg/hub/license/claims.go",
+                "hub/pkg/profile/profile.go",
+                "hub/pkg/traefik/register.go",
+            ],
+        )
+        self.assertFalse(any("ai-gateway" in c["path"] for c in cands))
+        self.assertLess(cands[0]["confidence"], 0.75)
+
+    def test_authzen_cross_gateway_paths_do_not_default_to_ai_gateway(self):
+        """Regression test for the 2026-08-24 AuthZEN finding: AuthZEN spans
+        API Gateway + MCP Gateway, neither of which is AI Gateway, but the
+        heuristic's only fallback confidently guessed AI Gateway anyway."""
+        cands = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="user-guide",
+            feature_slug="understanding-authzen",
+            touched_paths=["hub/pkg/mcp/authzen/policy.go"],
+        )
+        # The generic "hub/pkg/" mapping still surfaces an ai-gateway/guides
+        # candidate as a demoted secondary option (it isn't ruled out
+        # entirely -- this really could be AI Gateway-relevant), but it must
+        # not be the confident top pick the way it was before this fix.
+        self.assertNotIn("ai-gateway", cands[0]["path"])
+        # Regression for traefik/hub-doc PR #988 round-3 finding #1: this
+        # touched-path set matches only the generic "hub/pkg/" catch-all, not
+        # a real product-area-specific prefix. That must score as low
+        # confidence like any other ungrounded guess -- SKILL.md auto-accepts
+        # candidates[0] without ever looking at doc_kind or the touched paths
+        # again, so a high confidence number here would ship a wrong
+        # product-area guess silently instead of routing to manual review.
+        self.assertLess(cands[0]["confidence"], 0.75)
+
+    def test_generic_catchall_prefix_alone_scores_as_low_as_no_match(self):
+        """Regression for traefik/hub-doc PR #988 round-3 finding #1: a
+        touched-path set that matches ONLY the generic "hub/pkg/" prefix
+        must not be scored the same as a genuinely specific single-prefix
+        match (base 0.9) just because it's the only thing that matched --
+        it carries exactly as little product-area signal as no match at all,
+        so it must score in the same low-confidence band as the
+        no-prefix-matched fallback."""
+        generic_only = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="user-guide",
+            feature_slug="mystery-feature",
+            touched_paths=["hub/pkg/some/internal/thing.go"],
+        )
+        no_match = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="user-guide",
+            feature_slug="mystery-feature",
+            touched_paths=["hub/totally/unmapped/thing.go"],
+        )
+        self.assertLess(generic_only[0]["confidence"], 0.75)
+        self.assertEqual(generic_only[0]["confidence"], no_match[0]["confidence"])
+
+    def test_specific_prefix_alongside_generic_catchall_still_high_confidence(self):
+        """A real specific-prefix match must still score high confidence even
+        when the generic "hub/pkg/" catch-all also happens to match one of
+        the other touched paths -- the generic prefix must never drag down a
+        genuinely grounded signal, only fail to substitute for one."""
+        cands = propose_paths(
+            impl_repo="traefik/traefik-hub",
+            doc_kind="user-guide",
+            feature_slug="quota-panel",
+            touched_paths=[
+                "hub/dashboard/src/QuotaPanel.tsx",
+                "hub/pkg/some/internal/thing.go",
+            ],
+        )
+        self.assertGreaterEqual(cands[0]["confidence"], 0.85)
 
     def test_conflicting_prefixes_lower_confidence(self):
         # Touched paths spanning two unrelated mapped prefixes is a genuinely
@@ -179,6 +264,36 @@ class TestProposePaths(unittest.TestCase):
         self.assertEqual(match["rationale"], "Existing page's filename matches a touched middleware package")
 
 
+class TestGenericPrefixDeclaration(unittest.TestCase):
+    """The "is this prefix a real product-area signal" flag lives on the
+    _Section entry itself (generic=True/False), not in a separately
+    maintained side-set -- so there's nothing to forget to keep in sync when
+    a new prefix is added to _HUB_REF_MAP/_HUB_GUIDE_MAP. These tests pin
+    that shape so a future refactor can't silently reintroduce a side-table."""
+
+    def test_known_generic_prefix_is_flagged_on_its_own_section(self):
+        self.assertTrue(locate_targets._HUB_GUIDE_MAP["hub/pkg/"].generic)
+
+    def test_specific_prefixes_are_not_flagged_generic(self):
+        for m in (locate_targets._HUB_REF_MAP, locate_targets._HUB_GUIDE_MAP, locate_targets._OSS_REF_MAP):
+            for prefix, section in m.items():
+                if prefix != "hub/pkg/":
+                    self.assertFalse(
+                        section.generic,
+                        msg=f"{prefix!r} unexpectedly marked generic",
+                    )
+
+    def test_every_map_entry_is_a_section_with_a_generic_flag(self):
+        # Guards against a future edit reintroducing a bare tuple (dirs,) for
+        # some entries, which would silently make that prefix's genericness
+        # unreachable instead of raising an AttributeError up front.
+        for m in (locate_targets._HUB_REF_MAP, locate_targets._HUB_GUIDE_MAP, locate_targets._OSS_REF_MAP):
+            for section in m.values():
+                self.assertIsInstance(section, locate_targets._Section)
+                self.assertIsInstance(section.generic, bool)
+                self.assertTrue(section.dirs)
+
+
 class TestSelectNeighbors(unittest.TestCase):
     def test_picks_up_to_five_md_files(self):
         with tempfile.TemporaryDirectory() as td:
@@ -285,6 +400,162 @@ class TestExistingDocRefs(unittest.TestCase):
                 doc_repo_root=td,
             )
         self.assertEqual(refs, ["docs/api-management/api-auth.md"])
+
+    def test_resolves_doc_url_slug_via_frontmatter_id_when_filename_differs(self):
+        """Regression test for traefik/hub-issues#3075: the URL a human pastes
+        into an issue is the rendered site's front-matter `id`, not the
+        filename Docusaurus built it from. Real repro: URL ends in
+        'ref-oidc', but the file is oidc.md with `id: ref-oidc` -- a
+        filename-only scan can't resolve that and falls through to the much
+        weaker path heuristic."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway/reference/routing/http/middlewares"
+            d.mkdir(parents=True)
+            (d / "oidc.md").write_text("---\nid: ref-oidc\ntitle: OIDC\n---\n\nContent.\n")
+            id_index = build_id_index(td)
+            refs = existing_doc_refs(
+                ["See https://doc.traefik.io/traefik-hub/api-gateway/reference/routing/"
+                 "http/middlewares/ref-oidc for details."],
+                doc_repo_root=td,
+                id_index=id_index,
+            )
+        self.assertEqual(refs, ["docs/api-gateway/reference/routing/http/middlewares/oidc.md"])
+
+    def test_filename_match_takes_priority_over_id_index(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-management"
+            d.mkdir(parents=True)
+            (d / "api-auth.md").write_text("---\nid: something-else\n---\n\nx\n")
+            id_index = {"api-auth": "docs/api-management/wrong-page.md"}
+            refs = existing_doc_refs(
+                ["docs/api-management/api-auth.md"],
+                doc_repo_root=td,
+                id_index=id_index,
+            )
+        self.assertEqual(refs, ["docs/api-management/api-auth.md"])
+
+    def test_no_id_index_falls_back_to_previous_behavior(self):
+        with tempfile.TemporaryDirectory() as td:
+            refs = existing_doc_refs(
+                ["https://doc.traefik.io/traefik-hub/api-gateway/reference/ref-oidc"],
+                doc_repo_root=td,
+            )
+        self.assertEqual(refs, [])
+
+
+class TestBuildIdIndex(unittest.TestCase):
+    def test_indexes_declared_front_matter_id(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway/reference/routing/http/middlewares"
+            d.mkdir(parents=True)
+            (d / "oidc.md").write_text("---\nid: ref-oidc\ntitle: OIDC\n---\n\nContent.\n")
+            index = build_id_index(td)
+        self.assertEqual(
+            index.get("ref-oidc"),
+            "docs/api-gateway/reference/routing/http/middlewares/oidc.md",
+        )
+
+    def test_skips_pages_without_id_field(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway"
+            d.mkdir(parents=True)
+            (d / "no-id.md").write_text("---\ntitle: No Id\n---\n\nContent.\n")
+            index = build_id_index(td)
+        self.assertEqual(index, {})
+
+    def test_skips_pages_with_no_front_matter(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway"
+            d.mkdir(parents=True)
+            (d / "plain.md").write_text("# No front matter here\n")
+            index = build_id_index(td)
+        self.assertEqual(index, {})
+
+    def test_missing_docs_dir_returns_empty(self):
+        with tempfile.TemporaryDirectory() as td:
+            index = build_id_index(td)
+        self.assertEqual(index, {})
+
+    def test_colliding_id_across_two_pages_is_not_silently_resolved(self):
+        """Real, live-verified case (not theoretical): the actual hub-doc repo
+        currently has >=10 duplicate front-matter `id` values across genuinely
+        different pages -- e.g. `id: oidc` used by both
+        docs/api-gateway/secure/middleware/oidc.md AND
+        docs/authentication-authorization/idp/generic-oidc.md. Since
+        Path.rglob("*") iteration order isn't guaranteed stable/meaningful,
+        first-writer-wins would non-deterministically resolve a
+        doc.traefik.io/.../oidc URL to the WRONG one of those two unrelated
+        pages, with zero warning. A colliding id must not appear in the index
+        at all -- existing_doc_refs must then fall through to the heuristic
+        candidates instead of arbitrarily picking one, exactly like the
+        already-established "multiple distinct references is itself
+        ambiguous" rule a few lines up in build_locate()."""
+        with tempfile.TemporaryDirectory() as td:
+            d1 = Path(td) / "docs/api-gateway/secure/middleware"
+            d1.mkdir(parents=True)
+            (d1 / "oidc.md").write_text("---\nid: oidc\ntitle: OIDC (API Gateway)\n---\n\nx\n")
+            d2 = Path(td) / "docs/authentication-authorization/idp"
+            d2.mkdir(parents=True)
+            (d2 / "generic-oidc.md").write_text("---\nid: oidc\ntitle: Generic OIDC\n---\n\nx\n")
+            index = build_id_index(td)
+            refs = existing_doc_refs(
+                ["See https://doc.traefik.io/traefik-hub/oidc for details."],
+                doc_repo_root=td,
+                id_index=index,
+            )
+        self.assertNotIn("oidc", index)
+        self.assertEqual(refs, [])
+
+    def test_unquotes_quoted_id_value(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway"
+            d.mkdir(parents=True)
+            (d / "quoted.md").write_text('---\nid: "ref-quoted"\n---\n\nx\n')
+            index = build_id_index(td)
+        self.assertEqual(index.get("ref-quoted"), "docs/api-gateway/quoted.md")
+
+
+class TestBuildIdIndexShortCircuit(unittest.TestCase):
+    """build_locate() previously called build_id_index(doc_repo_root)
+    unconditionally -- a full docs/ rglob + front-matter parse of every page
+    (~245 in the real hub-doc repo) on EVERY run, even when issue_texts
+    contains no doc.traefik.io/... URL that could ever need id-resolution at
+    all. Short-circuit on the existing _DOC_URL_RE (already used by
+    existing_doc_refs) instead of duplicating that pattern."""
+
+    def test_id_index_not_built_when_no_doc_url_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway"
+            d.mkdir(parents=True)
+            (d / "page.md").write_text("---\nid: some-id\n---\n\nx\n")
+            with patch("scripts.locate_targets.build_id_index") as mock_build:
+                build_locate(
+                    impl_repo="traefik/traefik-hub",
+                    doc_repo_root=td,
+                    doc_kind="reference",
+                    feature_slug="some-feature",
+                    touched_paths=["hub/pkg/middleware/foo/config.go"],
+                    issue_texts=["Just some prose with no doc URL, and a repo path docs/api-gateway/page.md"],
+                )
+            mock_build.assert_not_called()
+
+    def test_id_index_built_when_doc_url_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-gateway"
+            d.mkdir(parents=True)
+            (d / "page.md").write_text("---\nid: some-id\n---\n\nx\n")
+            with patch(
+                "scripts.locate_targets.build_id_index", wraps=build_id_index
+            ) as mock_build:
+                build_locate(
+                    impl_repo="traefik/traefik-hub",
+                    doc_repo_root=td,
+                    doc_kind="reference",
+                    feature_slug="some-feature",
+                    touched_paths=["hub/pkg/middleware/foo/config.go"],
+                    issue_texts=["See https://doc.traefik.io/traefik-hub/api-gateway/some-id for details."],
+                )
+            mock_build.assert_called_once_with(td)
 
 
 class TestBuildLocate(unittest.TestCase):

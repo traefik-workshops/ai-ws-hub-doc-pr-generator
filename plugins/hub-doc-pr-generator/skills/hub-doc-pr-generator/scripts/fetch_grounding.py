@@ -19,7 +19,7 @@ import argparse
 import json
 import re
 import sys
-from scripts import _gh
+from scripts import _discover, _gh
 
 REFERENCE_REPO = "traefik/reference"
 INDEX_PATH = "reference/INDEX.md"
@@ -248,4 +248,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

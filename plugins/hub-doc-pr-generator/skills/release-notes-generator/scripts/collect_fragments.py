@@ -28,12 +28,12 @@ import re
 import sys
 from pathlib import Path
 
-from scripts import _semver
+from scripts import _discover, _semver
 from scripts._frontmatter import split_front_matter, unquote
 
 _SCALAR_RE = re.compile(r"^(?P<k>[A-Za-z0-9_]+):\s*(?P<v>.*)$")
 _NESTED_KV_RE = re.compile(r"^\s+(?P<k>[^:]+):\s*(?P<v>.+)$")
-_PR_NUMBER_RE = re.compile(r"^(\d+)-")
+_PR_NUMBER_RE = re.compile(r"^_?(\d+)-")
 
 
 def parse_fragment(text: str) -> dict:
@@ -114,12 +114,21 @@ def _pr_number(filename: str) -> int:
     consistent with parse_fragment's and assign_target_version.assign's loud-
     failure behavior elsewhere in this pipeline -- silently defaulting to 0
     would let a misnamed fragment sort as if it were the oldest possible PR
-    instead of surfacing that its ordering can't actually be trusted."""
+    instead of surfacing that its ordering can't actually be trusted.
+
+    Accepts both the current `_<pr-number>-<slug>.mdx` convention (the
+    leading underscore is required so Docusaurus's default exclude glob skips
+    fragments during the docs build -- see hub-doc-pr-generator's
+    release-note-heuristics.md) and the older `<pr-number>-<slug>.mdx` form
+    without it, so fragments written before this convention changed are still
+    collectible during the transition. New fragments must always use the
+    underscore form -- that's enforced on the write side (SKILL.md step 7),
+    not here."""
     m = _PR_NUMBER_RE.match(filename)
     if not m:
         raise ValueError(
             f"{filename}: fragment filename doesn't start with a PR number "
-            "(expected '<pr-number>-<slug>.mdx') -- can't determine its position "
+            "(expected '_<pr-number>-<slug>.mdx') -- can't determine its position "
             "in newest-first ordering"
         )
     return int(m.group(1))
@@ -127,6 +136,7 @@ def _pr_number(filename: str) -> int:
 
 def collect(fragments_dir: Path) -> dict:
     fragments = []
+    legacy_filenames: list[str] = []
     if fragments_dir.is_dir():
         # Sort by the PR number embedded in the filename, not the filename
         # string itself -- a plain string sort puts "10-x.mdx" before
@@ -151,6 +161,8 @@ def collect(fragments_dir: Path) -> dict:
             parsed["path"] = str(path)
             parsed["pr_number"] = _pr_number(path.name)
             fragments.append(parsed)
+            if not path.name.startswith("_"):
+                legacy_filenames.append(path.name)
 
     def _is_unassigned(f: dict) -> bool:
         # parse_fragment now guarantees target_version is always present and
@@ -166,6 +178,11 @@ def collect(fragments_dir: Path) -> dict:
         "fragments": fragments,
         "assigned": [f for f in fragments if not _is_unassigned(f)],
         "unassigned": [f for f in fragments if _is_unassigned(f)],
+        # Surfaced so `cut` can nudge whoever's running it toward
+        # rename_legacy_fragments.py instead of this list growing forever --
+        # the read side (_pr_number's regex) accepts both filename shapes
+        # indefinitely, so nothing else ever forces this list back to empty.
+        "legacy_filenames": legacy_filenames,
     }
 
 
@@ -231,9 +248,20 @@ def main(argv: list[str]) -> int:
         # assign_target_version.py's main() already uses.
         print(f"error collecting fragments: {e}", file=sys.stderr)
         return 1
+    if result["legacy_filenames"]:
+        # Printed to stderr, not stdout, so it doesn't corrupt the JSON
+        # SKILL.md pipes into /tmp/fragments.json.
+        names = ", ".join(result["legacy_filenames"])
+        print(
+            f"note: {len(result['legacy_filenames'])} fragment(s) still use the "
+            f"pre-underscore filename ({names}) -- run "
+            "`python3 -m scripts.rename_legacy_fragments --apply` to migrate them.",
+            file=sys.stderr,
+        )
     print(json.dumps(result, indent=2))
     return 0
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

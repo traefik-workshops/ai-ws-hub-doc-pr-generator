@@ -10,6 +10,8 @@ import re
 import sys
 from pathlib import Path
 
+from scripts import _discover
+
 _PREFIX_RE = re.compile(r"^(?P<type>feat|fix|chore|refactor|test|docs|style|perf|build|ci)\b")
 
 _NON_NOTE_PREFIXES = {"fix", "chore", "refactor", "test", "docs", "style", "perf", "build", "ci"}
@@ -174,14 +176,32 @@ def doc_kind_candidates(*, title: str, touched_paths: list[str]) -> list[dict]:
         rationale_ref.append("title mentions reference/CRD")
 
     # When no signals fire at all, return a clear default rather than two 0.0 candidates
-    # that leave the LLM with no useful ordering. 0.5 is below the auto-accept gate,
-    # so this correctly forces a confirmation prompt.
+    # that leave write_flags with nothing distinct to name as "the pick" vs. "the
+    # runner-up". SKILL.md step 6 always auto-accepts candidates[0] unconditionally --
+    # there is no confirmation prompt anywhere in this flow, interactive or otherwise.
+    # 0.5 sits below KIND_THRESHOLD (write_flags.py, 0.85), so the only real effect of
+    # scoring low here is that write_flags appends a "please confirm" note to the PR
+    # body's Needs-verification section for the human reviewer to catch AFTER
+    # generation -- it does not stop doc_kind from being used to pick candidates[0]
+    # right now. Do not read "below the gate" as "safe to guess arbitrarily": the
+    # tie-break below is the actual, unreviewed decision that ships; the PR-body note
+    # is a paper trail for catching it wrong, not a safeguard that prevents it.
+    #
+    # Tie-break favors reference, not user-guide: confirmed live (traefik-hub#1435
+    # finding #4) that a diff with zero doc-adjacent signal at all -- no markdown, UI,
+    # or config-schema files, e.g. pure internal Go like license claims, profile
+    # resolution, OTel registration -- is exactly the "nothing to build a guide's
+    # narrative around" case, and the real answer there was extending an existing
+    # reference table, not writing a new user-guide page. A diff that actually reads
+    # as guide-shaped (UI code, a "guide"/"tutorial" title) already scores a positive
+    # score_guide signal above and never reaches this branch at all.
     if score_ref == 0.0 and score_guide == 0.0:
         return [
-            {"kind": "user-guide", "confidence": 0.5,
-             "rationale": "no signal — defaulting to user-guide"},
             {"kind": "reference", "confidence": 0.5,
-             "rationale": "no signal"},
+             "rationale": "no doc-adjacent signal at all, tie-broken to reference "
+                          "(arbitrary default, not a grounded guess -- verify manually)"},
+            {"kind": "user-guide", "confidence": 0.5,
+             "rationale": "no doc-adjacent signal at all; runner-up in the same tie-break"},
         ]
 
     # Confidence is an ABSOLUTE measure of signal strength, not a normalised share.
@@ -258,4 +278,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

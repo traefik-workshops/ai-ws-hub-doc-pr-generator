@@ -28,6 +28,8 @@ import re
 import sys
 from pathlib import Path
 
+from scripts import _discover
+
 _HEADING_RE = re.compile(r"^## Gateway v", re.MULTILINE)
 _HEADING_IDENTITY_RE = re.compile(
     r"^## Gateway (?P<identity>.+?)(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE,
@@ -125,4 +127,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

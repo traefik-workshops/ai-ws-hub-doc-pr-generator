@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
-from scripts import _gh
+from scripts import _discover, _gh
 
 
 DIFF_LINE_CAP = 2000
@@ -153,9 +153,18 @@ def parse_pr_inputs(args: list[str], cwd_remote: Optional[str]) -> list[PrRef]:
             continue
         if arg.isdigit():
             if cwd_remote is None:
+                # Confirmed live (traefik-hub#1435 finding #3): running from a
+                # directory that isn't a checkout of the impl repo raised this
+                # with no pointer to either working alternative -- a full PR
+                # URL (no repo inference needed at all), or `--repo
+                # owner/name` (main() already threads this into cwd_remote
+                # ahead of the git-remote lookup, so it doesn't require being
+                # inside any particular checkout).
                 raise ValueError(
-                    f"PR number {arg!r} given without a cwd remote — pass a full URL "
-                    "or run from inside the impl repo."
+                    f"PR number {arg!r} given without a way to resolve which repo it's "
+                    "in — this only works when running from inside a checkout of the "
+                    "impl repo (so its git remote can be inferred). Either pass the full "
+                    f"PR URL instead of {arg!r}, or add --repo owner/name."
                 )
             refs.append(PrRef(cwd_remote, int(arg)))
             continue
@@ -260,7 +269,7 @@ query($owner:String!,$repo:String!,$num:Int!){
     issue(number:$num){
       number
       closedByPullRequestsReferences(first:20, includeClosedPrs:true){
-        nodes { number title url repository { nameWithOwner } }
+        nodes { number title url state updatedAt repository { nameWithOwner } }
       }
       parent {
         number title body
@@ -268,7 +277,7 @@ query($owner:String!,$repo:String!,$num:Int!){
           nodes {
             number title
             closedByPullRequestsReferences(first:10, includeClosedPrs:true){
-              nodes { number title url repository { nameWithOwner } }
+              nodes { number title url state updatedAt repository { nameWithOwner } }
             }
           }
         }
@@ -287,6 +296,12 @@ def _pr_refs(node_block: Optional[dict]) -> list[dict]:
             "title": n.get("title", ""),
             "url": n.get("url", ""),
             "repo": (n.get("repository") or {}).get("nameWithOwner", ""),
+            # "MERGED" / "OPEN" / "CLOSED" -- used by check_implementation_signal.py
+            # to tell a real, landing implementation apart from a discussion-only
+            # or abandoned PR reference. Missing on older cached fixtures/mocks
+            # that predate this field, so callers must .get() with a default.
+            "state": n.get("state", ""),
+            "updated_at": n.get("updatedAt", ""),
         })
     return out
 
@@ -313,7 +328,9 @@ def fetch_issue_graph(repo: str, number: int) -> dict:
     if not issue:
         return empty
 
-    related = _pr_refs(issue.get("closedByPullRequestsReferences"))
+    related_by_key: dict[tuple, dict] = {}
+    for rp in _pr_refs(issue.get("closedByPullRequestsReferences")):
+        related_by_key[(rp["repo"], rp["number"])] = rp
     parent = None
     siblings: list[dict] = []
     parent_raw = issue.get("parent")
@@ -327,9 +344,16 @@ def fetch_issue_graph(repo: str, number: int) -> dict:
             if s["number"] == number:
                 continue  # skip the issue itself
             siblings.append({"number": s["number"], "title": s.get("title", "")})
-            related.extend(_pr_refs(s.get("closedByPullRequestsReferences")))
+            # (repo, number)-keyed dedup: a PR that closes both this issue and
+            # a sibling issue under the same epic is a realistic shape (e.g.
+            # traefik/hub-issues#2971's sub-issues), not hypothetical -- keep
+            # it once here rather than requiring every caller (build_bundle,
+            # here in fetch_pr.py's own build_bundle) to remember to dedup
+            # related_prs downstream.
+            for rp in _pr_refs(s.get("closedByPullRequestsReferences")):
+                related_by_key.setdefault((rp["repo"], rp["number"]), rp)
 
-    return {"parent": parent, "siblings": siblings, "related_prs": related}
+    return {"parent": parent, "siblings": siblings, "related_prs": list(related_by_key.values())}
 
 
 def merge_prs(prs: list[dict]) -> dict:
@@ -480,4 +504,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

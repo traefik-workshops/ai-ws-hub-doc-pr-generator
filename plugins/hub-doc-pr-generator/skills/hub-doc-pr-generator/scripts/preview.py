@@ -1,6 +1,7 @@
 """preview.py — write generated files to a working branch, print diff, run linters."""
 from __future__ import annotations
 import argparse
+import difflib
 import json
 import re
 import shutil
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal
 
-from scripts import _git
+from scripts import _discover, _git
 from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE, VNEXT_RE, split_front_matter
 
 
@@ -252,7 +253,20 @@ def run_lint_fix(*, repo_path: str, impl_repo: str, written: list[str]) -> LintF
     with the stashed copy of itself on `stash pop`).
     OSS: `mkdocs build --strict` is a structural check with nothing to auto-fix.
     Either way, whatever remains goes to `unresolved` for the PR body, not a blocker.
+
+    `repo_path` is resolved to an absolute path up front: a relative value
+    (e.g. "hub-doc") previously broke the node_modules/.bin lookup below --
+    subprocess.run(..., cwd=repo_path) chdirs the child process into
+    repo_path first, so a relative executable path built from that SAME
+    relative repo_path (e.g. "hub-doc/node_modules/.bin/markdownlint") then
+    resolved relative to the already-chdir'd process, doubling the prefix
+    ("hub-doc/hub-doc/node_modules/...") and never finding the binary, even
+    though markdownlint/alex were installed and ran fine when invoked
+    directly. Resolving once here, rather than relying on every caller to
+    pass an absolute path, fixes it regardless of how run_lint_fix is
+    invoked.
     """
+    repo_path = str(Path(repo_path).resolve())
     fixed = _fix_file_permissions(repo_path, written)
     unresolved: list[str] = []
     commands: list[str] = []
@@ -313,21 +327,79 @@ _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _PLACEHOLDER_RE = re.compile(r"…|\.\.\.|\betc\.?\b", re.IGNORECASE)
 
 
-def check_table_completeness(edits: list[FileEdit]) -> list[str]:
+def _added_or_changed_line_indices(old_content: str, new_content: str) -> set[int]:
+    """Line INDICES (0-based, into new_content.splitlines()) that are genuinely
+    new or changed relative to `old_content` (line-level diff, so an
+    unmodified line that merely sits near an edit isn't swept in). Used to
+    scope check_table_completeness to the PR's actual additions instead of
+    every line in the whole file.
+
+    Tracks POSITION rather than line TEXT: difflib.SequenceMatcher aligns by
+    content similarity, so if a genuinely new/changed row's exact text
+    happens to match an unrelated PRE-EXISTING row elsewhere in the same file
+    (plausible for boilerplate-shaped table rows), a text-based `set[str]` of
+    changed line content would flag BOTH the truly-new row and the untouched
+    one that merely shares its text -- a false positive. Checking by index
+    instead ties each opcode strictly to the specific line it actually
+    describes."""
+    old_lines = old_content.splitlines()
+    new_lines = new_content.splitlines()
+    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    changed: set[int] = set()
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("insert", "replace"):
+            changed.update(range(j1, j2))
+    return changed
+
+
+def check_table_completeness(edits: list[FileEdit], *, repo_path: str | None = None) -> list[str]:
     """Flag markdown table rows that look truncated (an ellipsis or 'etc.'
     placeholder standing in for values) instead of enumerating every row — see
     style-guide.md's Tables section. Purely mechanical: no LLM judgment, so it
-    can't itself introduce a false confirmation prompt."""
+    can't itself introduce a false confirmation prompt.
+
+    Confirmed live (traefik-hub#1435 finding #5): without scoping, this flagged
+    ANY matching table row anywhere in a touched file, including a pre-existing,
+    untouched row this PR never changed (e.g. an example value like "123..." —
+    a truncated-looking string, not a truncated row). When `repo_path` is given
+    and an edit is an `overwrite` of an existing file, this diffs the new
+    content against the pre-PR version (`git show HEAD:<path>`) and only checks
+    lines that are genuinely new or changed. Without `repo_path` (or for a
+    `create` edit, which has no prior version to diff against — everything in
+    it is new by definition), every matching line is checked, same as before
+    this fix.
+
+    All the pre-PR versions needed for the diff are fetched in one batched
+    `git cat-file --batch` call (`_git.show_many`) rather than one `git show`
+    subprocess per overwritten file -- a PR touching several existing pages
+    previously paid one blocking spawn per file just for this check."""
     findings: list[str] = []
+    overwrite_specs = [
+        f"HEAD:{e.path}" for e in edits
+        if repo_path is not None and e.mode == "overwrite"
+        and (e.path.endswith(".md") or e.path.endswith(".mdx"))
+    ]
+    try:
+        old_contents = _git.show_many(repo_path, overwrite_specs) if overwrite_specs else {}
+    except _git.GitError:
+        old_contents = {}
     for e in edits:
         if not (e.path.endswith(".md") or e.path.endswith(".mdx")):
             continue
-        for line in e.content.splitlines():
-            if _TABLE_ROW_RE.match(line) and _PLACEHOLDER_RE.search(line):
-                findings.append(
-                    f"{e.path}: table row looks truncated (ellipsis/'etc.' placeholder "
-                    f"instead of an enumerated value): {line.strip()}"
-                )
+        checkable_indices: set[int] | None = None
+        if repo_path is not None and e.mode == "overwrite":
+            old_content = old_contents.get(f"HEAD:{e.path}")
+            if old_content is not None:
+                checkable_indices = _added_or_changed_line_indices(old_content, e.content)
+        for idx, line in enumerate(e.content.splitlines()):
+            if not (_TABLE_ROW_RE.match(line) and _PLACEHOLDER_RE.search(line)):
+                continue
+            if checkable_indices is not None and idx not in checkable_indices:
+                continue
+            findings.append(
+                f"{e.path}: table row looks truncated (ellipsis/'etc.' placeholder "
+                f"instead of an enumerated value): {line.strip()}"
+            )
     return findings
 
 
@@ -390,6 +462,42 @@ def check_unassigned_fragment(edits: list[FileEdit]) -> list[str]:
     return findings
 
 
+def check_fragment_filename_prefix(edits: list[FileEdit]) -> list[str]:
+    """Flag a newly-created release-note fragment (docs/api-gateway/release-notes.d/*.mdx)
+    whose filename doesn't start with an underscore.
+
+    hub-doc#988 broke CI because a fragment named like a normal page
+    (`1234-slug.mdx`, no leading underscore) got picked up and built as a
+    standalone Docusaurus page. The fix is the `_<pr-number>-<slug>.mdx`
+    naming convention -- collect_fragments.py's _PR_NUMBER_RE deliberately
+    still reads both prefixed and unprefixed names (a graceful transition
+    for fragments already on disk from before this convention existed), but
+    until now nothing on the WRITE side enforced the prefix going forward.
+    That left this enforced only by SKILL.md prose and the template's
+    example -- nothing in code stopped a future non-underscore fragment from
+    being generated and merged, silently reproducing the exact bug this PR
+    exists to fix.
+
+    Scoped to `create`-mode edits only: a fragment's filename is chosen once,
+    at creation, so an `overwrite` of an existing (already-named) fragment
+    isn't introducing a new filename to check."""
+    findings: list[str] = []
+    for e in edits:
+        if e.mode != "create":
+            continue
+        if not _FRAGMENT_PATH_RE.search(e.path):
+            continue
+        filename = e.path.rsplit("/", 1)[-1]
+        if not filename.startswith("_"):
+            findings.append(
+                f"{e.path}: release-note fragment filename must start with an "
+                f"underscore (e.g. `_{filename}`) -- see hub-doc#988; an "
+                f"unprefixed fragment can be picked up as a standalone page and "
+                f"break the Docusaurus build"
+            )
+    return findings
+
+
 def apply_edits_with_lint_fix(
     *, repo_path: str, branch: str, impl_repo: str, edits: list[FileEdit],
 ) -> tuple[list[str], LintFixResult]:
@@ -397,9 +505,10 @@ def apply_edits_with_lint_fix(
     permissions actually show up in the staged diff apply_edits already prepared."""
     written = apply_edits(repo_path=repo_path, branch=branch, edits=edits)
     lint = run_lint_fix(repo_path=repo_path, impl_repo=impl_repo, written=written)
-    lint.unresolved.extend(check_table_completeness(edits))
+    lint.unresolved.extend(check_table_completeness(edits, repo_path=repo_path))
     lint.unresolved.extend(check_placeholder_version(edits))
     lint.unresolved.extend(check_unassigned_fragment(edits))
+    lint.unresolved.extend(check_fragment_filename_prefix(edits))
     if lint.fixed and written:
         _git.run(repo_path, ["add", "--", *written])
     return written, lint
@@ -429,6 +538,17 @@ def main(argv: list[str]) -> int:
                              "pages to stdout (uses delta/glow/bat if installed). Does not "
                              "re-apply edits or emit JSON; run the default mode first.")
     args = parser.parse_args(argv)
+    # A relative --repo-path (e.g. "hub-doc") previously broke the
+    # node_modules/.bin lookup in run_lint_fix(): subprocess.run(..., cwd=repo_path)
+    # chdirs the child process into repo_path first, so a relative executable
+    # path built from the SAME relative repo_path (e.g.
+    # "hub-doc/node_modules/.bin/markdownlint") then resolved relative to the
+    # already-chdir'd process -- i.e. "hub-doc/hub-doc/node_modules/...",
+    # doubling the prefix and never finding the binary, even though
+    # markdownlint/alex were installed and ran fine when invoked directly.
+    # Resolving to an absolute path once, here, removes the ambiguity for
+    # every downstream use of repo_path in this module.
+    args.repo_path = str(Path(args.repo_path).resolve())
     raw_edits = json.loads(Path(args.edits).read_text())
     edits = [FileEdit(**e) for e in raw_edits]
 
@@ -460,4 +580,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

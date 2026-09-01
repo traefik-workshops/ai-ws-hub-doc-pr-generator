@@ -8,23 +8,118 @@ import re
 import sys
 from pathlib import Path
 
+from scripts import _discover
+from scripts._frontmatter import split_front_matter, unquote
+
+class _Section:
+    """One impl-repo Go-path prefix -> likely doc section(s), plus whether
+    that prefix is a real product-area signal or just a broad catch-all.
+
+    `generic=True` is declared right here, next to the prefix it describes,
+    rather than in a separately-maintained set elsewhere in the file --
+    adding a new broad/catch-all prefix to one of the maps below and marking
+    it generic is a single edit instead of two that have to be kept in sync
+    by hand (a forgotten second edit previously let an overly-broad prefix
+    silently inflate its confidence score to that of a real signal; see
+    _section_dirs/propose_paths for how `generic` is used)."""
+
+    __slots__ = ("dirs", "generic")
+
+    def __init__(self, *dirs: str, generic: bool = False) -> None:
+        self.dirs = dirs
+        self.generic = generic
+
+
 # A small static map of impl-repo Go-path prefixes → likely doc section.
 _HUB_REF_MAP = {
-    "hub/pkg/middleware/": ("docs/ai-gateway/middlewares/", "docs/api-gateway/reference/routing/http/middlewares/"),
-    "hub/dashboard/":      ("docs/dashboard/",),
-    "hub/portal/":         ("docs/portal/",),
+    "hub/pkg/middleware/": _Section("docs/ai-gateway/middlewares/", "docs/api-gateway/reference/routing/http/middlewares/"),
+    "hub/dashboard/":      _Section("docs/dashboard/"),
+    "hub/portal/":         _Section("docs/portal/"),
 }
 _HUB_GUIDE_MAP = {
-    "hub/dashboard/": ("docs/dashboard/guides/",),
-    "hub/pkg/":       ("docs/ai-gateway/guides/", "docs/api-gateway/guides/"),
+    "hub/dashboard/": _Section("docs/dashboard/guides/"),
+    # "hub/pkg/" is broad enough to match almost any Hub Go package -- it is
+    # NOT a specific-gateway signal despite counting as one matched prefix,
+    # hence generic=True. api-gateway listed first (not ai-gateway):
+    # confirmed live this generic prefix confidently mis-picked AI Gateway
+    # for touched paths that were actually API/MCP Gateway territory
+    # (AuthZEN, 2026-08-24) -- see _section_dirs' fallback comment for the
+    # same reasoning applied there.
+    "hub/pkg/": _Section("docs/api-gateway/guides/", "docs/ai-gateway/guides/", generic=True),
 }
 _OSS_REF_MAP = {
-    "pkg/middlewares/": ("docs/content/reference/routing/http/middlewares/",),
-    "pkg/provider/":    ("docs/content/reference/install-configuration/providers/",),
+    "pkg/middlewares/": _Section("docs/content/reference/routing/http/middlewares/"),
+    "pkg/provider/":    _Section("docs/content/reference/install-configuration/providers/"),
 }
 
 _DOC_URL_RE = re.compile(r"https?://doc\.traefik\.io/(?:traefik-hub|traefik)/([a-zA-Z0-9\-/_]+)")
 _REPO_PATH_RE = re.compile(r"\b(docs/[a-zA-Z0-9][a-zA-Z0-9\-_/]*\.mdx?)\b")
+_FM_ID_RE = re.compile(r"^id:\s*(.+)$", re.MULTILINE)
+
+
+def build_id_index(doc_repo_root: str) -> dict[str, str]:
+    """Map a page's declared front-matter `id` -> its repo-relative path, built
+    once per run over every `.md`/`.mdx` file under `docs/`.
+
+    Exists because a `doc.traefik.io/.../<slug>` URL a human pastes into an
+    issue is the rendered site's `id` slug, not the filename Docusaurus built
+    it from -- those two only coincide by convention, not by rule. Confirmed
+    live (traefik/hub-issues#3075): the URL named `ref-oidc`, but the real
+    file is `oidc.md` with front matter `id: ref-oidc` — a filename-only scan
+    (the pre-existing `existing_doc_refs` path check) can't resolve that and
+    silently falls through to the much weaker path heuristic, which guessed
+    the wrong product area entirely (AI Gateway instead of API Gateway).
+
+    Malformed/unreadable pages are skipped rather than raising — a single bad
+    front-matter block in an unrelated page shouldn't take down path
+    resolution for everything else.
+
+    On a genuine `id` collision across two different pages -- confirmed live
+    against the real hub-doc repo: `id: oidc` is declared by both
+    docs/api-gateway/secure/middleware/oidc.md and
+    docs/authentication-authorization/idp/generic-oidc.md, and there are at
+    least 10 such collisions total -- the id is deliberately left OUT of the
+    returned index rather than picking whichever page `Path.rglob` happened
+    to visit first (rglob's iteration order isn't guaranteed stable or
+    meaningful, so that pick would be silent and effectively random). A
+    missing id and an ambiguous id both come back as `.get(doc_id) is None`
+    from the caller's point of view -- existing_doc_refs already falls
+    through to the heuristic candidates in that case, which is exactly the
+    same "don't arbitrarily pick one" rule build_locate() already applies a
+    few lines up for multiple distinct issue-text references."""
+    index: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    docs_dir = Path(doc_repo_root) / "docs"
+    if not docs_dir.is_dir():
+        return index
+    for path in docs_dir.rglob("*"):
+        if not (path.is_file() and path.suffix in {".md", ".mdx"}):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        try:
+            fm_text, _ = split_front_matter(text)
+        except ValueError:
+            continue
+        m = _FM_ID_RE.search(fm_text)
+        if not m:
+            continue
+        doc_id = unquote(m.group(1).strip())
+        if not doc_id:
+            continue
+        if doc_id in ambiguous:
+            continue
+        if doc_id in index:
+            # Second sighting of this id on a DIFFERENT page: it's ambiguous,
+            # not resolvable -- drop it from the index entirely rather than
+            # keeping the first (arbitrary, rglob-order-dependent) match.
+            del index[doc_id]
+            ambiguous.add(doc_id)
+            continue
+        index[doc_id] = str(path.relative_to(doc_repo_root))
+    return index
 
 
 def issue_texts_from_bundle(bundle: dict) -> list[str]:
@@ -40,14 +135,22 @@ def issue_texts_from_bundle(bundle: dict) -> list[str]:
     return texts
 
 
-def existing_doc_refs(issue_texts: list[str], *, doc_repo_root: str) -> list[str]:
+def existing_doc_refs(issue_texts: list[str], *, doc_repo_root: str,
+                       id_index: dict[str, str] | None = None) -> list[str]:
     """Doc pages a human already pointed to in linked-issue text — a doc.traefik.io
     URL or a literal repo-relative path — verified to actually exist in the doc
     repo, not guessed. This is the strongest possible placement signal: someone
     already named the target, so path-heuristic inference shouldn't override it
     (see the keyless-authentication mis-placement: the linked issue pointed
     straight at docs/api-management/api-auth, an existing page, while the path
-    heuristic proposed a brand-new page in an unrelated directory)."""
+    heuristic proposed a brand-new page in an unrelated directory).
+
+    `id_index` (see build_id_index) resolves the common case where the URL's
+    last segment is the page's declared front-matter `id`, not its filename —
+    the two only coincide by convention. Filenames/paths are checked first
+    (the cheaper, more literal signal); the id index is only consulted when
+    that doesn't resolve, so a page that happens to share its `id` with
+    another page's filename doesn't shadow a direct filename match."""
     root = Path(doc_repo_root)
     found: list[str] = []
     seen: set[str] = set()
@@ -59,36 +162,57 @@ def existing_doc_refs(issue_texts: list[str], *, doc_repo_root: str) -> list[str
                 found.append(path)
         for m in _DOC_URL_RE.finditer(text):
             slug = m.group(1).strip("/")
+            resolved = None
             for ext in (".md", ".mdx"):
                 path = f"docs/{slug}{ext}"
-                if path in seen:
-                    break
                 if (root / path).is_file():
-                    seen.add(path)
-                    found.append(path)
+                    resolved = path
                     break
+            if resolved is None and id_index:
+                doc_id = slug.rsplit("/", 1)[-1]
+                resolved = id_index.get(doc_id)
+            if resolved and resolved not in seen:
+                seen.add(resolved)
+                found.append(resolved)
     return found
 
 
-def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tuple[list[str], int]:
-    """Returns (dirs, matched_prefix_count). matched_prefix_count == 0 means no
-    touched-path prefix matched and the generic single-dir fallback was used."""
+def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tuple[list[str], int, int]:
+    """Returns (dirs, matched_prefix_count, matched_specific_prefix_count).
+    matched_prefix_count == 0 means no touched-path prefix matched and the
+    generic single-dir fallback was used. matched_specific_prefix_count
+    excludes prefixes whose _Section is marked generic=True (e.g. "hub/pkg/")
+    -- a broad catch-all matching is not a grounded product-area signal even
+    though it counts toward matched_prefix_count and still contributes dirs."""
     if impl_repo == "traefik/traefik-hub":
         m = _HUB_REF_MAP if doc_kind == "reference" else _HUB_GUIDE_MAP
     else:
         m = _OSS_REF_MAP
     dirs: list[str] = []
     matched_prefixes = 0
-    for prefix, sections in m.items():
+    matched_specific_prefixes = 0
+    for prefix, section in m.items():
         if any(p.startswith(prefix) for p in touched_paths):
-            dirs.extend(sections)
+            dirs.extend(section.dirs)
             matched_prefixes += 1
-    # Generic fallback for Hub if nothing matched
+            if not section.generic:
+                matched_specific_prefixes += 1
+    # Generic fallback for Hub if nothing matched. Deliberately NOT an AI
+    # Gateway directory: confirmed live (traefik-hub#1435, pure internal Go
+    # paths like hub/pkg/hub/license with zero doc-adjacent mapping; and the
+    # AuthZEN feature, which spans API+MCP gateways) that defaulting here to
+    # AI Gateway produced a confidently wrong product-area guess both times,
+    # in the same direction. API Gateway is the more general/foundational
+    # layer in Hub's stack (Traefik Proxy -> Hub Gateway (API/AI/MCP) ->
+    # optional Hub API Management) rather than one specific capability, so it
+    # is the safer generic bucket when the touched paths give no real signal
+    # -- still just a low-confidence guess (matched_prefixes stays 0, so this
+    # never clears the auto-accept gates), not a confident pick.
     if not dirs and impl_repo == "traefik/traefik-hub":
-        dirs = ["docs/ai-gateway/middlewares/"] if doc_kind == "reference" else ["docs/ai-gateway/guides/"]
+        dirs = ["docs/api-gateway/reference/"] if doc_kind == "reference" else ["docs/api-gateway/guides/"]
     if not dirs and impl_repo == "traefik/traefik":
         dirs = ["docs/content/reference/"]
-    return dirs, matched_prefixes
+    return dirs, matched_prefixes, matched_specific_prefixes
 
 
 _MIDDLEWARE_PKG_PREFIXES = {
@@ -202,25 +326,36 @@ def find_transcluded_partials(*, doc_repo_root: str, candidate_paths: list[str])
 
 def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
                   touched_paths: list[str], doc_repo_root: str | None = None) -> list[dict]:
-    section_dirs, matched_prefixes = _section_dirs(impl_repo, doc_kind, touched_paths)
+    section_dirs, matched_prefixes, matched_specific_prefixes = _section_dirs(
+        impl_repo, doc_kind, touched_paths
+    )
     # Confidence reflects how GROUNDED the match is, not how many directories a
-    # single matched prefix happens to map to. Directory count alone is the wrong
-    # denominator: one matched prefix that fans out to two candidate dirs (e.g.
-    # middleware reference pages living in two places) is still one solid signal,
-    # not two competing guesses.
-    #  - 0 prefixes matched -> generic single-dir fallback, the LEAST grounded
-    #    guess -> low confidence (must clear the 0.75 auto-accept gate honestly).
-    #  - 1 prefix matched -> specific, well-grounded match -> high confidence.
-    #  - >1 distinct prefixes matched -> touched paths span unrelated sections,
-    #    a genuinely ambiguous signal -> confidence split across them.
-    if matched_prefixes == 0:
+    # single matched prefix happens to map to, and not how many prefixes
+    # matched at all -- a prefix declared generic=True (e.g. "hub/pkg/") is
+    # structurally too broad to be a real product-area signal, so it must
+    # never move the needle here even when it's the only thing that matched
+    # (confirmed live, AuthZEN 2026-08-24: see _Section's docstring).
+    # Tiering is on matched_specific_prefixes, not matched_prefixes:
+    #  - 0 specific prefixes matched -> either nothing matched at all, or only
+    #    a generic catch-all did -> the LEAST grounded guess either way ->
+    #    low confidence (must clear the 0.75 auto-accept gate honestly).
+    #  - 1 specific prefix matched -> well-grounded match -> high confidence,
+    #    regardless of how many directories that one prefix fans out to, and
+    #    regardless of a generic prefix also matching alongside it.
+    #  - >1 distinct specific prefixes matched -> touched paths span unrelated
+    #    sections, a genuinely ambiguous signal -> confidence split across them.
+    if matched_specific_prefixes == 0:
         base = 0.3
-        rationale = "No touched-path prefix matched — generic fallback directory"
-    elif matched_prefixes == 1:
+        rationale = (
+            "No touched-path prefix matched a specific gateway product area — "
+            "generic fallback directory, not a confident guess; verify the "
+            "product area by hand before accepting"
+        )
+    elif matched_specific_prefixes == 1:
         base = 0.9
         rationale = None
     else:
-        base = round(0.9 / matched_prefixes, 2)
+        base = round(0.9 / matched_specific_prefixes, 2)
         rationale = None
     out = []
     for i, d in enumerate(section_dirs):
@@ -331,7 +466,18 @@ def build_locate(*, impl_repo: str, doc_repo_root: str, doc_kind: str,
     # guess — but only when the scan turns up exactly ONE distinct page. Multiple
     # distinct references is itself ambiguous, so don't arbitrarily pick one;
     # fall through to the heuristic candidates instead.
-    doc_refs = existing_doc_refs(list(issue_texts), doc_repo_root=doc_repo_root)
+    # build_id_index() does a full docs/ rglob + front-matter parse of every
+    # page (~245 in the real hub-doc repo) -- only worth paying for when
+    # issue_texts actually contains a doc.traefik.io/... URL that could need
+    # id-resolution at all (existing_doc_refs' id_index fallback only ever
+    # fires for that URL form; a bare repo-relative path match never
+    # consults it). Reuses the same _DOC_URL_RE existing_doc_refs matches
+    # against, rather than duplicating the pattern.
+    needs_id_index = any(_DOC_URL_RE.search(t) for t in issue_texts)
+    doc_refs = existing_doc_refs(
+        list(issue_texts), doc_repo_root=doc_repo_root,
+        id_index=build_id_index(doc_repo_root) if needs_id_index else None,
+    )
     # Check membership across the WHOLE candidate list, not just index 0 --
     # find_existing_middleware_pages() can already surface the human-referenced
     # page at index 1+ (e.g. ranked behind another touched middleware's page),
@@ -394,4 +540,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

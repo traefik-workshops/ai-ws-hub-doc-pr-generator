@@ -21,6 +21,8 @@ import re
 import sys
 from typing import Optional
 
+from scripts import _discover
+
 
 # ---------------------------------------------------------------------------
 # Front-matter parsing (minimal YAML: scalars + tags list)
@@ -260,4 +262,5 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":  # pragma: no cover
+    _discover.maybe_reexec()
     main()

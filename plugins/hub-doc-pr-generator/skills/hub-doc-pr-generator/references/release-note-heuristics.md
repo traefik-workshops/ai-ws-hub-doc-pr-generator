@@ -5,7 +5,7 @@ OSS PRs always short-circuit to `needs_release_note=no`.
 ## Where the entry goes
 
 **Never `docs/api-gateway/release-notes.mdx` directly.** This skill writes a
-fragment file instead: `docs/api-gateway/release-notes.d/<pr-number>-<feature-slug>.mdx`
+fragment file instead: `docs/api-gateway/release-notes.d/_<pr-number>-<feature-slug>.mdx`
 (`create` mode, front matter + the shape body — see `templates/release-note-fragment.mdx.tmpl`).
 
 This exists because per-PR full-file overwrites of `release-notes.mdx` caused real merge
@@ -17,6 +17,19 @@ the exact same lines with slightly different snapshots. Verified against the rea
 them). A fragment file is unique per PR (the PR-number prefix makes filename collisions
 structurally impossible), so two PRs can never touch the same lines, or even the same
 file.
+
+**The leading underscore in the filename is required, not stylistic.** A fragment's
+relative markdown links are written for where the content will live *after* assembly
+(one directory up, alongside `release-notes.mdx`, once `release-notes-generator cut`
+copies it in) — but Docusaurus's docs plugin picks up every `release-notes.d/*.mdx` file
+as a real page in its own right and validates those same relative links against the
+fragment's *own* location, one directory too deep, so they never resolve. Docusaurus's
+default `exclude` glob skips any `_*.md`/`_*.mdx` file, so the underscore prefix is what
+keeps fragments out of the build. Confirmed against a real CI failure (traefik/hub-doc#988
+built and deployed fragments without underscores and failed MDX compilation on the
+unresolved relative link; renaming to `_1435-license-expiration-observability.mdx` fixed
+it). Always write fragments as `_<pr-number>-<feature-slug>.mdx` — never without the
+leading underscore.
 
 The sibling `release-notes-generator` skill's `cut <version> <date>` command is the
 **only** thing that ever writes `release-notes.mdx` directly — it assembles all fragments
@@ -85,6 +98,7 @@ wrapped directly in `<Collapse title="Compatibility matrix">`, no heading of its
 | 3 | title/body matches an EA marker ("early access", "experimental", "tech preview", " beta ", " alpha ") | `ea-subsection` with `:::warning Early Access` admonition | `release-note-ea.mdx.tmpl` |
 | 4 | `feat:` **and** a new-GA marker ("general availability", "generally available", "stable release", " ga ", "(ga)") without graduation wording | `ga-subsection` (same shape, no admonition) | `release-note-ga-subsection.mdx.tmpl` |
 | 5 | `feat:` with no maturity marker | `ea-subsection` (signal `feat-default-ea`) | `release-note-ea.mdx.tmpl` |
+| 5b | `feat:` but the reviewer/engineer explicitly declines EA/GA framing for it in the edit loop (small metrics/logging-style change, real precedent in `release-notes.mdx` for shipping this as a plain bullet with no badge/callout) | `plain-bullet` (manual override — not something the text heuristics above detect on their own; classify.py still proposes `ea-subsection` per rule 5, the engineer flips it) | `release-note-plain-bullet.mdx.tmpl` |
 | 6 | `fix:`/`chore:`/`refactor:`/etc. | none | — |
 | 7 | otherwise | `ask` the engineer | — |
 

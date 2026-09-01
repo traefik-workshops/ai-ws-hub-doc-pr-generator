@@ -28,7 +28,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from scripts import _semver
+from scripts import _discover, _semver
 
 
 def _included(tag_entry: dict) -> dict[str, str]:
@@ -102,4 +102,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))

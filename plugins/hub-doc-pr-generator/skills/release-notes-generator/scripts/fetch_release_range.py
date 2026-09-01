@@ -22,7 +22,7 @@ import json
 import sys
 from typing import Optional
 
-from scripts import _gh, _semver
+from scripts import _discover, _gh, _semver
 
 REPO = "traefik/traefik-hub"
 
@@ -97,4 +97,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    _discover.maybe_reexec()
     sys.exit(main(sys.argv[1:]))
