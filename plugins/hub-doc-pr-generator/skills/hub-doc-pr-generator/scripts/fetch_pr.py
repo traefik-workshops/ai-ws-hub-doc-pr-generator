@@ -269,7 +269,7 @@ query($owner:String!,$repo:String!,$num:Int!){
     issue(number:$num){
       number
       closedByPullRequestsReferences(first:20, includeClosedPrs:true){
-        nodes { number title url repository { nameWithOwner } }
+        nodes { number title url state updatedAt repository { nameWithOwner } }
       }
       parent {
         number title body
@@ -277,7 +277,7 @@ query($owner:String!,$repo:String!,$num:Int!){
           nodes {
             number title
             closedByPullRequestsReferences(first:10, includeClosedPrs:true){
-              nodes { number title url repository { nameWithOwner } }
+              nodes { number title url state updatedAt repository { nameWithOwner } }
             }
           }
         }
@@ -296,6 +296,12 @@ def _pr_refs(node_block: Optional[dict]) -> list[dict]:
             "title": n.get("title", ""),
             "url": n.get("url", ""),
             "repo": (n.get("repository") or {}).get("nameWithOwner", ""),
+            # "MERGED" / "OPEN" / "CLOSED" -- used by check_implementation_signal.py
+            # to tell a real, landing implementation apart from a discussion-only
+            # or abandoned PR reference. Missing on older cached fixtures/mocks
+            # that predate this field, so callers must .get() with a default.
+            "state": n.get("state", ""),
+            "updated_at": n.get("updatedAt", ""),
         })
     return out
 

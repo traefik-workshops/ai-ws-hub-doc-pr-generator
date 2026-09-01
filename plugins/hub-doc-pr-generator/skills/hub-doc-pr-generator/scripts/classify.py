@@ -198,9 +198,10 @@ def doc_kind_candidates(*, title: str, touched_paths: list[str]) -> list[dict]:
     if score_ref == 0.0 and score_guide == 0.0:
         return [
             {"kind": "reference", "confidence": 0.5,
-             "rationale": "no doc-adjacent signal — defaulting to reference"},
+             "rationale": "no doc-adjacent signal at all, tie-broken to reference "
+                          "(arbitrary default, not a grounded guess -- verify manually)"},
             {"kind": "user-guide", "confidence": 0.5,
-             "rationale": "no signal"},
+             "rationale": "no doc-adjacent signal at all; runner-up in the same tie-break"},
         ]
 
     # Confidence is an ABSOLUTE measure of signal strength, not a normalised share.

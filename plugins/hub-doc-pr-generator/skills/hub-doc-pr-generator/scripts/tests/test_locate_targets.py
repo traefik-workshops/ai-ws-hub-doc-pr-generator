@@ -264,6 +264,36 @@ class TestProposePaths(unittest.TestCase):
         self.assertEqual(match["rationale"], "Existing page's filename matches a touched middleware package")
 
 
+class TestGenericPrefixDeclaration(unittest.TestCase):
+    """The "is this prefix a real product-area signal" flag lives on the
+    _Section entry itself (generic=True/False), not in a separately
+    maintained side-set -- so there's nothing to forget to keep in sync when
+    a new prefix is added to _HUB_REF_MAP/_HUB_GUIDE_MAP. These tests pin
+    that shape so a future refactor can't silently reintroduce a side-table."""
+
+    def test_known_generic_prefix_is_flagged_on_its_own_section(self):
+        self.assertTrue(locate_targets._HUB_GUIDE_MAP["hub/pkg/"].generic)
+
+    def test_specific_prefixes_are_not_flagged_generic(self):
+        for m in (locate_targets._HUB_REF_MAP, locate_targets._HUB_GUIDE_MAP, locate_targets._OSS_REF_MAP):
+            for prefix, section in m.items():
+                if prefix != "hub/pkg/":
+                    self.assertFalse(
+                        section.generic,
+                        msg=f"{prefix!r} unexpectedly marked generic",
+                    )
+
+    def test_every_map_entry_is_a_section_with_a_generic_flag(self):
+        # Guards against a future edit reintroducing a bare tuple (dirs,) for
+        # some entries, which would silently make that prefix's genericness
+        # unreachable instead of raising an AttributeError up front.
+        for m in (locate_targets._HUB_REF_MAP, locate_targets._HUB_GUIDE_MAP, locate_targets._OSS_REF_MAP):
+            for section in m.values():
+                self.assertIsInstance(section, locate_targets._Section)
+                self.assertIsInstance(section.generic, bool)
+                self.assertTrue(section.dirs)
+
+
 class TestSelectNeighbors(unittest.TestCase):
     def test_picks_up_to_five_md_files(self):
         with tempfile.TemporaryDirectory() as td:

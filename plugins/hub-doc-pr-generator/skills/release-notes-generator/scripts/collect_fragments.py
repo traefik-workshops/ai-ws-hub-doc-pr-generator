@@ -136,6 +136,7 @@ def _pr_number(filename: str) -> int:
 
 def collect(fragments_dir: Path) -> dict:
     fragments = []
+    legacy_filenames: list[str] = []
     if fragments_dir.is_dir():
         # Sort by the PR number embedded in the filename, not the filename
         # string itself -- a plain string sort puts "10-x.mdx" before
@@ -160,6 +161,8 @@ def collect(fragments_dir: Path) -> dict:
             parsed["path"] = str(path)
             parsed["pr_number"] = _pr_number(path.name)
             fragments.append(parsed)
+            if not path.name.startswith("_"):
+                legacy_filenames.append(path.name)
 
     def _is_unassigned(f: dict) -> bool:
         # parse_fragment now guarantees target_version is always present and
@@ -175,6 +178,11 @@ def collect(fragments_dir: Path) -> dict:
         "fragments": fragments,
         "assigned": [f for f in fragments if not _is_unassigned(f)],
         "unassigned": [f for f in fragments if _is_unassigned(f)],
+        # Surfaced so `cut` can nudge whoever's running it toward
+        # rename_legacy_fragments.py instead of this list growing forever --
+        # the read side (_pr_number's regex) accepts both filename shapes
+        # indefinitely, so nothing else ever forces this list back to empty.
+        "legacy_filenames": legacy_filenames,
     }
 
 
@@ -240,6 +248,16 @@ def main(argv: list[str]) -> int:
         # assign_target_version.py's main() already uses.
         print(f"error collecting fragments: {e}", file=sys.stderr)
         return 1
+    if result["legacy_filenames"]:
+        # Printed to stderr, not stdout, so it doesn't corrupt the JSON
+        # SKILL.md pipes into /tmp/fragments.json.
+        names = ", ".join(result["legacy_filenames"])
+        print(
+            f"note: {len(result['legacy_filenames'])} fragment(s) still use the "
+            f"pre-underscore filename ({names}) -- run "
+            "`python3 -m scripts.rename_legacy_fragments --apply` to migrate them.",
+            file=sys.stderr,
+        )
     print(json.dumps(result, indent=2))
     return 0
 

@@ -11,40 +11,45 @@ from pathlib import Path
 from scripts import _discover
 from scripts._frontmatter import split_front_matter, unquote
 
+class _Section:
+    """One impl-repo Go-path prefix -> likely doc section(s), plus whether
+    that prefix is a real product-area signal or just a broad catch-all.
+
+    `generic=True` is declared right here, next to the prefix it describes,
+    rather than in a separately-maintained set elsewhere in the file --
+    adding a new broad/catch-all prefix to one of the maps below and marking
+    it generic is a single edit instead of two that have to be kept in sync
+    by hand (a forgotten second edit previously let an overly-broad prefix
+    silently inflate its confidence score to that of a real signal; see
+    _section_dirs/propose_paths for how `generic` is used)."""
+
+    __slots__ = ("dirs", "generic")
+
+    def __init__(self, *dirs: str, generic: bool = False) -> None:
+        self.dirs = dirs
+        self.generic = generic
+
+
 # A small static map of impl-repo Go-path prefixes → likely doc section.
 _HUB_REF_MAP = {
-    "hub/pkg/middleware/": ("docs/ai-gateway/middlewares/", "docs/api-gateway/reference/routing/http/middlewares/"),
-    "hub/dashboard/":      ("docs/dashboard/",),
-    "hub/portal/":         ("docs/portal/",),
+    "hub/pkg/middleware/": _Section("docs/ai-gateway/middlewares/", "docs/api-gateway/reference/routing/http/middlewares/"),
+    "hub/dashboard/":      _Section("docs/dashboard/"),
+    "hub/portal/":         _Section("docs/portal/"),
 }
 _HUB_GUIDE_MAP = {
-    "hub/dashboard/": ("docs/dashboard/guides/",),
+    "hub/dashboard/": _Section("docs/dashboard/guides/"),
     # "hub/pkg/" is broad enough to match almost any Hub Go package -- it is
-    # NOT a specific-gateway signal despite counting as one matched prefix.
-    # api-gateway listed first (not ai-gateway): confirmed live this generic
-    # prefix confidently mis-picked AI Gateway for touched paths that were
-    # actually API/MCP Gateway territory (AuthZEN, 2026-08-24) -- see
-    # _section_dirs' fallback comment for the same reasoning applied there.
-    # Also listed in _GENERIC_PREFIXES below so a match here never scores as
-    # high as a real product-area signal (see that set's docstring).
-    "hub/pkg/":       ("docs/api-gateway/guides/", "docs/ai-gateway/guides/"),
+    # NOT a specific-gateway signal despite counting as one matched prefix,
+    # hence generic=True. api-gateway listed first (not ai-gateway):
+    # confirmed live this generic prefix confidently mis-picked AI Gateway
+    # for touched paths that were actually API/MCP Gateway territory
+    # (AuthZEN, 2026-08-24) -- see _section_dirs' fallback comment for the
+    # same reasoning applied there.
+    "hub/pkg/": _Section("docs/api-gateway/guides/", "docs/ai-gateway/guides/", generic=True),
 }
-# Prefixes that are structurally too broad to be a real product-area signal,
-# even though they live in one of the maps above and can be the ONLY thing
-# that matches. Confirmed live (AuthZEN, 2026-08-24): touched_paths=["hub/pkg/
-# mcp/authzen/policy.go"] matches only "hub/pkg/" in _HUB_GUIDE_MAP, so
-# _section_dirs saw exactly one matched prefix and propose_paths scored it
-# 0.9 -- the same confidence as a genuinely specific single-prefix match like
-# "hub/dashboard/" -- even though the comment on "hub/pkg/" itself admits
-# it isn't one. Since SKILL.md auto-accepts candidates[0] without looking at
-# the confidence number, that 0.9 shipped a wrong product-area guess
-# silently. A prefix listed here still contributes its dirs to the candidate
-# list (it may well be right), but never counts toward "specific prefix
-# matched" -- see matched_specific_prefixes in _section_dirs/propose_paths.
-_GENERIC_PREFIXES = {"hub/pkg/"}
 _OSS_REF_MAP = {
-    "pkg/middlewares/": ("docs/content/reference/routing/http/middlewares/",),
-    "pkg/provider/":    ("docs/content/reference/install-configuration/providers/",),
+    "pkg/middlewares/": _Section("docs/content/reference/routing/http/middlewares/"),
+    "pkg/provider/":    _Section("docs/content/reference/install-configuration/providers/"),
 }
 
 _DOC_URL_RE = re.compile(r"https?://doc\.traefik\.io/(?:traefik-hub|traefik)/([a-zA-Z0-9\-/_]+)")
@@ -176,9 +181,9 @@ def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tu
     """Returns (dirs, matched_prefix_count, matched_specific_prefix_count).
     matched_prefix_count == 0 means no touched-path prefix matched and the
     generic single-dir fallback was used. matched_specific_prefix_count
-    excludes prefixes in _GENERIC_PREFIXES (e.g. "hub/pkg/") -- a broad
-    catch-all matching is not a grounded product-area signal even though it
-    counts toward matched_prefix_count and still contributes dirs."""
+    excludes prefixes whose _Section is marked generic=True (e.g. "hub/pkg/")
+    -- a broad catch-all matching is not a grounded product-area signal even
+    though it counts toward matched_prefix_count and still contributes dirs."""
     if impl_repo == "traefik/traefik-hub":
         m = _HUB_REF_MAP if doc_kind == "reference" else _HUB_GUIDE_MAP
     else:
@@ -186,11 +191,11 @@ def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tu
     dirs: list[str] = []
     matched_prefixes = 0
     matched_specific_prefixes = 0
-    for prefix, sections in m.items():
+    for prefix, section in m.items():
         if any(p.startswith(prefix) for p in touched_paths):
-            dirs.extend(sections)
+            dirs.extend(section.dirs)
             matched_prefixes += 1
-            if prefix not in _GENERIC_PREFIXES:
+            if not section.generic:
                 matched_specific_prefixes += 1
     # Generic fallback for Hub if nothing matched. Deliberately NOT an AI
     # Gateway directory: confirmed live (traefik-hub#1435, pure internal Go
@@ -326,10 +331,10 @@ def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
     )
     # Confidence reflects how GROUNDED the match is, not how many directories a
     # single matched prefix happens to map to, and not how many prefixes
-    # matched at all -- a prefix in _GENERIC_PREFIXES (e.g. "hub/pkg/") is
+    # matched at all -- a prefix declared generic=True (e.g. "hub/pkg/") is
     # structurally too broad to be a real product-area signal, so it must
     # never move the needle here even when it's the only thing that matched
-    # (confirmed live, AuthZEN 2026-08-24: see _GENERIC_PREFIXES' docstring).
+    # (confirmed live, AuthZEN 2026-08-24: see _Section's docstring).
     # Tiering is on matched_specific_prefixes, not matched_prefixes:
     #  - 0 specific prefixes matched -> either nothing matched at all, or only
     #    a generic catch-all did -> the LEAST grounded guess either way ->

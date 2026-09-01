@@ -283,7 +283,11 @@ them into the real section, once, when the release is actually confirmed.
      --release-notes-dir <hub-doc-root>/docs/api-gateway/release-notes.d > /tmp/fragments.json
    ```
    This returns every fragment in the directory (any version), split into `assigned`
-   and `unassigned`.
+   and `unassigned`. If the JSON's `legacy_filenames` is non-empty (or the command
+   printed a `note:` to stderr about it), those fragments still use the pre-underscore
+   filename from before the current convention -- run
+   `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.rename_legacy_fragments --release-notes-dir <dir> --apply`
+   to migrate them (a plain rename, front matter and body are untouched) before continuing.
 
 2. **Resolve unassigned fragments, if any.** If `/tmp/fragments.json`'s `unassigned`
    is non-empty, use `AskUserQuestion` (multiSelect) listing each one's filename,

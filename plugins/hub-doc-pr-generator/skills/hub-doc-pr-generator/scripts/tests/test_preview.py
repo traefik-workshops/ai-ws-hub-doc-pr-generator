@@ -772,6 +772,62 @@ class TestCheckTableCompleteness(unittest.TestCase):
         )]
         self.assertEqual(check_table_completeness(edits), [])
 
+    def test_multiple_overwritten_files_are_batch_fetched_in_one_git_call(self):
+        """Regression test: this used to shell out to `git show` once per
+        overwritten file; now it's one `git cat-file --batch` call
+        (_git.show_many) for all of them. Behavior must stay identical for a
+        multi-file PR -- each file's genuinely-new row is flagged, each
+        file's untouched pre-existing row is not."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            for name in ("a.md", "b.md"):
+                (d / name).write_text("| Field |\n| --- |\n| old |\n")
+                subprocess.run(["git", "add", name], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T",
+                             "commit", "-qm", "existing"], cwd=d, check=True)
+
+            with patch("scripts.preview._git.show_many", wraps=_git.show_many) as mock_show_many:
+                edits = [
+                    FileEdit(path="a.md", content="| Field |\n| --- |\n| old |\n| new, etc. |\n", mode="overwrite"),
+                    FileEdit(path="b.md", content="| Field |\n| --- |\n| old |\n| more, etc. |\n", mode="overwrite"),
+                ]
+                findings = check_table_completeness(edits, repo_path=str(d))
+            mock_show_many.assert_called_once()
+            called_specs = mock_show_many.call_args[0][1]
+            self.assertEqual(set(called_specs), {"HEAD:a.md", "HEAD:b.md"})
+        self.assertEqual(len(findings), 2)
+
+    def test_brand_new_file_at_head_does_not_crash_the_batch(self):
+        """An `overwrite` edit whose path doesn't exist at HEAD yet (e.g. the
+        working tree has an uncommitted new file, or the path check ran
+        against a slightly stale ref) must fall back to flagging every
+        matching line, same as before batching -- not raise or silently
+        drop the file's edit entirely."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            _init_git(d)
+            edits = [FileEdit(
+                path="docs/does-not-exist-at-head.md",
+                content="| Field |\n| --- |\n| val, etc. |\n",
+                mode="overwrite",
+            )]
+            findings = check_table_completeness(edits, repo_path=str(d))
+        self.assertEqual(len(findings), 1)
+
+    def test_invalid_repo_path_falls_back_gracefully(self):
+        with tempfile.TemporaryDirectory() as td:
+            edits = [FileEdit(
+                path="docs/reference.md",
+                content="| Field |\n| --- |\n| val, etc. |\n",
+                mode="overwrite",
+            )]
+            # td is a real directory but not a git repo -- show_many raises
+            # GitError; the check must degrade to the unscoped full-file scan
+            # rather than propagate the error.
+            findings = check_table_completeness(edits, repo_path=td)
+        self.assertEqual(len(findings), 1)
+
     def test_wired_into_manual_checks_via_apply_edits_with_lint_fix(self):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)

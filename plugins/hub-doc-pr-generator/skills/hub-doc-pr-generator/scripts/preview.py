@@ -367,17 +367,28 @@ def check_table_completeness(edits: list[FileEdit], *, repo_path: str | None = N
     lines that are genuinely new or changed. Without `repo_path` (or for a
     `create` edit, which has no prior version to diff against — everything in
     it is new by definition), every matching line is checked, same as before
-    this fix."""
+    this fix.
+
+    All the pre-PR versions needed for the diff are fetched in one batched
+    `git cat-file --batch` call (`_git.show_many`) rather than one `git show`
+    subprocess per overwritten file -- a PR touching several existing pages
+    previously paid one blocking spawn per file just for this check."""
     findings: list[str] = []
+    overwrite_specs = [
+        f"HEAD:{e.path}" for e in edits
+        if repo_path is not None and e.mode == "overwrite"
+        and (e.path.endswith(".md") or e.path.endswith(".mdx"))
+    ]
+    try:
+        old_contents = _git.show_many(repo_path, overwrite_specs) if overwrite_specs else {}
+    except _git.GitError:
+        old_contents = {}
     for e in edits:
         if not (e.path.endswith(".md") or e.path.endswith(".mdx")):
             continue
         checkable_indices: set[int] | None = None
         if repo_path is not None and e.mode == "overwrite":
-            try:
-                old_content = _git.run(repo_path, ["show", f"HEAD:{e.path}"])
-            except _git.GitError:
-                old_content = None
+            old_content = old_contents.get(f"HEAD:{e.path}")
             if old_content is not None:
                 checkable_indices = _added_or_changed_line_indices(old_content, e.content)
         for idx, line in enumerate(e.content.splitlines()):

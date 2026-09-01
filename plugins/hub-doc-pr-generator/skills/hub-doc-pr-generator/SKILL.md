@@ -118,27 +118,34 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    an edge case to route around: an issue can describe a feature that has no
    implementation yet, or won't for a while, in which case running classify/locate_targets
    would just force a confident-looking doc kind and target path for content that doesn't
-   exist — worse than not running them at all. Check, in order:
-   - `merged.related_prs` — does any entry look like the actual implementation (not just
-     a discussion thread or a QA/investigation issue)? A **merged** PR is the strongest
-     signal; an **open** PR is acceptable if it's genuinely close to landing (check its
-     state/recency) — don't wait for merge if the engineer wants docs drafted in parallel.
-   - `sub_issues` / `siblings` — does one of them read as "implementation" rather than
-     "investigation" or "QA finding"? (Compare: a sibling titled "QA Findings — X is
-     broken" is not an implementation; one titled "Implement X" or linked to a merged PR
-     is.)
-   - Search the impl repo directly for anything load-bearing the bundle didn't surface
-     (a CRD field, a config schema entry, a Go package matching the feature name) — the
-     Transparency Logs investigation (2026-08-24) found this necessary: the bundle's own
+   exist, which is worse than not running them at all. Run the mechanical part of this
+   check first, then confirm it with a real search:
+   ```bash
+   PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.check_implementation_signal --bundle /tmp/bundle.json
+   ```
+   This looks for the same two signals by hand instead of prose alone, so a future edit
+   to this file can't silently drop the check: a `merged.related_prs` entry that is
+   merged or genuinely open (not closed-unmerged), and a `sub_issues`/native `siblings`
+   title that reads as "implementation" rather than "investigation"/"QA finding" (compare:
+   a sibling titled "QA Findings — X is broken" is not an implementation; one titled
+   "Implement X" is). `has_signal: false` is a strong "go double-check", not proof there is
+   nothing there: this script only ever sees what the bundle's graph query already
+   surfaced.
+   - If `has_signal` is true, continue — cite the listed `reasons` for the *why* behind
+     the feature in step 8.
+   - If `has_signal` is false, do one more thing before stopping: search the impl repo
+     directly for anything load-bearing the bundle didn't surface (a CRD field, a config
+     schema entry, a Go package matching the feature name). The Transparency Logs
+     investigation (2026-08-24) found this necessary: the bundle's own
      `related_prs`/`sub_issues` didn't mention the one loosely-related infra ticket that
      did exist, and that ticket turned out to be a witness-service *deployment* task, not
      a customer-facing gateway feature — a different kind of "not actually ready to
      document" than simply having zero hits.
-   If none of this turns up a merged/near-merged implementation PR or genuinely
-   customer-facing infra work, **stop here.** Report back: "No implementation exists yet
-   for <issue> — nothing to document. [brief summary of what was checked]." Do not run
-   classify.py or locate_targets.py against an issue with nothing behind it; do not draft
-   a page speculatively. This is a valid, complete outcome for this skill, not a failure.
+   If that search also turns up nothing, **stop here.** Report back: "No implementation
+   exists yet for <issue> — nothing to document. [brief summary of what was checked]." Do
+   not run classify.py or locate_targets.py against an issue with nothing behind it; do
+   not draft a page speculatively. This is a valid, complete outcome for this skill, not a
+   failure.
 
 3. **Fetch grounding.**
    ```bash

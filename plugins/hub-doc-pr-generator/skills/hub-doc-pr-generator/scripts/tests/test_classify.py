@@ -177,6 +177,17 @@ class TestDocKindCandidatesNoSignal(unittest.TestCase):
         self.assertEqual(cands[0]["kind"], "reference")
         self.assertEqual(cands[0]["confidence"], 0.5)
 
+    def test_no_signal_rationale_names_it_as_an_arbitrary_tie_break(self):
+        # This pick has no supporting signal at all -- the rationale text is
+        # what a human reviewer actually reads in the PR body's "Needs
+        # verification" section (write_flags.py), so it must say plainly that
+        # this was an unreviewed coin-flip, not read as a grounded guess.
+        cands = doc_kind_candidates(title="", touched_paths=[])
+        top, runner_up = cands[0], cands[1]
+        self.assertIn("tie-broken", top["rationale"])
+        self.assertIn("verify manually", top["rationale"])
+        self.assertIn("runner-up", runner_up["rationale"])
+
     def test_single_signal_stays_absolute_below_gate(self):
         # A lone signal (score_ref=0.6, score_guide=0) must NOT be inflated to 1.0.
         # Confidence stays at the absolute 0.6 — below the 0.85 auto-accept gate —

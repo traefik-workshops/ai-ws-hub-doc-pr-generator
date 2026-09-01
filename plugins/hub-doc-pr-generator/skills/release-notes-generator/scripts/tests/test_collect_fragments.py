@@ -158,7 +158,10 @@ class TestCollect(unittest.TestCase):
 
     def test_missing_directory_returns_empty(self):
         result = collect(Path("/nonexistent/release-notes.d"))
-        self.assertEqual(result, {"fragments": [], "assigned": [], "unassigned": []})
+        self.assertEqual(
+            result,
+            {"fragments": [], "assigned": [], "unassigned": [], "legacy_filenames": []},
+        )
 
     def test_pr_number_extracted_from_filename(self):
         with tempfile.TemporaryDirectory() as td:
@@ -166,6 +169,31 @@ class TestCollect(unittest.TestCase):
             (d / "_964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
             result = collect(d)
         self.assertEqual(result["fragments"][0]["pr_number"], 964)
+
+    def test_underscore_prefixed_fragment_is_not_legacy(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "_964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
+            result = collect(d)
+        self.assertEqual(result["legacy_filenames"], [])
+
+    def test_pre_underscore_fragment_is_surfaced_as_legacy(self):
+        # collect() doesn't just accept the old shape silently -- it names
+        # it, so `cut` can point whoever's running it at
+        # rename_legacy_fragments.py instead of the list growing forever.
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
+            result = collect(d)
+        self.assertEqual(result["legacy_filenames"], ["964-bedrock-mantle.mdx"])
+
+    def test_legacy_filenames_only_lists_unprefixed_fragments(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "_964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
+            (d / "970-messages-api.mdx").write_text(FRAGMENT_UNASSIGNED)
+            result = collect(d)
+        self.assertEqual(result["legacy_filenames"], ["970-messages-api.mdx"])
 
     def test_malformed_filename_raises_instead_of_collecting_silently(self):
         """Regression test: a fragment filename with no PR-number prefix
