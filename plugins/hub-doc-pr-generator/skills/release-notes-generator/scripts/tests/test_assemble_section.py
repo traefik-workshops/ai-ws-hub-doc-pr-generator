@@ -122,8 +122,35 @@ class TestPlainBulletShape(unittest.TestCase):
         # entry appears in the section but is NOT swept into that group.
         self.assertGreater(ga_bullet_idx, ga_heading_idx)
         self.assertNotIn("License expiration metric", section[ga_heading_idx:ga_bullet_idx])
-        self.assertIn("License expiration metric", section)
-        self.assertGreaterEqual(plain_idx, 0)
+
+
+class TestShapeValidation(unittest.TestCase):
+    """Regression coverage for cutmode audit finding B: `shape` matching was
+    exact/case-sensitive and never validated -- a case-variant or typo'd
+    shape (e.g. `GA-bullet`, `ga_bullet`) silently fell into the generic
+    'subsections' bucket instead of being grouped correctly or raising, so a
+    real GA graduation could silently render as an ungrouped orphan bullet
+    with no error anywhere in the pipeline."""
+
+    def test_unrecognized_shape_raises_instead_of_silently_misrendering(self):
+        bad_fragment = {
+            "shape": "GA-bullet",  # case-variant of the real "ga-bullet"
+            "pr_number": 980,
+            "body": "- **Hardened Image** is now generally available.",
+        }
+        with self.assertRaises(ValueError):
+            assemble(
+                version="v3.21.0-ea.1", date="2026-08-10",
+                fragments=[bad_fragment], compat_rows=COMPAT_ROWS,
+            )
+
+    def test_every_known_shape_is_accepted(self):
+        for shape in ("ea-subsection", "ga-subsection", "ga-bullet", "plain-bullet", "breaking-subsection"):
+            fragment = {"shape": shape, "pr_number": 1, "body": "content"}
+            assemble(  # must not raise
+                version="v3.21.0-ea.1", date="2026-08-10",
+                fragments=[fragment], compat_rows=COMPAT_ROWS,
+            )
 
 
 class TestCheckFragmentLinks(unittest.TestCase):

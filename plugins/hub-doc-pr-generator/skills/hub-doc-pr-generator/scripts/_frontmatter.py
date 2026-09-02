@@ -53,7 +53,17 @@ def split_front_matter(text: str) -> tuple[str, str]:
     """Split `text` into (front_matter_block, body), where front_matter_block is
     the raw text between the `---` delimiters (not yet parsed into fields).
     Raises ValueError if there's no such block — callers decide whether that's
-    fatal for their use case."""
+    fatal for their use case.
+
+    Normalizes CRLF to LF first -- cutmode audit finding G: _FRONT_MATTER_RE
+    matches a literal '\\n', so a CRLF-saved fragment (a plausible
+    Windows-editor save) previously failed the whole regex and raised this
+    function's generic "no front matter block" error even though the front
+    matter itself was perfectly well-formed. Every other regex downstream of
+    this (collect_fragments.py, assign_target_version.py) assumes LF-only
+    input, so normalizing once here at the shared entry point is simpler and
+    safer than teaching each of them CRLF tolerance independently."""
+    text = text.replace("\r\n", "\n")
     m = _FRONT_MATTER_RE.match(text)
     if not m:
         raise ValueError("no '---' front matter block found")

@@ -295,10 +295,12 @@ them into the real section, once, when the release is actually confirmed.
    > "These fragments don't have a target_version yet. Which of them ship in
    > `<version>`?"
 
-   For each fragment the writer selects, rewrite its front matter in place:
+   For each fragment the writer selects, rewrite its front matter in place —
+   **always pass `--doc-repo-root`** so the rewrite is staged in the same
+   git repo, not left as an uncommitted local edit:
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.assign_target_version \
-     --fragment <fragment-path> --version <version>
+     --fragment <fragment-path> --version <version> --doc-repo-root <hub-doc-root>
    ```
    Not a shell `sed -i` (its in-place syntax differs between BSD/macOS and
    GNU/Linux — `sed -i ''` specifically is BSD-only) and not a literal
@@ -310,6 +312,15 @@ them into the real section, once, when the release is actually confirmed.
    — stop and investigate rather than proceeding if that happens. Then re-run
    step 1 so the updated assignment is picked up. Fragments the writer does
    *not* select stay `unassigned` for a future cut; never touch them.
+
+   **Track every fragment path reassigned this run** (append each `--fragment`
+   value to a list, e.g. `/tmp/reassigned_fragment_paths.txt`, one per line) —
+   step 8's `push` needs the full list so the reassignment is committed, not
+   just staged. Cutmode audit finding F: `assign_target_version.py` only
+   rewrites the fragment file on disk; without `--doc-repo-root` staging it
+   *and* step 8 committing it explicitly, a later re-cut of the same
+   still-open version from a different or fresh clone sees the fragment as
+   `unassigned` again and silently drops it from the re-cut.
 
 3. **Filter and order this release's fragments.**
    ```bash
@@ -416,15 +427,25 @@ them into the real section, once, when the release is actually confirmed.
    tag mode step 9). Write to `/tmp/pr-body.md`.
 
 8. **Preview presentation, edit loop, push.** Same as tag mode steps 9–11: present
-   the diff, `AskUserQuestion` for push / re-prompt / save-and-exit, then:
+   the diff, `AskUserQuestion` for push / re-prompt / save-and-exit, then pass
+   `--path` once for `release-notes.mdx` and once more for every fragment path
+   tracked in step 2:
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.push \
      --doc-repo-root <hub-doc-root> --branch <branch> \
-     --title "docs: release notes for <version>" --body-file /tmp/pr-body.md
+     --title "docs: release notes for <version>" --body-file /tmp/pr-body.md \
+     --path docs/api-gateway/release-notes.mdx \
+     $(sed 's/^/--path /' /tmp/reassigned_fragment_paths.txt 2>/dev/null)
    ```
-   `push.py` is unchanged and reused as-is — it commits whatever is staged
-   (just the release-notes.mdx rewrite from step 6; fragment files are never
-   touched) and opens the draft PR.
+   `push.py` commits only the paths it's given, via an explicit pathspec — never
+   a bare `git commit` that would sweep in whatever else happens to be staged in
+   a shared clone another session might be using (finding E). Passing the
+   reassigned fragment paths here is what actually makes step 2's
+   `--doc-repo-root` staging durable: once this branch is pushed, the fragment's
+   real `target_version` is committed history, not an uncommitted local edit
+   that a future re-cut from a different clone would fail to see (finding F).
+   If step 2 never ran (no unassigned fragments this cut), omit the extra
+   `--path` flags — the default is just `release-notes.mdx`.
 
 ## Confirmation gates
 
@@ -434,11 +455,15 @@ them into the real section, once, when the release is actually confirmed.
 - If `gh auth status` fails: stop with `gh auth login` instructions
 - Never fill in a compatibility-matrix value the scripts reported as
   unknown/`null` — surface it as a TBD checklist item instead
-- Cut mode: never touch a fragment the writer didn't explicitly select in step 2
-  (leave it `unassigned` for a future cut); never delete or modify a fragment
-  file for any reason — `cut` only ever reads them, never removes them, so a
-  re-run for the same still-open version always has the full set to
-  re-derive a complete section from
+- Cut mode: never touch a fragment the writer didn't explicitly select in step
+  2 (leave it `unassigned` for a future cut); never delete a fragment file or
+  edit its body for any reason — `cut` only ever reads a fragment's body, never
+  removes the file, so a re-run for the same still-open version always has the
+  full set to re-derive a complete section from. The one sanctioned exception
+  is step 2's own `assign_target_version.py` rewrite of a *selected* fragment's
+  `target_version` front-matter field — always stage that rewrite with
+  `--doc-repo-root` and commit it in step 8 (`--path`), never leave it as an
+  uncommitted local edit (finding F)
 
 ## When to use the AskUserQuestion tool
 

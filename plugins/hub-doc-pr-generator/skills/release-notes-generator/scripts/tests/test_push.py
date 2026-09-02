@@ -94,6 +94,41 @@ class TestCommitReleaseNotes(unittest.TestCase):
             with self.assertRaises(ValueError):
                 commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
 
+    def test_commit_uses_explicit_pathspec_not_bare_commit(self):
+        """Regression test for cutmode audit finding E: a bare `git commit`
+        with no pathspec commits whatever else happens to be staged in the
+        repo -- in a shared clone another session might be using
+        concurrently, that can sweep in a completely unrelated file. Must
+        always pass an explicit `--` pathspec."""
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n",  # diff --cached --name-only -- <paths>
+                "",  # commit
+            ]
+            commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertIn("--", commit_call.args[1])
+        self.assertIn("docs/api-gateway/release-notes.mdx", commit_call.args[1])
+
+    def test_commit_includes_extra_paths_when_given(self):
+        """A cut that reassigned fragments must commit those fragment paths
+        in the same commit as the release-notes.mdx splice (see
+        assign_target_version.py's --doc-repo-root), not leave them
+        uncommitted."""
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\ndocs/api-gateway/release-notes.d/_964-x.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(
+                doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x",
+                paths=["docs/api-gateway/release-notes.mdx", "docs/api-gateway/release-notes.d/_964-x.mdx"],
+            )
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertIn("docs/api-gateway/release-notes.d/_964-x.mdx", commit_call.args[1])
+
 
 class TestOpenReleaseNotesPr(unittest.TestCase):
     def test_raises_when_no_fork_detected(self):

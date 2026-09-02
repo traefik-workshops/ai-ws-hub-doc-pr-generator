@@ -160,8 +160,39 @@ class TestCollect(unittest.TestCase):
         result = collect(Path("/nonexistent/release-notes.d"))
         self.assertEqual(
             result,
-            {"fragments": [], "assigned": [], "unassigned": [], "legacy_filenames": []},
+            {
+                "fragments": [], "assigned": [], "unassigned": [],
+                "legacy_filenames": [], "skipped_files": [],
+            },
         )
+
+    def test_stray_non_fragment_file_is_skipped_not_fatal(self):
+        """Regression test for cutmode audit finding C: a stray *.mdx file
+        that isn't a fragment at all (no front matter, no PR-number prefix --
+        e.g. a leftover `_README.mdx` template) previously crashed the whole
+        collect() call via _pr_number raising inside the sort key, aborting
+        an otherwise-clean cut over litter that was never meant to be
+        collected. It must be skipped and surfaced, not fatal."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "_964-bedrock-mantle.mdx").write_text(FRAGMENT_EA)
+            (d / "_README.mdx").write_text("# Release note fragments\n\nSee SKILL.md.\n")
+            result = collect(d)
+        self.assertEqual(len(result["fragments"]), 1)
+        self.assertEqual(result["fragments"][0]["filename"], "_964-bedrock-mantle.mdx")
+        self.assertEqual(len(result["skipped_files"]), 1)
+        self.assertIn("_README.mdx", result["skipped_files"][0])
+
+    def test_malformed_real_fragment_with_numbered_filename_still_raises(self):
+        """A file that DOES look like a real fragment (PR-number-prefixed
+        filename) but has broken front matter must still abort loudly -- only
+        litter that isn't a fragment by either signal (no front matter AND no
+        PR-number prefix) gets silently skipped."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "_990-broken.mdx").write_text("not front matter at all\n")
+            with self.assertRaises(ValueError):
+                collect(d)
 
     def test_pr_number_extracted_from_filename(self):
         with tempfile.TemporaryDirectory() as td:

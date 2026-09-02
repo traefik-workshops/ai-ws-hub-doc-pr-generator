@@ -157,6 +157,40 @@ class TestSplice(unittest.TestCase):
         self.assertIn("new fix", result)
         self.assertNotIn("old fix", result)
 
+    def test_inserts_above_first_heading_even_with_case_drifted_gateway_word(self):
+        """Regression test for cutmode audit finding H: _HEADING_RE (used
+        both as splice()'s own insertion-point search and as one of
+        _existing_section_span's stop boundaries) was case-sensitive while
+        _existing_section_span's own heading match is case-insensitive --
+        an inconsistency that meant a differently-cased '## gateway v...'
+        heading was a legitimate boundary for one and invisible to the
+        other. Must recognize both consistently."""
+        existing = "## gateway v3.20.6\n\nold content\n"  # lowercase "gateway"
+        entry = "## Gateway v3.20.7\n\nnew content\n"
+        result = splice(existing, entry)
+        self.assertLess(result.index("v3.20.7"), result.index("v3.20.6"))
+
+    def test_resplicing_last_section_preserves_trailing_non_heading_footer(self):
+        """Regression test for cutmode audit finding A: re-cutting the LAST
+        Gateway section must not delete trailing content that isn't itself a
+        '## Gateway v...' or '## Earlier releases' heading (e.g. a footer
+        section like '## Support policy'). Confirmed live that
+        _existing_section_span fell back to end-of-file when neither stop
+        pattern matched, so splice() silently dropped everything after the
+        re-cut section."""
+        existing = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-10**\n\n#### Bedrock Mantle\n\n"
+            "## Support policy\n\nThis section describes our support policy.\n"
+        )
+        entry = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-11**\n\n#### Bedrock Mantle\n\n"
+            "#### Messages API\n"
+        )
+        result = splice(existing, entry)
+        self.assertIn("Support policy", result)
+        self.assertIn("This section describes our support policy.", result)
+        self.assertIn("Messages API", result)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,16 @@ class TestSplitFrontMatter(unittest.TestCase):
         with self.assertRaises(ValueError):
             split_front_matter("# Just a heading\n")
 
+    def test_tolerates_crlf_line_endings(self):
+        """Regression test for cutmode audit finding G: _FRONT_MATTER_RE
+        matches a literal '\\n', so a CRLF-saved fragment (a plausible
+        Windows-editor save) previously failed the whole regex and raised the
+        generic, misleading "no '---' front matter block found" error even
+        though the front matter itself was perfectly well-formed."""
+        fm, body = split_front_matter("---\r\nkey: value\r\n---\r\nBody text\r\n")
+        self.assertEqual(fm, "key: value")
+        self.assertEqual(body, "Body text\n")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -100,6 +101,54 @@ class TestMain(unittest.TestCase):
             rc = main(["--fragment", str(path), "--version", "v3.21.0-ea.1"])
             self.assertEqual(rc, 1)
             self.assertEqual(path.read_text(), FRAGMENT_ALREADY_ASSIGNED)
+
+
+class TestMainGitStaging(unittest.TestCase):
+    def _init_repo(self, repo: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+
+    def test_stages_reassigned_fragment_in_doc_repo_when_root_given(self):
+        """Regression test for cutmode audit finding F: assign_target_version.py
+        rewrites a fragment's front matter directly on disk but never staged
+        that change in the hub-doc git repo -- if the branch doing the cut
+        was never otherwise committed with this exact file, a later re-cut of
+        the same still-open version from a different or fresh clone sees the
+        fragment as `unassigned` again and silently drops it. Passing
+        --doc-repo-root must stage (git add) the rewritten fragment so it
+        rides along with whatever commits the rest of the cut pipeline."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._init_repo(repo)
+            frag_dir = repo / "docs" / "api-gateway" / "release-notes.d"
+            frag_dir.mkdir(parents=True)
+            frag_path = frag_dir / "_964-bedrock-mantle.mdx"
+            frag_path.write_text(FRAGMENT_BARE)
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+            rc = main([
+                "--fragment", str(frag_path), "--version", "v3.21.0-ea.1",
+                "--doc-repo-root", str(repo),
+            ])
+            self.assertEqual(rc, 0)
+            staged = subprocess.run(
+                ["git", "diff", "--cached", "--name-only"], cwd=repo,
+                capture_output=True, text=True, check=True,
+            ).stdout
+            self.assertIn("docs/api-gateway/release-notes.d/_964-bedrock-mantle.mdx", staged)
+
+    def test_omitting_doc_repo_root_keeps_write_only_behavior(self):
+        """--doc-repo-root is optional -- omitting it must not attempt any
+        git operation (e.g. for a fragment path outside any repo, as most
+        existing tests in this file use)."""
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "964-bedrock-mantle.mdx"
+            path.write_text(FRAGMENT_BARE)
+            rc = main(["--fragment", str(path), "--version", "v3.21.0-ea.1"])
+            self.assertEqual(rc, 0)
+            self.assertIn("target_version: v3.21.0-ea.1", path.read_text())
 
 
 if __name__ == "__main__":

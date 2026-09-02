@@ -137,29 +137,64 @@ def _pr_number(filename: str) -> int:
 def collect(fragments_dir: Path) -> dict:
     fragments = []
     legacy_filenames: list[str] = []
+    skipped_files: list[str] = []
     if fragments_dir.is_dir():
+        # Two independent checks per file -- parse_fragment (does it have
+        # well-formed fragment front matter?) and _pr_number (does its
+        # filename carry a PR-number prefix?) -- decide what a failure means:
+        #
+        #   parse fails, filename fails too  -> not a fragment at all (a
+        #     stray README/template/leftover *.mdx someone dropped in
+        #     release-notes.d/), skip it with a warning rather than aborting
+        #     the whole cut. Confirmed live: a stray `_README.mdx` template
+        #     file crashed collect() entirely via _pr_number raising inside
+        #     the old code's sort key, over litter that was never meant to
+        #     be collected in the first place.
+        #   parse fails, filename looks numbered -> a real fragment attempt
+        #     with broken front matter. That needs a human to fix by hand,
+        #     not a silent skip -- still raises loudly.
+        #   parse succeeds, filename fails -> a real, well-formed fragment
+        #     whose filename just wasn't PR-number-prefixed. Its ordering
+        #     can't be trusted, so this still raises loudly too (see
+        #     test_malformed_filename_raises_instead_of_collecting_silently)
+        #     -- unlike the stray-file case, there IS real content here that
+        #     would otherwise be silently miscounted or misordered.
+        entries: list[tuple[int, Path, dict]] = []
+        for path in fragments_dir.glob("*.mdx"):
+            text = path.read_text(encoding="utf-8")
+            try:
+                parsed = parse_fragment(text)
+            except ValueError as parse_error:
+                try:
+                    _pr_number(path.name)
+                except ValueError:
+                    skipped_files.append(
+                        f"{path.name}: not a fragment, skipped ({parse_error})"
+                    )
+                    continue
+                # parse_fragment's own message never names the file it was
+                # parsing -- without this, a writer sees e.g. "fragment's
+                # front matter has no target_version value" with no way to
+                # tell which of possibly dozens of accumulated fragments
+                # (never deleted, by design) that refers to.
+                raise ValueError(f"{path.name}: {parse_error}") from parse_error
+            try:
+                pr_number = _pr_number(path.name)
+            except ValueError as name_error:
+                raise ValueError(f"{path.name}: {name_error}") from name_error
+            entries.append((pr_number, path, parsed))
+
         # Sort by the PR number embedded in the filename, not the filename
         # string itself -- a plain string sort puts "10-x.mdx" before
         # "9-x.mdx" (lexicographic: '1' < '9'), which silently misorders the
         # step 2 interactive "which unassigned fragments belong to this
         # release" prompt in SKILL.md (that prompt lists collect()'s
         # `unassigned` slice as-is; only for_version()'s separate, later sort
-        # of *assigned* fragments is numeric). _pr_number already raises
-        # ValueError on a filename it can't parse, so a malformed name still
-        # fails loudly here, just during the sort instead of the loop body.
-        for path in sorted(fragments_dir.glob("*.mdx"), key=lambda p: _pr_number(p.name)):
-            try:
-                parsed = parse_fragment(path.read_text(encoding="utf-8"))
-            except ValueError as e:
-                # parse_fragment's own message never names the file it was
-                # parsing -- without this, a writer sees e.g. "fragment's
-                # front matter has no target_version value" with no way to
-                # tell which of possibly dozens of accumulated fragments
-                # (never deleted, by design) that refers to.
-                raise ValueError(f"{path.name}: {e}") from e
+        # of *assigned* fragments is numeric).
+        for pr_number, path, parsed in sorted(entries, key=lambda entry: entry[0]):
             parsed["filename"] = path.name
             parsed["path"] = str(path)
-            parsed["pr_number"] = _pr_number(path.name)
+            parsed["pr_number"] = pr_number
             fragments.append(parsed)
             if not path.name.startswith("_"):
                 legacy_filenames.append(path.name)
@@ -183,6 +218,11 @@ def collect(fragments_dir: Path) -> dict:
         # the read side (_pr_number's regex) accepts both filename shapes
         # indefinitely, so nothing else ever forces this list back to empty.
         "legacy_filenames": legacy_filenames,
+        # Non-fragment *.mdx litter in release-notes.d/ (no front matter AND
+        # no PR-number-prefixed filename) that was skipped rather than
+        # aborting the whole cut -- surfaced so `cut` can flag it for
+        # cleanup instead of it silently recurring every run.
+        "skipped_files": skipped_files,
     }
 
 
@@ -258,6 +298,9 @@ def main(argv: list[str]) -> int:
             "`python3 -m scripts.rename_legacy_fragments --apply` to migrate them.",
             file=sys.stderr,
         )
+    if result["skipped_files"]:
+        for entry in result["skipped_files"]:
+            print(f"note: skipped non-fragment file {entry}", file=sys.stderr)
     print(json.dumps(result, indent=2))
     return 0
 

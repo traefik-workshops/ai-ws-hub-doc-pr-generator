@@ -20,6 +20,10 @@ from typing import Optional
 from scripts import _discover, _gh, _git
 
 UPSTREAM_HUB_DOC = "traefik/hub-doc"
+# Same default as preview.py's DEFAULT_REL_PATH -- kept as its own constant
+# here rather than imported, matching this module's own "hub-only,
+# single-file trim" convention (see module docstring).
+DEFAULT_REL_PATH = "docs/api-gateway/release-notes.mdx"
 
 
 def _parent_full_name(parent: dict) -> str:
@@ -57,32 +61,47 @@ def _branch_has_commits_to_push(doc_repo_root: str, branch: str) -> bool:
     return False
 
 
-def commit_release_notes(*, doc_repo_root: str, branch: str, title: str) -> None:
+def commit_release_notes(*, doc_repo_root: str, branch: str, title: str, paths: list[str] | None = None) -> None:
     """preview.py writes and stages the new file but never commits it — without
-    this, `git push` ships a branch identical to base and the draft PR is empty."""
+    this, `git push` ships a branch identical to base and the draft PR is empty.
+
+    Always commits via an explicit `--` pathspec (`paths`, defaulting to just
+    `DEFAULT_REL_PATH`) rather than a bare `git commit` -- cutmode audit
+    finding E: a bare commit ships whatever else happens to be staged in
+    `doc_repo_root`, which in a shared clone another session is using
+    concurrently can sweep in a completely unrelated file (the exact CLAUDE.md
+    "ec2.md nearly got committed into an unrelated PR" failure mode). Pass the
+    reassigned fragment paths too (see assign_target_version.py's
+    --doc-repo-root) so a cut's fragment reassignment rides along in the same
+    commit as the release-notes.mdx splice instead of staying uncommitted
+    (finding F) -- committing them together is what makes the reassignment
+    durable once this branch is pushed."""
     current = _git.head_branch(doc_repo_root)
     if current != branch:
         raise ValueError(
             f"hub-doc repo is on {current!r}, not the release-note branch {branch!r}; "
             "run preview first so the generated file is staged on that branch"
         )
-    staged = _git.run(doc_repo_root, ["diff", "--cached", "--name-only"]).strip()
+    paths = paths if paths else [DEFAULT_REL_PATH]
+    staged = _git.run(doc_repo_root, ["diff", "--cached", "--name-only", "--", *paths]).strip()
     if staged:
-        _git.run(doc_repo_root, ["commit", "-m", title])
+        _git.run(doc_repo_root, ["commit", "-m", title, "--", *paths])
         return
     if _branch_has_commits_to_push(doc_repo_root, branch):
         return  # already committed by a previous run; nothing to stage
     raise ValueError(
-        "no staged changes and the branch has no commits to push; "
+        "no staged changes among the expected paths and the branch has no commits to push; "
         "run preview before pushing (it stages the generated file)"
     )
 
 
-def open_release_notes_pr(*, doc_repo_root: str, branch: str, title: str, body: str) -> str:
+def open_release_notes_pr(
+    *, doc_repo_root: str, branch: str, title: str, body: str, paths: list[str] | None = None,
+) -> str:
     fork = detect_fork()
     if fork is None:
         raise RuntimeError(f"no fork of {UPSTREAM_HUB_DOC} detected for the current gh user; fork it first")
-    commit_release_notes(doc_repo_root=doc_repo_root, branch=branch, title=title)
+    commit_release_notes(doc_repo_root=doc_repo_root, branch=branch, title=title, paths=paths)
     fork_url = f"https://github.com/{fork}.git"
     try:
         _git.run(doc_repo_root, ["remote", "add", "fork", fork_url])
@@ -106,9 +125,19 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--branch", required=True)
     parser.add_argument("--title", required=True)
     parser.add_argument("--body-file", required=True)
+    parser.add_argument(
+        "--path", action="append", dest="paths",
+        help=f"repo-relative path to commit (repeatable); defaults to just {DEFAULT_REL_PATH!r} "
+             "if omitted. Cut mode should also pass every fragment path reassigned this run "
+             "(see assign_target_version.py's --doc-repo-root) so the reassignment is committed "
+             "together with the release-notes.mdx splice.",
+    )
     args = parser.parse_args(argv)
     body = Path(args.body_file).read_text(encoding="utf-8")
-    url = open_release_notes_pr(doc_repo_root=args.doc_repo_root, branch=args.branch, title=args.title, body=body)
+    url = open_release_notes_pr(
+        doc_repo_root=args.doc_repo_root, branch=args.branch, title=args.title, body=body,
+        paths=args.paths,
+    )
     print(json.dumps({"pr_url": url}))
     return 0
 

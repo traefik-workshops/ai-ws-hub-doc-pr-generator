@@ -18,10 +18,11 @@ target_version line to replace -- never silently no-ops.
 """
 from __future__ import annotations
 import argparse
+import os
 import sys
 from pathlib import Path
 
-from scripts import _discover
+from scripts import _discover, _git
 from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE, split_front_matter
 
 
@@ -78,6 +79,16 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--fragment", required=True, help="path to the fragment file to rewrite")
     parser.add_argument("--version", required=True, help="the confirmed target_version to assign")
+    parser.add_argument(
+        "--doc-repo-root",
+        help="path to the hub-doc clone this fragment lives in -- if given, `git add`s the "
+             "rewritten fragment there so the reassignment rides along with whatever this cut "
+             "eventually commits, instead of staying an uncommitted, easy-to-lose local edit "
+             "(cutmode audit finding F: a re-cut of the same still-open version from a "
+             "different or fresh clone previously saw this fragment as still `unassigned`, "
+             "since nothing in the pipeline ever committed the reassignment). Omit for a "
+             "fragment that isn't inside a git repo (e.g. in tests).",
+    )
     args = parser.parse_args(argv)
     path = Path(args.fragment)
     try:
@@ -85,6 +96,14 @@ def main(argv: list[str]) -> int:
     except ValueError as e:
         print(f"{args.fragment}: {e}", file=sys.stderr)
         return 1
+    if args.doc_repo_root:
+        rel_path = os.path.relpath(path.resolve(), Path(args.doc_repo_root).resolve())
+        try:
+            _git.run(args.doc_repo_root, ["add", "--", rel_path])
+        except _git.GitError as e:
+            print(f"{args.fragment}: rewrote target_version but failed to stage it in "
+                  f"{args.doc_repo_root!r}: {e}", file=sys.stderr)
+            return 1
     print(f"{args.fragment}: target_version -> {args.version}")
     return 0
 

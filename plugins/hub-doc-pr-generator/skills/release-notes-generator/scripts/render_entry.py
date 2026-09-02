@@ -30,11 +30,32 @@ from pathlib import Path
 
 from scripts import _discover
 
-_HEADING_RE = re.compile(r"^## Gateway v", re.MULTILINE)
+# IGNORECASE for the same reason _existing_section_span's own heading match
+# already is (cutmode audit finding H): before this, the two disagreed --
+# this regex (splice()'s own top-of-file insertion search, and one of
+# _existing_section_span's stop boundaries) was case-sensitive while
+# _existing_section_span's match was not, so a differently-cased
+# "## gateway v..." heading was a legitimate boundary for one and invisible
+# to the other.
+_HEADING_RE = re.compile(r"^## Gateway v", re.MULTILINE | re.IGNORECASE)
 _HEADING_IDENTITY_RE = re.compile(
     r"^## Gateway (?P<identity>.+?)(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE,
 )
 _EARLIER_RELEASES_RE = re.compile(r"^## Earlier releases", re.MULTILINE)
+# ANY level-2 heading, not just a Gateway one -- used as the last-resort
+# section-end boundary in _existing_section_span. Cutmode audit finding A:
+# that function used to fall back to end-of-file whenever neither
+# _HEADING_RE nor _EARLIER_RELEASES_RE matched after the section being
+# replaced, which silently deleted trailing non-heading content (e.g. a
+# footer like "## Support policy") whenever the section being re-cut
+# happened to be the LAST one in the file -- confirmed live, and not an edge
+# case: it's the normal "re-cut with stragglers" path the whole fragment
+# design exists for. Any other "## " heading is just as valid a boundary as
+# a Gateway heading or the archive marker -- this file's structure never
+# nests an unrelated "## " heading inside a version's own section -- so
+# stopping at the first one closes this gap without needing to enumerate
+# every possible footer heading by name.
+_ANY_H2_RE = re.compile(r"^## ", re.MULTILINE)
 
 
 def _heading_identity(text: str) -> str | None:
@@ -92,6 +113,7 @@ def _existing_section_span(existing: str, identity: str) -> tuple[int, int] | No
     stops = [x.start() for x in (
         _HEADING_RE.search(existing, m.end()),
         _EARLIER_RELEASES_RE.search(existing, m.end()),
+        _ANY_H2_RE.search(existing, m.end()),
     ) if x]
     return m.start(), (min(stops) if stops else len(existing))
 
