@@ -74,7 +74,8 @@ class TestCommitReleaseNotes(unittest.TestCase):
         with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
              patch("scripts.push._git.run") as mock_run:
             mock_run.side_effect = [
-                "docs/api-gateway/release-notes.mdx\n",  # diff --cached --name-only
+                "docs/api-gateway/release-notes.mdx\n",  # diff --cached --name-only (fragment auto-discovery)
+                "docs/api-gateway/release-notes.mdx\n",  # diff --cached --name-only -- <paths>
                 "",  # commit
             ]
             commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
@@ -103,6 +104,7 @@ class TestCommitReleaseNotes(unittest.TestCase):
         with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
              patch("scripts.push._git.run") as mock_run:
             mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n",  # diff --cached --name-only (fragment auto-discovery)
                 "docs/api-gateway/release-notes.mdx\n",  # diff --cached --name-only -- <paths>
                 "",  # commit
             ]
@@ -110,6 +112,51 @@ class TestCommitReleaseNotes(unittest.TestCase):
         commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
         self.assertIn("--", commit_call.args[1])
         self.assertIn("docs/api-gateway/release-notes.mdx", commit_call.args[1])
+
+    def test_auto_discovers_staged_fragment_paths_without_explicit_list(self):
+        """Regression test for PR #32 review finding 1: relying on the
+        orchestrating agent to correctly maintain an external scratch file
+        (SKILL.md's /tmp/reassigned_fragment_paths.txt) across steps has no
+        way to catch a lost or incomplete list -- if it's wrong, finding F's
+        fix silently doesn't apply, with no test able to catch it. The
+        ground truth for "which fragments got reassigned this run" is
+        already in git (assign_target_version.py's --doc-repo-root stages
+        them) -- commit_release_notes must read that directly instead of
+        trusting an external list, with no --path argument needed at all."""
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                # git diff --cached --name-only (unscoped, to discover staged
+                # fragment paths)
+                "docs/api-gateway/release-notes.mdx\n"
+                "docs/api-gateway/release-notes.d/_964-x.mdx\n"
+                "docs/api-gateway/release-notes.d/_970-y.mdx\n",
+                # git diff --cached --name-only -- <paths> (the staged check)
+                "docs/api-gateway/release-notes.mdx\n"
+                "docs/api-gateway/release-notes.d/_964-x.mdx\n"
+                "docs/api-gateway/release-notes.d/_970-y.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertIn("docs/api-gateway/release-notes.d/_964-x.mdx", commit_call.args[1])
+        self.assertIn("docs/api-gateway/release-notes.d/_970-y.mdx", commit_call.args[1])
+
+    def test_does_not_auto_discover_unrelated_staged_files(self):
+        """The auto-discovery must be scoped to the fragments directory glob
+        -- an unrelated staged file in a shared clone (the CLAUDE.md
+        "ec2.md nearly got committed" scenario) must never be swept in just
+        because commit_release_notes looked at everything staged."""
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\nsome/unrelated/ec2.md\n",
+                "docs/api-gateway/release-notes.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertNotIn("some/unrelated/ec2.md", commit_call.args[1])
 
     def test_commit_includes_extra_paths_when_given(self):
         """A cut that reassigned fragments must commit those fragment paths
@@ -119,6 +166,7 @@ class TestCommitReleaseNotes(unittest.TestCase):
         with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
              patch("scripts.push._git.run") as mock_run:
             mock_run.side_effect = [
+                "",  # diff --cached --name-only (fragment auto-discovery) -- nothing extra staged
                 "docs/api-gateway/release-notes.mdx\ndocs/api-gateway/release-notes.d/_964-x.mdx\n",
                 "",  # commit
             ]

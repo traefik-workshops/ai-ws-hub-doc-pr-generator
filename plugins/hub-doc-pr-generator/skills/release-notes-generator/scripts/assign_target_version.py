@@ -91,18 +91,54 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     path = Path(args.fragment)
+
+    # Validate --doc-repo-root and compute rel_path BEFORE writing anything --
+    # PR #32 review finding 8: the original fix wrote the fragment's new
+    # target_version to disk first and only attempted staging afterward, so a
+    # bad --doc-repo-root (not a git repo, or a fragment that isn't actually
+    # inside it) left the fragment rewritten-but-unstaged: a broken,
+    # re-run-unsafe state, since the unassigned sentinel is already gone and
+    # a re-run of this command will just fail with "no unassigned line
+    # found". Catching the likely failure classes here, before the write,
+    # means those two mistakes leave the fragment completely untouched.
+    rel_path: str | None = None
+    if args.doc_repo_root:
+        repo_root = Path(args.doc_repo_root)
+        if not (repo_root / ".git").exists():
+            print(f"{args.fragment}: --doc-repo-root {args.doc_repo_root!r} has no .git -- "
+                  "not a git repo. Refusing to touch the fragment until this is fixed.",
+                  file=sys.stderr)
+            return 1
+        rel_path = os.path.relpath(path.resolve(), repo_root.resolve())
+        if rel_path.startswith(".."):
+            print(f"{args.fragment}: is not inside --doc-repo-root {args.doc_repo_root!r} "
+                  f"(computed relative path {rel_path!r}). Refusing to touch the fragment "
+                  "until this is fixed.", file=sys.stderr)
+            return 1
+
     try:
         path.write_text(assign(path.read_text(encoding="utf-8"), args.version), encoding="utf-8")
     except ValueError as e:
         print(f"{args.fragment}: {e}", file=sys.stderr)
         return 1
-    if args.doc_repo_root:
-        rel_path = os.path.relpath(path.resolve(), Path(args.doc_repo_root).resolve())
+
+    if rel_path is not None:
         try:
             _git.run(args.doc_repo_root, ["add", "--", rel_path])
         except _git.GitError as e:
-            print(f"{args.fragment}: rewrote target_version but failed to stage it in "
-                  f"{args.doc_repo_root!r}: {e}", file=sys.stderr)
+            # The write already happened and can't be undone here without
+            # its own risk of clobbering a concurrent change -- give the
+            # operator the exact recovery command instead of a bare "failed
+            # to stage" message that leaves the next step a mystery. Do NOT
+            # re-run this command: the unassigned sentinel is already gone,
+            # so a re-run would just fail with "no unassigned line found".
+            print(
+                f"{args.fragment}: rewrote target_version -> {args.version} on disk, but failed "
+                f"to stage it in {args.doc_repo_root!r}: {e}\n"
+                f"Fix the git issue, then run `git -C {args.doc_repo_root} add -- {rel_path}` "
+                "manually -- don't re-run this command.",
+                file=sys.stderr,
+            )
             return 1
     print(f"{args.fragment}: target_version -> {args.version}")
     return 0

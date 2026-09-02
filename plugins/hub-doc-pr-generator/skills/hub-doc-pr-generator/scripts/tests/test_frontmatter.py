@@ -37,7 +37,19 @@ class TestSplitFrontMatter(unittest.TestCase):
         though the front matter itself was perfectly well-formed."""
         fm, body = split_front_matter("---\r\nkey: value\r\n---\r\nBody text\r\n")
         self.assertEqual(fm, "key: value")
-        self.assertEqual(body, "Body text\n")
+
+    def test_crlf_tolerance_does_not_flatten_the_body(self):
+        """Regression test for PR #32 review finding 5: the original CRLF fix
+        normalized the WHOLE input text (`text.replace("\\r\\n", "\\n")`)
+        before matching, not just the bytes needed to make the delimiter
+        regex match -- so a CRLF-saved fragment's body came back with every
+        line ending silently rewritten to LF, producing a noisy full-file
+        diff on write-back (assign_target_version.assign() reconstructs the
+        file from this same fm/body split) for a change that should have
+        touched only the target_version line. Only the fragment's own
+        original line endings should survive in `body`."""
+        fm, body = split_front_matter("---\r\nkey: value\r\n---\r\nBody text\r\nSecond line\r\n")
+        self.assertEqual(body, "Body text\r\nSecond line\r\n")
 
 
 if __name__ == "__main__":

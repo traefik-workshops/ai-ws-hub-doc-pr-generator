@@ -37,15 +37,19 @@ shared logic.
 
 ## Shared code
 
-`scripts/_gh.py` and `_git.py` are symlinks to the sibling skill's copies
-(`../../hub-doc-pr-generator/scripts/_gh.py` / `_git.py`) rather than
-independent files — each Claude Code skill gets `${CLAUDE_SKILL_DIR}` pointed
-at its own directory, so a real plugin-level `lib/` package would need both
-skills' invocation lines updated to a wider `PYTHONPATH`. A symlink avoids
-that: it resolves to a normal file at `scripts/_git.py` from the interpreter's
+`scripts/_gh.py`, `_git.py`, `_frontmatter.py`, and `_shapes.py` are symlinks
+to the sibling skill's copies (`../../hub-doc-pr-generator/scripts/_gh.py` /
+`_git.py` / `_frontmatter.py` / `_shapes.py`) rather than independent files —
+each Claude Code skill gets `${CLAUDE_SKILL_DIR}` pointed at its own
+directory, so a real plugin-level `lib/` package would need both skills'
+invocation lines updated to a wider `PYTHONPATH`. A symlink avoids that: it
+resolves to a normal file at e.g. `scripts/_git.py` from the interpreter's
 point of view, so `${CLAUDE_SKILL_DIR}`-relative invocation is unaffected, and
 there's exactly one copy of the logic (and its tests, which import and patch
-it identically on each side) to maintain.
+it identically on each side) to maintain. `_shapes.py`'s `VALID_SHAPES` is
+what keeps `classify.py`'s proposed shapes and `assemble_section.py`'s
+validated shapes in sync (PR #32 review finding 6) without either file
+needing to know about the other.
 
 `setup.py`/`_discover.py` are **not** symlinked — they're a deliberately
 trimmed variant (no `discover_oss`/`--impl-repo` branching, since release
@@ -313,14 +317,15 @@ them into the real section, once, when the release is actually confirmed.
    step 1 so the updated assignment is picked up. Fragments the writer does
    *not* select stay `unassigned` for a future cut; never touch them.
 
-   **Track every fragment path reassigned this run** (append each `--fragment`
-   value to a list, e.g. `/tmp/reassigned_fragment_paths.txt`, one per line) —
-   step 8's `push` needs the full list so the reassignment is committed, not
-   just staged. Cutmode audit finding F: `assign_target_version.py` only
-   rewrites the fragment file on disk; without `--doc-repo-root` staging it
-   *and* step 8 committing it explicitly, a later re-cut of the same
-   still-open version from a different or fresh clone sees the fragment as
-   `unassigned` again and silently drops it from the re-cut.
+   Nothing further to track here — step 8's `push` auto-discovers every
+   staged fragment under `release-notes.d/*.mdx` directly from git and
+   commits it alongside `release-notes.mdx`, so this step doesn't need to
+   separately record which fragments it reassigned. (Cutmode audit finding
+   F, and PR #32 review finding 1: an earlier version of this fix made that
+   tracking a manual, agent-maintained scratch file across steps — fragile
+   by construction, since a lost or incomplete list silently reopens finding
+   F with nothing able to catch it. Reading it back from git's own staged-
+   file list instead of an external file removes that dependency.)
 
 3. **Filter and order this release's fragments.**
    ```bash
@@ -427,25 +432,22 @@ them into the real section, once, when the release is actually confirmed.
    tag mode step 9). Write to `/tmp/pr-body.md`.
 
 8. **Preview presentation, edit loop, push.** Same as tag mode steps 9–11: present
-   the diff, `AskUserQuestion` for push / re-prompt / save-and-exit, then pass
-   `--path` once for `release-notes.mdx` and once more for every fragment path
-   tracked in step 2:
+   the diff, `AskUserQuestion` for push / re-prompt / save-and-exit, then:
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.push \
      --doc-repo-root <hub-doc-root> --branch <branch> \
-     --title "docs: release notes for <version>" --body-file /tmp/pr-body.md \
-     --path docs/api-gateway/release-notes.mdx \
-     $(sed 's/^/--path /' /tmp/reassigned_fragment_paths.txt 2>/dev/null)
+     --title "docs: release notes for <version>" --body-file /tmp/pr-body.md
    ```
-   `push.py` commits only the paths it's given, via an explicit pathspec — never
-   a bare `git commit` that would sweep in whatever else happens to be staged in
-   a shared clone another session might be using (finding E). Passing the
-   reassigned fragment paths here is what actually makes step 2's
-   `--doc-repo-root` staging durable: once this branch is pushed, the fragment's
-   real `target_version` is committed history, not an uncommitted local edit
-   that a future re-cut from a different clone would fail to see (finding F).
-   If step 2 never ran (no unassigned fragments this cut), omit the extra
-   `--path` flags — the default is just `release-notes.mdx`.
+   No `--path` flags needed here even if step 2 reassigned fragments — `push.py`
+   commits `release-notes.mdx` plus every fragment currently staged under
+   `release-notes.d/*.mdx` (auto-discovered directly from git, since step 2's
+   `--doc-repo-root` already staged any reassignment), via an explicit pathspec
+   — never a bare `git commit` that would sweep in whatever else happens to be
+   staged in a shared clone another session might be using (finding E). This is
+   what actually makes step 2's staging durable: once this branch is pushed,
+   the fragment's real `target_version` is committed history, not an
+   uncommitted local edit that a future re-cut from a different clone would
+   fail to see (finding F).
 
 ## Confirmation gates
 

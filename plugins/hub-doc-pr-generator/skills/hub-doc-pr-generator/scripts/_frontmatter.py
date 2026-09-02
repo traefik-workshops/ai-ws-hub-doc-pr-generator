@@ -18,7 +18,19 @@ PYTHONPATH package.
 from __future__ import annotations
 import re
 
-_FRONT_MATTER_RE = re.compile(r"^---\n(?P<fm>.*?)\n---\n?(?P<body>.*)$", re.DOTALL)
+# `\r?\n` rather than a literal `\n` around each delimiter -- cutmode audit
+# finding G, and PR #32 review finding 5: an earlier version of this fix
+# normalized the WHOLE input text (`text.replace("\r\n", "\n")`) before
+# matching, which tolerated a CRLF-saved fragment (a plausible
+# Windows-editor save) but also silently rewrote every line ending in the
+# returned `fm`/`body` to LF -- producing a noisy full-file diff on
+# write-back (assign_target_version.assign() reconstructs the file from this
+# same split) for a change that should have touched only the
+# target_version line. Tolerating `\r?\n` in the regex itself, instead of
+# preprocessing the text, means only the two delimiter lines are
+# affected -- the captured `fm`/`body` groups keep whatever line endings the
+# original file actually used.
+_FRONT_MATTER_RE = re.compile(r"^---\r?\n(?P<fm>.*?)\r?\n---\r?\n?(?P<body>.*)$", re.DOTALL)
 
 # What counts as an unassigned release-note fragment's target_version (bare or
 # quoted -- collect_fragments.parse_fragment unquotes scalars when reading a
@@ -53,17 +65,12 @@ def split_front_matter(text: str) -> tuple[str, str]:
     """Split `text` into (front_matter_block, body), where front_matter_block is
     the raw text between the `---` delimiters (not yet parsed into fields).
     Raises ValueError if there's no such block — callers decide whether that's
-    fatal for their use case.
-
-    Normalizes CRLF to LF first -- cutmode audit finding G: _FRONT_MATTER_RE
-    matches a literal '\\n', so a CRLF-saved fragment (a plausible
-    Windows-editor save) previously failed the whole regex and raised this
-    function's generic "no front matter block" error even though the front
-    matter itself was perfectly well-formed. Every other regex downstream of
-    this (collect_fragments.py, assign_target_version.py) assumes LF-only
-    input, so normalizing once here at the shared entry point is simpler and
-    safer than teaching each of them CRLF tolerance independently."""
-    text = text.replace("\r\n", "\n")
+    fatal for their use case. Tolerates CRLF around the delimiters without
+    altering any other line endings in the returned `fm`/`body` (see
+    _FRONT_MATTER_RE's comment) -- per-line parsers downstream of this
+    (collect_fragments.parse_fragment's `fm_text.splitlines()`) already
+    handle a `\\r\\n`-terminated line correctly on their own, so no further
+    normalization is needed here."""
     m = _FRONT_MATTER_RE.match(text)
     if not m:
         raise ValueError("no '---' front matter block found")

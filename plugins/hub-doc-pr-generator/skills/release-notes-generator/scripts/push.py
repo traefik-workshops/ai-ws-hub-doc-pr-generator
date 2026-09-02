@@ -12,6 +12,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import fnmatch
 import json
 import sys
 from pathlib import Path
@@ -24,6 +25,32 @@ UPSTREAM_HUB_DOC = "traefik/hub-doc"
 # here rather than imported, matching this module's own "hub-only,
 # single-file trim" convention (see module docstring).
 DEFAULT_REL_PATH = "docs/api-gateway/release-notes.mdx"
+# Glob (matched against a repo-relative path) for fragment files
+# commit_release_notes() auto-discovers among what's already staged -- see
+# _staged_paths_matching()'s docstring.
+FRAGMENT_GLOB = "docs/api-gateway/release-notes.d/*.mdx"
+
+
+def _staged_paths_matching(doc_repo_root: str, pattern: str) -> list[str]:
+    """Repo-relative paths currently staged in `doc_repo_root` that match
+    `pattern` (fnmatch against the full path).
+
+    This is what makes finding F's fix self-enforcing instead of prose-only
+    (PR #32 review finding 1): assign_target_version.py's --doc-repo-root
+    already `git add`s a reassigned fragment, so by the time `push` runs,
+    the ground truth for "which fragments got reassigned this run" is
+    already sitting in the git index -- reading it directly here means
+    commit_release_notes() no longer depends on the orchestrating agent
+    correctly maintaining an external list (SKILL.md's earlier
+    /tmp/reassigned_fragment_paths.txt approach, which had no way to catch
+    a lost or incomplete list, and whose shell plumbing had its own bug:
+    review finding 2, unquoted `sed` word-splitting a path containing a
+    space). If nothing matching `pattern` is staged, this simply returns an
+    empty list -- not an error, since most cuts reassign zero fragments."""
+    staged = _git.run(doc_repo_root, ["diff", "--cached", "--name-only"]).strip()
+    if not staged:
+        return []
+    return [p for p in staged.splitlines() if fnmatch.fnmatch(p, pattern)]
 
 
 def _parent_full_name(parent: dict) -> str:
@@ -65,27 +92,39 @@ def commit_release_notes(*, doc_repo_root: str, branch: str, title: str, paths: 
     """preview.py writes and stages the new file but never commits it — without
     this, `git push` ships a branch identical to base and the draft PR is empty.
 
-    Always commits via an explicit `--` pathspec (`paths`, defaulting to just
-    `DEFAULT_REL_PATH`) rather than a bare `git commit` -- cutmode audit
-    finding E: a bare commit ships whatever else happens to be staged in
-    `doc_repo_root`, which in a shared clone another session is using
-    concurrently can sweep in a completely unrelated file (the exact CLAUDE.md
-    "ec2.md nearly got committed into an unrelated PR" failure mode). Pass the
-    reassigned fragment paths too (see assign_target_version.py's
-    --doc-repo-root) so a cut's fragment reassignment rides along in the same
-    commit as the release-notes.mdx splice instead of staying uncommitted
-    (finding F) -- committing them together is what makes the reassignment
-    durable once this branch is pushed."""
+    Always commits via an explicit `--` pathspec rather than a bare `git
+    commit` -- cutmode audit finding E: a bare commit ships whatever else
+    happens to be staged in `doc_repo_root`, which in a shared clone another
+    session is using concurrently can sweep in a completely unrelated file
+    (the exact CLAUDE.md "ec2.md nearly got committed into an unrelated PR"
+    failure mode).
+
+    The pathspec is `paths` (defaulting to just `DEFAULT_REL_PATH`) PLUS
+    whatever is currently staged under `FRAGMENT_GLOB` -- that second part is
+    auto-discovered from git, not passed in, so a cut's fragment
+    reassignment (assign_target_version.py's --doc-repo-root stages it) rides
+    along in the same commit as the release-notes.mdx splice without the
+    caller having to track and pass every reassigned fragment path itself
+    (finding F, and PR #32 review finding 1: an earlier version of this fix
+    made that tracking the *caller's* job via an external SKILL.md scratch
+    file, which had no way to catch a lost or incomplete list -- reading it
+    directly from git's own staged-file list removes that dependency
+    entirely). `paths` still exists for anything outside the fragment glob a
+    caller explicitly wants included."""
     current = _git.head_branch(doc_repo_root)
     if current != branch:
         raise ValueError(
             f"hub-doc repo is on {current!r}, not the release-note branch {branch!r}; "
             "run preview first so the generated file is staged on that branch"
         )
-    paths = paths if paths else [DEFAULT_REL_PATH]
-    staged = _git.run(doc_repo_root, ["diff", "--cached", "--name-only", "--", *paths]).strip()
+    explicit_paths = list(paths) if paths else [DEFAULT_REL_PATH]
+    auto_fragment_paths = _staged_paths_matching(doc_repo_root, FRAGMENT_GLOB)
+    # dict.fromkeys dedupes while preserving order, in case a caller's
+    # explicit `paths` already names one of the auto-discovered fragments.
+    all_paths = list(dict.fromkeys([*explicit_paths, *auto_fragment_paths]))
+    staged = _git.run(doc_repo_root, ["diff", "--cached", "--name-only", "--", *all_paths]).strip()
     if staged:
-        _git.run(doc_repo_root, ["commit", "-m", title, "--", *paths])
+        _git.run(doc_repo_root, ["commit", "-m", title, "--", *all_paths])
         return
     if _branch_has_commits_to_push(doc_repo_root, branch):
         return  # already committed by a previous run; nothing to stage
@@ -127,10 +166,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--body-file", required=True)
     parser.add_argument(
         "--path", action="append", dest="paths",
-        help=f"repo-relative path to commit (repeatable); defaults to just {DEFAULT_REL_PATH!r} "
-             "if omitted. Cut mode should also pass every fragment path reassigned this run "
-             "(see assign_target_version.py's --doc-repo-root) so the reassignment is committed "
-             "together with the release-notes.mdx splice.",
+        help=f"extra repo-relative path to commit alongside {DEFAULT_REL_PATH!r} (repeatable). "
+             f"Rarely needed: any fragment reassigned this run (see assign_target_version.py's "
+             f"--doc-repo-root) is auto-discovered from what's already staged under "
+             f"{FRAGMENT_GLOB!r} and committed together, without needing to be listed here.",
     )
     args = parser.parse_args(argv)
     body = Path(args.body_file).read_text(encoding="utf-8")

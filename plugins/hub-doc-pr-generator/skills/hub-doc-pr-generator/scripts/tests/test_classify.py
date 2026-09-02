@@ -1,3 +1,4 @@
+import re
 import unittest
 from scripts.classify import feature_type, needs_release_note, _title_to_heading
 from scripts.classify import needs_screenshots
@@ -349,6 +350,25 @@ class TestClassifyWithNoPR(unittest.TestCase):
             neighbor_paths=[],
         )
         self.assertEqual(result["needs_release_note"]["verdict"], "no")
+
+
+class TestShapeSync(unittest.TestCase):
+    """Regression coverage for PR #32 review finding 6: every literal `shape`
+    string classify.py can propose must be a member of the shared
+    _shapes.VALID_SHAPES set (also used by the sibling release-notes-generator
+    skill's assemble_section.py to validate a shape before rendering) -- a
+    shape classify.py starts proposing without also being added there would
+    otherwise be silently rejected downstream at cut time, not caught here."""
+
+    def test_every_shape_classify_can_propose_is_in_valid_shapes(self):
+        from scripts._shapes import VALID_SHAPES
+        source = Path(__file__).resolve().parents[1].joinpath("classify.py").read_text()
+        proposed = set(re.findall(r'shape = "([\w-]+)"', source))
+        self.assertTrue(proposed, "expected to find at least one shape literal in classify.py")
+        self.assertTrue(
+            proposed.issubset(VALID_SHAPES),
+            f"classify.py proposes shape(s) not in _shapes.VALID_SHAPES: {proposed - VALID_SHAPES}",
+        )
 
 
 if __name__ == "__main__":

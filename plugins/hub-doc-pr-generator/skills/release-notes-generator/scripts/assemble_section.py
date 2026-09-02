@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 from scripts import _discover
+from scripts._shapes import VALID_SHAPES
 
 _EA_VERSION_RE = re.compile(r"-ea(\.|$)", re.IGNORECASE)
 
@@ -40,19 +41,6 @@ _EA_VERSION_RE = re.compile(r"-ea(\.|$)", re.IGNORECASE)
 # graduations, and a plain-bullet entry (a small enhancement the
 # engineer/reviewer explicitly declined EA/GA framing for) isn't one.
 _BULLET_SHAPE = "ga-bullet"
-
-# The complete set of shapes a fragment's front matter can declare (see the
-# sibling hub-doc-pr-generator skill's classify.py and
-# templates/release-note-fragment.mdx.tmpl, "Body below this front matter is
-# exactly the shape template's content for {{shape}}"). Cutmode audit finding
-# B: matching was exact/case-sensitive with no validation anywhere in the
-# pipeline -- a case-variant or typo'd shape (e.g. `GA-bullet`) silently fell
-# through to the generic "subsections" bucket instead of being grouped
-# correctly or raising, so a real GA graduation could ship as an unlabeled
-# orphan bullet with no error at any point.
-_VALID_SHAPES = {
-    "ea-subsection", "ga-subsection", "ga-bullet", "plain-bullet", "breaking-subsection",
-}
 
 # Matches markdown link targets, e.g. `[text](../foo/bar.md#anchor)`. Only the
 # target (group 1) is used -- link text can contain nested brackets/parens we
@@ -140,14 +128,14 @@ def assemble(*, version: str, date: str, fragments: list[dict], compat_rows: lis
     re-sort or re-filter; it only groups by shape and renders."""
     for f in fragments:
         shape = f.get("shape")
-        if shape not in _VALID_SHAPES:
+        if shape not in VALID_SHAPES:
             # Loud failure, not a silent fall-through to the subsections
-            # bucket -- see _VALID_SHAPES' docstring (cutmode audit finding
-            # B). A typo'd or case-variant shape needs a human to fix the
+            # bucket -- see _shapes.py's docstring (cutmode audit finding B).
+            # A typo'd or case-variant shape needs a human to fix the
             # fragment's front matter, not to be quietly misrendered.
             raise ValueError(
                 f"{f.get('filename', '<unknown fragment>')}: unrecognized shape {shape!r} -- "
-                f"expected one of {sorted(_VALID_SHAPES)}"
+                f"expected one of {sorted(VALID_SHAPES)}"
             )
     badge = " <EarlyAccessBadge />" if _EA_VERSION_RE.search(version) else ""
     heading = f"## Gateway {version}{badge}"

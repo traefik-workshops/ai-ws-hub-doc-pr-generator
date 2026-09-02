@@ -2,7 +2,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from scripts.assign_target_version import assign, main
+from scripts import _git
 
 FRAGMENT_BARE = "---\nshape: ea-subsection\nsource_prs: [964]\ntarget_version: unassigned\n---\n\n#### Bedrock Mantle\n"
 FRAGMENT_DOUBLE_QUOTED = FRAGMENT_BARE.replace("target_version: unassigned", 'target_version: "unassigned"')
@@ -149,6 +151,78 @@ class TestMainGitStaging(unittest.TestCase):
             rc = main(["--fragment", str(path), "--version", "v3.21.0-ea.1"])
             self.assertEqual(rc, 0)
             self.assertIn("target_version: v3.21.0-ea.1", path.read_text())
+
+    def test_non_repo_doc_root_is_rejected_before_writing_the_fragment(self):
+        """Regression test for PR #32 review finding 8: the original fix
+        wrote the fragment's new target_version to disk BEFORE attempting to
+        stage it, so a bad --doc-repo-root (not a real git repo) left the
+        fragment rewritten-but-unstaged -- a broken, re-run-unsafe state
+        (the unassigned sentinel is gone, so re-running just fails). A
+        --doc-repo-root that isn't a git repo must be caught before any
+        write happens, so the fragment is left completely untouched."""
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "_964-bedrock-mantle.mdx"
+            path.write_text(FRAGMENT_BARE)
+            not_a_repo = Path(td) / "not-a-repo"
+            not_a_repo.mkdir()
+            rc = main([
+                "--fragment", str(path), "--version", "v3.21.0-ea.1",
+                "--doc-repo-root", str(not_a_repo),
+            ])
+            self.assertEqual(rc, 1)
+            self.assertEqual(path.read_text(), FRAGMENT_BARE)
+
+    def test_fragment_outside_doc_repo_root_is_rejected_before_writing(self):
+        """A fragment that isn't actually inside --doc-repo-root (a nonsensical
+        pairing, likely a wrong argument) must be caught before any write,
+        same rationale as the non-repo case above."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            self._init_repo(repo)
+            elsewhere = Path(td) / "elsewhere"
+            elsewhere.mkdir()
+            path = elsewhere / "_964-bedrock-mantle.mdx"
+            path.write_text(FRAGMENT_BARE)
+            rc = main([
+                "--fragment", str(path), "--version", "v3.21.0-ea.1",
+                "--doc-repo-root", str(repo),
+            ])
+            self.assertEqual(rc, 1)
+            self.assertEqual(path.read_text(), FRAGMENT_BARE)
+
+    def test_git_add_failure_message_is_actionable(self):
+        """If staging still fails for some other reason after a valid,
+        pre-checked repo and path (e.g. a permissions issue), the error must
+        tell the operator the fragment WAS already rewritten on disk and give
+        the exact command to finish staging it manually, rather than a bare
+        "failed to stage" message that leaves the recovery path a mystery."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._init_repo(repo)
+            frag_path = repo / "_964-bedrock-mantle.mdx"
+            frag_path.write_text(FRAGMENT_BARE)
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+            with patch("scripts.assign_target_version._git.run", side_effect=_git.GitError("simulated failure")):
+                rc, err = self._run_capturing_stderr([
+                    "--fragment", str(frag_path), "--version", "v3.21.0-ea.1",
+                    "--doc-repo-root", str(repo),
+                ])
+            self.assertEqual(rc, 1)
+            self.assertIn("target_version: v3.21.0-ea.1", frag_path.read_text())  # write DID happen
+            self.assertIn("git -C", err)
+            self.assertIn("add -- _964-bedrock-mantle.mdx", err)
+
+    @staticmethod
+    def _run_capturing_stderr(argv):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            rc = main(argv)
+        return rc, buf.getvalue()
 
 
 if __name__ == "__main__":

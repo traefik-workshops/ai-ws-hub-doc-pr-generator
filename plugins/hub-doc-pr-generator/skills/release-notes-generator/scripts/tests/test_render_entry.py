@@ -170,6 +170,52 @@ class TestSplice(unittest.TestCase):
         result = splice(existing, entry)
         self.assertLess(result.index("v3.20.7"), result.index("v3.20.6"))
 
+    def test_resplicing_replaces_even_when_new_entrys_heading_case_drifts(self):
+        """Regression test for PR #32 review finding 3: _HEADING_IDENTITY_RE
+        (used to read the NEW entry's own heading identity) lacked the
+        IGNORECASE fix applied to _existing_section_span's match -- a
+        differently-cased new-entry heading (e.g. from a re-prompt/regenerate
+        cycle) failed _heading_identity(), fell through to the default
+        insert-above-first-heading path, and duplicated the heading instead
+        of replacing it -- the same duplicate-heading bug finding H exists to
+        prevent, just reopened from the other side of the comparison."""
+        existing = "## Gateway v3.20.6\n\nold content\n"
+        entry = "## gateway v3.20.6\n\nnew content\n"  # lowercase "gateway"
+        result = splice(existing, entry)
+        self.assertEqual(result.count("v3.20.6"), 1)
+        self.assertIn("new content", result)
+        self.assertNotIn("old content", result)
+
+    def test_resplice_ignores_h2_lookalike_inside_a_fenced_code_block(self):
+        """Regression test for PR #32 review finding 4: _ANY_H2_RE (added for
+        finding A's fix) is a naive '^## ' regex with no fenced-code-block
+        awareness. A release note can legitimately contain a fenced example
+        (e.g. demonstrating a config file's own comment syntax) whose content
+        happens to start with '## ' -- treating that as the section's real
+        end boundary means the OLD section's trailing content (after the
+        fake heading) is wrongly left in the file as orphaned top-level
+        content instead of being cleanly superseded by the new entry, the
+        same 'replace, don't duplicate/leak' guarantee finding H protects on
+        the heading side."""
+        existing = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-10**\n\n#### Bedrock Mantle\n\n"
+            "Example config:\n\n"
+            "```yaml\n"
+            "## This comment looks like a heading but is inside a code fence\n"
+            "key: value\n"
+            "```\n\n"
+            "Stale content that must be fully replaced, not orphaned.\n"
+        )
+        entry = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-11**\n\n#### Bedrock Mantle\n\n"
+            "#### Messages API\n"
+        )
+        result = splice(existing, entry)
+        self.assertEqual(result.count("## Gateway v3.21.0-ea.1"), 1)
+        self.assertIn("Messages API", result)
+        self.assertNotIn("Stale content that must be fully replaced, not orphaned.", result)
+        self.assertNotIn("inside a code fence", result)
+
     def test_resplicing_last_section_preserves_trailing_non_heading_footer(self):
         """Regression test for cutmode audit finding A: re-cutting the LAST
         Gateway section must not delete trailing content that isn't itself a

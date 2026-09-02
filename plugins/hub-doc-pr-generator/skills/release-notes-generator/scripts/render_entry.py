@@ -38,24 +38,54 @@ from scripts import _discover
 # "## gateway v..." heading was a legitimate boundary for one and invisible
 # to the other.
 _HEADING_RE = re.compile(r"^## Gateway v", re.MULTILINE | re.IGNORECASE)
+# IGNORECASE for the same reason _HEADING_RE is (PR #32 review finding 3):
+# this regex reads the NEW entry's own heading identity, and a differently-
+# cased new-entry heading (e.g. from a re-prompt/regenerate cycle) previously
+# failed to match here, fell through to the default insert-above-first-
+# heading path in splice(), and duplicated the heading instead of replacing
+# it -- reopening finding H's duplicate-heading bug from the other side of
+# the comparison (_existing_section_span's match was already IGNORECASE).
 _HEADING_IDENTITY_RE = re.compile(
-    r"^## Gateway (?P<identity>.+?)(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE,
+    r"^## Gateway (?P<identity>.+?)(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE | re.IGNORECASE,
 )
-_EARLIER_RELEASES_RE = re.compile(r"^## Earlier releases", re.MULTILINE)
-# ANY level-2 heading, not just a Gateway one -- used as the last-resort
-# section-end boundary in _existing_section_span. Cutmode audit finding A:
-# that function used to fall back to end-of-file whenever neither
-# _HEADING_RE nor _EARLIER_RELEASES_RE matched after the section being
-# replaced, which silently deleted trailing non-heading content (e.g. a
-# footer like "## Support policy") whenever the section being re-cut
-# happened to be the LAST one in the file -- confirmed live, and not an edge
-# case: it's the normal "re-cut with stragglers" path the whole fragment
-# design exists for. Any other "## " heading is just as valid a boundary as
-# a Gateway heading or the archive marker -- this file's structure never
-# nests an unrelated "## " heading inside a version's own section -- so
-# stopping at the first one closes this gap without needing to enumerate
-# every possible footer heading by name.
-_ANY_H2_RE = re.compile(r"^## ", re.MULTILINE)
+
+
+def _first_h2_outside_fences(text: str, start: int) -> int | None:
+    """Position of the first line at or after `start` that starts with
+    '## ' (any level-2 heading, not just a Gateway one) and isn't inside a
+    fenced code block (```...```). None if there's no such line before the
+    end of `text`.
+
+    Used as the section-end boundary in _existing_section_span. Cutmode audit
+    finding A: that function used to only look for the next `## Gateway v...`
+    heading or the `## Earlier releases` archive marker, falling back to
+    end-of-file when neither matched after the section being replaced --
+    which silently deleted trailing non-heading content (e.g. a footer like
+    "## Support policy") whenever the section being re-cut happened to be the
+    LAST one in the file. Confirmed live, and not an edge case: it's the
+    normal "re-cut with stragglers" path the whole fragment design exists
+    for. Any other "## " heading is just as valid a boundary as a Gateway
+    heading or the archive marker (both are themselves "## "-prefixed lines,
+    so this matches anything they would, at the same or an earlier position)
+    -- matching any of them closes that gap without needing to enumerate
+    every possible footer heading by name.
+
+    Fence-aware because a release note can legitimately contain a fenced
+    example (e.g. demonstrating a config file's own comment syntax, or
+    literal markdown syntax) whose content happens to start with "## " --
+    PR #32 review finding 4: a plain '^## ' regex with no fence tracking
+    mistook that for a real section boundary, which truncated the section
+    early and left its true trailing content orphaned as stray top-level
+    text instead of being cleanly superseded on a re-splice."""
+    in_fence = False
+    pos = start
+    for line in text[start:].splitlines(keepends=True):
+        if line.startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and line.startswith("## "):
+            return pos
+        pos += len(line)
+    return None
 
 
 def _heading_identity(text: str) -> str | None:
@@ -110,12 +140,8 @@ def _existing_section_span(existing: str, identity: str) -> tuple[int, int] | No
     m = heading_re.search(existing)
     if not m:
         return None
-    stops = [x.start() for x in (
-        _HEADING_RE.search(existing, m.end()),
-        _EARLIER_RELEASES_RE.search(existing, m.end()),
-        _ANY_H2_RE.search(existing, m.end()),
-    ) if x]
-    return m.start(), (min(stops) if stops else len(existing))
+    stop = _first_h2_outside_fences(existing, m.end())
+    return m.start(), (stop if stop is not None else len(existing))
 
 
 def splice(existing: str, entry: str) -> str:

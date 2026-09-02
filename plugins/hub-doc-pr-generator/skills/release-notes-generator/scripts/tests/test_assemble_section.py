@@ -2,6 +2,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from scripts.assemble_section import assemble, check_fragment_links, render_compat_table
 
 _UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
@@ -122,6 +123,8 @@ class TestPlainBulletShape(unittest.TestCase):
         # entry appears in the section but is NOT swept into that group.
         self.assertGreater(ga_bullet_idx, ga_heading_idx)
         self.assertNotIn("License expiration metric", section[ga_heading_idx:ga_bullet_idx])
+        self.assertIn("License expiration metric", section)
+        self.assertGreaterEqual(plain_idx, 0)
 
 
 class TestShapeValidation(unittest.TestCase):
@@ -150,6 +153,31 @@ class TestShapeValidation(unittest.TestCase):
             assemble(  # must not raise
                 version="v3.21.0-ea.1", date="2026-08-10",
                 fragments=[fragment], compat_rows=COMPAT_ROWS,
+            )
+
+    def test_validates_against_the_shared_shapes_module_not_a_private_copy(self):
+        """Regression test for PR #32 review finding 6: the original fix gave
+        assemble_section.py its own hardcoded `_VALID_SHAPES` set, independent
+        of classify.py's actual shape literals -- nothing would catch the two
+        drifting apart if classify.py started proposing a new shape. Proves
+        assemble_section.py actually reads scripts._shapes.VALID_SHAPES (the
+        same module classify.py uses) rather than a private literal, by
+        patching that shared set and confirming validation follows it."""
+        import scripts.assemble_section as assemble_section_module
+        with patch.object(assemble_section_module, "VALID_SHAPES", frozenset({"totally-new-shape"})):
+            # A shape that used to be valid is now rejected, because the
+            # shared set (not a frozen local copy) is what's consulted.
+            with self.assertRaises(ValueError):
+                assemble(
+                    version="v3.21.0-ea.1", date="2026-08-10",
+                    fragments=[{"shape": "ga-bullet", "pr_number": 1, "body": "x"}],
+                    compat_rows=COMPAT_ROWS,
+                )
+            # The newly "valid" shape is accepted.
+            assemble(
+                version="v3.21.0-ea.1", date="2026-08-10",
+                fragments=[{"shape": "totally-new-shape", "pr_number": 1, "body": "x"}],
+                compat_rows=COMPAT_ROWS,
             )
 
 
