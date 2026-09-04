@@ -30,11 +30,106 @@ from pathlib import Path
 
 from scripts import _discover
 
-_HEADING_RE = re.compile(r"^## Gateway v", re.MULTILINE)
+# IGNORECASE for the same reason _existing_section_span's own heading match
+# already is (cutmode audit finding H): before this, the two disagreed --
+# this regex (splice()'s own top-of-file insertion search, and one of
+# _existing_section_span's stop boundaries) was case-sensitive while
+# _existing_section_span's match was not, so a differently-cased
+# "## gateway v..." heading was a legitimate boundary for one and invisible
+# to the other.
+_HEADING_RE = re.compile(r"^## Gateway v", re.MULTILINE | re.IGNORECASE)
+# IGNORECASE for the same reason _HEADING_RE is (PR #32 review finding 3):
+# this regex reads the NEW entry's own heading identity, and a differently-
+# cased new-entry heading (e.g. from a re-prompt/regenerate cycle) previously
+# failed to match here, fell through to the default insert-above-first-
+# heading path in splice(), and duplicated the heading instead of replacing
+# it -- reopening finding H's duplicate-heading bug from the other side of
+# the comparison (_existing_section_span's match was already IGNORECASE).
 _HEADING_IDENTITY_RE = re.compile(
-    r"^## Gateway (?P<identity>.+?)(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE,
+    r"^## Gateway (?P<identity>.+?)(?:\s*<EarlyAccessBadge\s*/>)?\s*$", re.MULTILINE | re.IGNORECASE,
 )
-_EARLIER_RELEASES_RE = re.compile(r"^## Earlier releases", re.MULTILINE)
+
+
+def _first_line_outside_fences(text: str, start: int, matches) -> int | None:
+    """Position of the first line at or after `start` for which `matches(line)`
+    is true and that isn't inside a fenced code block (```...```). None if no
+    such line exists before the end of `text`.
+
+    The fence-tracking loop itself, factored out so every place in this
+    module that needs "find a line, but not one hiding inside a fenced
+    example" shares one implementation (PR #32 review finding 4: splice()'s
+    own top-of-file insertion search used a bare `_HEADING_RE.search(existing)`
+    with no fence awareness at all, re-opening review finding 4's bug --  a
+    fenced example demonstrating heading syntax before the real first heading
+    got mistaken for the insertion point -- on a code path this exact
+    fence-tracking loop was sitting right next to, just not shared with it).
+
+    Raises ValueError if the scanned text has an unclosed fence (an odd
+    number of ``` lines) rather than silently trusting fence state past it
+    (PR #32 review round 4, finding 3): toggling in_fence on every ``` line
+    with no check that they're ever balanced means one stray unclosed fence
+    anywhere in the tail permanently flips in_fence true and it never flips
+    back before EOF -- hiding every real heading after it. Confirmed live:
+    re-cutting the last section of a release-notes.mdx whose trailing
+    footer contains an unterminated fence then silently deleted that footer
+    and everything after it, reopening cutmode audit finding A via a
+    malformed fence instead of finding A's original trigger. Matching this
+    module's own established convention for an unexpected condition it
+    can't safely guess through (splice()'s "no existing heading found"
+    error below) -- raise loudly instead of returning a wrong answer."""
+    lines = text[start:].splitlines(keepends=True)
+    # Count the exact same lines the toggle loop below reacts to (any line
+    # STARTING with ```), not a raw substring count of "```" in the text --
+    # those can disagree (e.g. a line with four backticks, or ``` appearing
+    # mid-line in inline code) and the toggle loop only ever looks at
+    # line-start markers.
+    if sum(1 for line in lines if line.startswith("```")) % 2 != 0:
+        raise ValueError(
+            "found an odd number of ``` fence markers while scanning for a section "
+            "boundary in release-notes.mdx -- an unclosed code fence makes fence-aware "
+            "boundary detection unreliable (it could hide a real heading, silently "
+            "deleting everything after it, or fail to hide a fenced example, "
+            "truncating a section early). Fix the malformed fence before re-cutting."
+        )
+    in_fence = False
+    pos = start
+    for line in lines:
+        if line.startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and matches(line):
+            return pos
+        pos += len(line)
+    return None
+
+
+def _first_h2_outside_fences(text: str, start: int) -> int | None:
+    """Position of the first line at or after `start` that starts with
+    '## ' (any level-2 heading, not just a Gateway one) and isn't inside a
+    fenced code block (```...```). None if there's no such line before the
+    end of `text`.
+
+    Used as the section-end boundary in _existing_section_span. Cutmode audit
+    finding A: that function used to only look for the next `## Gateway v...`
+    heading or the `## Earlier releases` archive marker, falling back to
+    end-of-file when neither matched after the section being replaced --
+    which silently deleted trailing non-heading content (e.g. a footer like
+    "## Support policy") whenever the section being re-cut happened to be the
+    LAST one in the file. Confirmed live, and not an edge case: it's the
+    normal "re-cut with stragglers" path the whole fragment design exists
+    for. Any other "## " heading is just as valid a boundary as a Gateway
+    heading or the archive marker (both are themselves "## "-prefixed lines,
+    so this matches anything they would, at the same or an earlier position)
+    -- matching any of them closes that gap without needing to enumerate
+    every possible footer heading by name.
+
+    Fence-aware because a release note can legitimately contain a fenced
+    example (e.g. demonstrating a config file's own comment syntax, or
+    literal markdown syntax) whose content happens to start with "## " --
+    PR #32 review finding 4: a plain '^## ' regex with no fence tracking
+    mistook that for a real section boundary, which truncated the section
+    early and left its true trailing content orphaned as stray top-level
+    text instead of being cleanly superseded on a re-splice."""
+    return _first_line_outside_fences(text, start, lambda line: line.startswith("## "))
 
 
 def _heading_identity(text: str) -> str | None:
@@ -81,19 +176,32 @@ def _existing_section_span(existing: str, identity: str) -> tuple[int, int] | No
     the default insert-above-first path, and produced two headings for one
     release -- the same duplicate-heading failure this function exists to
     prevent, just reopened via a casing-drift trigger instead of a spacing or
-    prefix-vs-full-identity one."""
+    prefix-vs-full-identity one.
+
+    Fence-aware for the same reason _first_h2_outside_fences (the end
+    boundary just below) and splice()'s own fallback search are: a release
+    note can legitimately contain a fenced example whose content happens to
+    read like a real heading (e.g. demonstrating this exact release-note
+    heading syntax). A bare `.search(existing)` -- what this function used
+    before -- would match that fenced text first if it precedes the real
+    section, splicing the new entry INSIDE the fence instead of replacing
+    the real section (the same bug class as review finding 4, left open on
+    this identity-match search). `_first_line_outside_fences` is the same
+    fence-tracking loop the other two searches already share, applied here
+    too instead of being left as this function's own unshared bare regex
+    search."""
     heading_re = re.compile(
         rf"^## Gateway {re.escape(identity)}(?:\s*<EarlyAccessBadge\s*/>)?\s*$",
-        re.MULTILINE | re.IGNORECASE,
+        re.IGNORECASE,
     )
-    m = heading_re.search(existing)
-    if not m:
+    start = _first_line_outside_fences(existing, 0, lambda line: heading_re.match(line) is not None)
+    if start is None:
         return None
-    stops = [x.start() for x in (
-        _HEADING_RE.search(existing, m.end()),
-        _EARLIER_RELEASES_RE.search(existing, m.end()),
-    ) if x]
-    return m.start(), (min(stops) if stops else len(existing))
+    heading_end = existing.find("\n", start)
+    if heading_end == -1:
+        heading_end = len(existing)
+    stop = _first_h2_outside_fences(existing, heading_end)
+    return start, (stop if stop is not None else len(existing))
 
 
 def splice(existing: str, entry: str) -> str:
@@ -106,13 +214,22 @@ def splice(existing: str, entry: str) -> str:
             start, end = span
             return existing[:start] + entry_block + existing[end:]
 
-    m = _HEADING_RE.search(existing)
-    if not m:
+    # Fence-aware for the same reason _first_h2_outside_fences (used above,
+    # via _existing_section_span) is -- PR #32 review finding 4: this
+    # fallback path used a bare `_HEADING_RE.search(existing)` with no fence
+    # tracking, so a fenced example demonstrating heading syntax (e.g. a code
+    # block showing "## Gateway v9.9.9") before the real first heading was
+    # mistaken for the insertion point and the new entry got spliced INSIDE
+    # the fence, corrupting the file -- the identical bug class this
+    # function's sibling boundary search was already fixed for, left open
+    # here.
+    pos = _first_line_outside_fences(existing, 0, lambda line: _HEADING_RE.match(line) is not None)
+    if pos is None:
         raise ValueError(
             "no existing '## Gateway v...' heading found in release-notes.mdx — "
             "refusing to guess an insertion point; check the file wasn't fetched empty/truncated"
         )
-    return existing[:m.start()] + entry_block + existing[m.start():]
+    return existing[:pos] + entry_block + existing[pos:]
 
 
 def main(argv: list[str]) -> int:

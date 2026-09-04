@@ -37,15 +37,19 @@ shared logic.
 
 ## Shared code
 
-`scripts/_gh.py` and `_git.py` are symlinks to the sibling skill's copies
-(`../../hub-doc-pr-generator/scripts/_gh.py` / `_git.py`) rather than
-independent files — each Claude Code skill gets `${CLAUDE_SKILL_DIR}` pointed
-at its own directory, so a real plugin-level `lib/` package would need both
-skills' invocation lines updated to a wider `PYTHONPATH`. A symlink avoids
-that: it resolves to a normal file at `scripts/_git.py` from the interpreter's
+`scripts/_gh.py`, `_git.py`, `_frontmatter.py`, and `_shapes.py` are symlinks
+to the sibling skill's copies (`../../hub-doc-pr-generator/scripts/_gh.py` /
+`_git.py` / `_frontmatter.py` / `_shapes.py`) rather than independent files —
+each Claude Code skill gets `${CLAUDE_SKILL_DIR}` pointed at its own
+directory, so a real plugin-level `lib/` package would need both skills'
+invocation lines updated to a wider `PYTHONPATH`. A symlink avoids that: it
+resolves to a normal file at e.g. `scripts/_git.py` from the interpreter's
 point of view, so `${CLAUDE_SKILL_DIR}`-relative invocation is unaffected, and
 there's exactly one copy of the logic (and its tests, which import and patch
-it identically on each side) to maintain.
+it identically on each side) to maintain. `_shapes.py`'s `VALID_SHAPES` is
+what keeps `classify.py`'s proposed shapes and `assemble_section.py`'s
+validated shapes in sync (PR #32 review finding 6) without either file
+needing to know about the other.
 
 `setup.py`/`_discover.py` are **not** symlinked — they're a deliberately
 trimmed variant (no `discover_oss`/`--impl-repo` branching, since release
@@ -289,17 +293,38 @@ them into the real section, once, when the release is actually confirmed.
    `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.rename_legacy_fragments --release-notes-dir <dir> --apply`
    to migrate them (a plain rename, front matter and body are untouched) before continuing.
 
+   If the JSON's `skipped_files` is non-empty (or the command printed a `note:
+   skipped non-fragment file ...` to stderr about it), `release-notes.d/` has a
+   stray `*.mdx` that isn't a real fragment (no valid front matter, or a
+   filename `_pr_number` can't parse -- e.g. a leftover `_README.mdx` template).
+   Flag it to the engineer for cleanup as part of this run's manual-checks list
+   (step 7) instead of leaving it to silently recur on every future cut.
+
 2. **Resolve unassigned fragments, if any.** If `/tmp/fragments.json`'s `unassigned`
    is non-empty, use `AskUserQuestion` (multiSelect) listing each one's filename,
    `shape`, and `source_prs`:
    > "These fragments don't have a target_version yet. Which of them ship in
    > `<version>`?"
 
-   For each fragment the writer selects, rewrite its front matter in place:
+   For each fragment the writer selects, rewrite its front matter in place —
+   **always pass both `--doc-repo-root` and `--branch`** so the rewrite is
+   staged in the same git repo, on the same release branch step 6's
+   `preview.py` uses, not left as an uncommitted edit on whatever branch the
+   doc repo happened to be on:
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.assign_target_version \
-     --fragment <fragment-path> --version <version>
+     --fragment <fragment-path> --version <version> \
+     --doc-repo-root <hub-doc-root> --branch <branch>
    ```
+   `--branch` checks out (creating fresh from `origin/main` if needed) the
+   exact branch this cut is building, before staging — skipping it would
+   stage the reassignment on whatever branch happened to be checked out
+   (`main`, or a stale branch left by other work), and only step 6's own
+   later checkout would ever select the real release branch; if THAT
+   checkout then failed (a diverged branch refusing to be overwritten — a
+   real risk on the shared clones this repo's CLAUDE.md warns about), the
+   reassignment would be stranded staged on a branch that was never going
+   to be committed anywhere real (PR #32 review round 4, finding 6).
    Not a shell `sed -i` (its in-place syntax differs between BSD/macOS and
    GNU/Linux — `sed -i ''` specifically is BSD-only) and not a literal
    string `.replace` (silently no-ops on a quoted `target_version: "unassigned"`,
@@ -307,9 +332,24 @@ them into the real section, once, when the release is actually confirmed.
    bugs here before). `assign_target_version.py` tolerates the same quoted/bare
    forms `preview.py`'s `check_unassigned_fragment` recognizes, and **exits
    non-zero rather than silently doing nothing** if no unassigned line is found
-   — stop and investigate rather than proceeding if that happens. Then re-run
-   step 1 so the updated assignment is picked up. Fragments the writer does
-   *not* select stay `unassigned` for a future cut; never touch them.
+   — stop and investigate rather than proceeding if that happens. If either
+   `--doc-repo-root` or `--branch` is skipped, the command still exits `0`
+   but prints a `WARNING` to stderr and says `(NOT staged ...)` in its final
+   line instead of `(staged in ...)` (PR #32 review round 5, finding 1) —
+   treat that warning as a stop-and-fix signal, not something to proceed
+   past. Then re-run step 1 so the updated assignment is picked up.
+   Fragments the writer does *not* select stay `unassigned` for a future
+   cut; never touch them.
+
+   Nothing further to track here — step 8's `push` auto-discovers every
+   staged fragment under `release-notes.d/*.mdx` directly from git and
+   commits it alongside `release-notes.mdx`, so this step doesn't need to
+   separately record which fragments it reassigned. (Cutmode audit finding
+   F, and PR #32 review finding 1: an earlier version of this fix made that
+   tracking a manual, agent-maintained scratch file across steps — fragile
+   by construction, since a lost or incomplete list silently reopens finding
+   F with nothing able to catch it. Reading it back from git's own staged-
+   file list instead of an external file removes that dependency.)
 
 3. **Filter and order this release's fragments.**
    ```bash
@@ -360,6 +400,14 @@ them into the real section, once, when the release is actually confirmed.
    newest-first, compatibility matrix last (see `assemble_section.py`'s
    docstring). No LLM judgment call in this step; the content itself was already
    written and reviewed when each fragment's doc PR merged.
+
+   If `assemble_section` exits non-zero, `/tmp/assembled.json` is empty and the
+   `jq` line above fails right after it with its own generic parse error --
+   the real cause is `assemble_section`'s own stderr message just above that
+   (cutmode audit finding B: a fragment has an unrecognized `shape`, e.g. a
+   typo'd or case-variant value). Stop and have the engineer fix that
+   fragment's front matter before re-running this step; never guess a shape
+   to work around it.
 
    `--docs-dir` also runs a mechanical defense-in-depth check
    (`check_fragment_links`): each fragment's relative markdown links are
@@ -419,12 +467,27 @@ them into the real section, once, when the release is actually confirmed.
    the diff, `AskUserQuestion` for push / re-prompt / save-and-exit, then:
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.push \
-     --doc-repo-root <hub-doc-root> --branch <branch> \
+     --doc-repo-root <hub-doc-root> --branch <branch> --version <version> \
      --title "docs: release notes for <version>" --body-file /tmp/pr-body.md
    ```
-   `push.py` is unchanged and reused as-is — it commits whatever is staged
-   (just the release-notes.mdx rewrite from step 6; fragment files are never
-   touched) and opens the draft PR.
+   No `--path` flags needed here even if step 2 reassigned fragments — `push.py`
+   commits `release-notes.mdx` plus every fragment currently staged under
+   `release-notes.d/*.mdx` (auto-discovered directly from git, since step 2's
+   `--doc-repo-root` already staged any reassignment), via an explicit pathspec
+   — never a bare `git commit` that would sweep in whatever else happens to be
+   staged in a shared clone another session might be using (finding E). This is
+   what actually makes step 2's staging durable: once this branch is pushed,
+   the fragment's real `target_version` is committed history, not an
+   uncommitted local edit that a future re-cut from a different clone would
+   fail to see (finding F).
+
+   **Always pass `--version` here, matching step 2's `--version`** (PR #32
+   review round 5, finding 3): it scopes fragment auto-discovery to
+   fragments staged with THIS exact version, so a different `cut` session
+   working the same shared clone at the same time — reassigning a different
+   fragment to a different version — can't have its own staged reassignment
+   swept into this push's commit. Tag mode's push (step 11) never reassigns
+   fragments and omits `--version`.
 
 ## Confirmation gates
 
@@ -434,11 +497,16 @@ them into the real section, once, when the release is actually confirmed.
 - If `gh auth status` fails: stop with `gh auth login` instructions
 - Never fill in a compatibility-matrix value the scripts reported as
   unknown/`null` — surface it as a TBD checklist item instead
-- Cut mode: never touch a fragment the writer didn't explicitly select in step 2
-  (leave it `unassigned` for a future cut); never delete or modify a fragment
-  file for any reason — `cut` only ever reads them, never removes them, so a
-  re-run for the same still-open version always has the full set to
-  re-derive a complete section from
+- Cut mode: never touch a fragment the writer didn't explicitly select in step
+  2 (leave it `unassigned` for a future cut); never delete a fragment file or
+  edit its body for any reason — `cut` only ever reads a fragment's body, never
+  removes the file, so a re-run for the same still-open version always has the
+  full set to re-derive a complete section from. The one sanctioned exception
+  is step 2's own `assign_target_version.py` rewrite of a *selected* fragment's
+  `target_version` front-matter field — always stage that rewrite with
+  `--doc-repo-root` and let step 8 commit it (auto-discovered from git, no
+  `--path` needed — see step 8), never leave it as an uncommitted local edit
+  (finding F)
 
 ## When to use the AskUserQuestion tool
 

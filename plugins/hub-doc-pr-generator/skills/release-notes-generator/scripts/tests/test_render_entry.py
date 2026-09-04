@@ -41,6 +41,56 @@ class TestSplice(unittest.TestCase):
         with self.assertRaises(ValueError):
             splice(existing, "## Gateway v3.20.7\n\nnew\n")
 
+    def test_fallback_insertion_point_ignores_gateway_heading_lookalike_inside_fence(self):
+        """Regression test (PR #32 review finding 4): splice()'s FALLBACK
+        insertion path (a brand-new version with no existing section of its
+        own to replace) used a plain `_HEADING_RE.search(existing)`, unlike
+        the fence-aware `_first_h2_outside_fences` scanner added elsewhere in
+        this same PR for the identical bug class. A fenced example
+        demonstrating heading syntax (e.g. `## Gateway v9.9.9`) before the
+        real first heading was mistaken for the insertion point, splicing the
+        new entry INSIDE the fence and corrupting the file."""
+        existing = (
+            "preamble\n\n"
+            "Example showing our heading syntax:\n\n"
+            "```md\n"
+            "## Gateway v9.9.9\n"
+            "```\n\n"
+            "## Gateway v3.20.6\n\nold content\n"
+        )
+        entry = "## Gateway v3.20.7\n\nnew content\n"
+        result = splice(existing, entry)
+        self.assertLess(result.index("v3.20.7"), result.index("v3.20.6"))
+        # The new entry must not have landed inside the fenced example.
+        self.assertIn("```md\n## Gateway v9.9.9\n```", result)
+
+    def test_resplice_ignores_gateway_heading_lookalike_inside_fence(self):
+        """Regression test: _existing_section_span's identity-match START
+        search used a bare `heading_re.search(existing)`, unlike the
+        fence-aware end-boundary search (_first_h2_outside_fences) and the
+        fallback insertion search (review finding 4, tested above) that this
+        same PR fixed for the identical bug class. A fenced example
+        demonstrating this exact section's own heading text, appearing before
+        the real section, was mistaken for the section to replace, splicing
+        the re-cut entry INSIDE the fence instead of replacing the real
+        section."""
+        existing = (
+            "preamble\n\n"
+            "Example showing our heading syntax:\n\n"
+            "```md\n"
+            "## Gateway v3.21.0-ea.1\n"
+            "```\n\n"
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-10**\n\nold content\n\n"
+            "## Gateway v3.20.6\n\nolder content\n"
+        )
+        entry = "## Gateway v3.21.0-ea.1\n\n**2026-08-11**\n\nnew content\n"
+        result = splice(existing, entry)
+        # The fenced example must be untouched, and the real section replaced.
+        self.assertIn("```md\n## Gateway v3.21.0-ea.1\n```", result)
+        self.assertIn("new content", result)
+        self.assertNotIn("old content", result)
+        self.assertIn("## Gateway v3.20.6\n\nolder content\n", result)
+
     def test_entry_gets_exactly_one_blank_line_separator(self):
         existing = "preamble\n\n## Gateway v3.20.6\n\nold\n"
         entry = "## Gateway v3.20.7\n\nnew\n\n\n"  # trailing blank lines in the entry itself
@@ -156,6 +206,113 @@ class TestSplice(unittest.TestCase):
         self.assertEqual(result.count("## Gateway v3.20.6 & v3.19.11"), 1)
         self.assertIn("new fix", result)
         self.assertNotIn("old fix", result)
+
+    def test_inserts_above_first_heading_even_with_case_drifted_gateway_word(self):
+        """Regression test for cutmode audit finding H: _HEADING_RE (used
+        both as splice()'s own insertion-point search and as one of
+        _existing_section_span's stop boundaries) was case-sensitive while
+        _existing_section_span's own heading match is case-insensitive --
+        an inconsistency that meant a differently-cased '## gateway v...'
+        heading was a legitimate boundary for one and invisible to the
+        other. Must recognize both consistently."""
+        existing = "## gateway v3.20.6\n\nold content\n"  # lowercase "gateway"
+        entry = "## Gateway v3.20.7\n\nnew content\n"
+        result = splice(existing, entry)
+        self.assertLess(result.index("v3.20.7"), result.index("v3.20.6"))
+
+    def test_resplicing_replaces_even_when_new_entrys_heading_case_drifts(self):
+        """Regression test for PR #32 review finding 3: _HEADING_IDENTITY_RE
+        (used to read the NEW entry's own heading identity) lacked the
+        IGNORECASE fix applied to _existing_section_span's match -- a
+        differently-cased new-entry heading (e.g. from a re-prompt/regenerate
+        cycle) failed _heading_identity(), fell through to the default
+        insert-above-first-heading path, and duplicated the heading instead
+        of replacing it -- the same duplicate-heading bug finding H exists to
+        prevent, just reopened from the other side of the comparison."""
+        existing = "## Gateway v3.20.6\n\nold content\n"
+        entry = "## gateway v3.20.6\n\nnew content\n"  # lowercase "gateway"
+        result = splice(existing, entry)
+        self.assertEqual(result.count("v3.20.6"), 1)
+        self.assertIn("new content", result)
+        self.assertNotIn("old content", result)
+
+    def test_resplice_ignores_h2_lookalike_inside_a_fenced_code_block(self):
+        """Regression test for PR #32 review finding 4: _ANY_H2_RE (added for
+        finding A's fix) is a naive '^## ' regex with no fenced-code-block
+        awareness. A release note can legitimately contain a fenced example
+        (e.g. demonstrating a config file's own comment syntax) whose content
+        happens to start with '## ' -- treating that as the section's real
+        end boundary means the OLD section's trailing content (after the
+        fake heading) is wrongly left in the file as orphaned top-level
+        content instead of being cleanly superseded by the new entry, the
+        same 'replace, don't duplicate/leak' guarantee finding H protects on
+        the heading side."""
+        existing = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-10**\n\n#### Bedrock Mantle\n\n"
+            "Example config:\n\n"
+            "```yaml\n"
+            "## This comment looks like a heading but is inside a code fence\n"
+            "key: value\n"
+            "```\n\n"
+            "Stale content that must be fully replaced, not orphaned.\n"
+        )
+        entry = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-11**\n\n#### Bedrock Mantle\n\n"
+            "#### Messages API\n"
+        )
+        result = splice(existing, entry)
+        self.assertEqual(result.count("## Gateway v3.21.0-ea.1"), 1)
+        self.assertIn("Messages API", result)
+        self.assertNotIn("Stale content that must be fully replaced, not orphaned.", result)
+        self.assertNotIn("inside a code fence", result)
+
+    def test_resplicing_last_section_preserves_trailing_non_heading_footer(self):
+        """Regression test for cutmode audit finding A: re-cutting the LAST
+        Gateway section must not delete trailing content that isn't itself a
+        '## Gateway v...' or '## Earlier releases' heading (e.g. a footer
+        section like '## Support policy'). Confirmed live that
+        _existing_section_span fell back to end-of-file when neither stop
+        pattern matched, so splice() silently dropped everything after the
+        re-cut section."""
+        existing = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-10**\n\n#### Bedrock Mantle\n\n"
+            "## Support policy\n\nThis section describes our support policy.\n"
+        )
+        entry = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-11**\n\n#### Bedrock Mantle\n\n"
+            "#### Messages API\n"
+        )
+        result = splice(existing, entry)
+        self.assertIn("Support policy", result)
+        self.assertIn("This section describes our support policy.", result)
+        self.assertIn("Messages API", result)
+
+    def test_unclosed_fence_in_trailing_content_raises_instead_of_deleting_it(self):
+        """Regression test (PR #32 review round 4, finding 3):
+        _first_line_outside_fences toggles in_fence on every ``` line and
+        never checks the count is balanced. An unclosed (odd number of)
+        fence anywhere in the scanned tail permanently flips in_fence true
+        and never flips back before EOF, hiding every real heading after it
+        -- confirmed live, this reopens cutmode audit finding A (trailing
+        content silently deleted on re-cut) via a malformed/unclosed fence
+        instead of finding A's original trigger. Matching this codebase's
+        established 'raise rather than silently guess wrong' convention
+        (splice()'s own 'no existing heading found' error,
+        assign_target_version.py's 'exits non-zero rather than silently
+        doing nothing'), an unbalanced fence must raise loudly instead of
+        silently truncating the file."""
+        existing = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-10**\n\n#### Bedrock Mantle\n\n"
+            "## Support policy\n\nExample:\n\n"
+            "```\n"
+            "some unterminated fence someone forgot to close before EOF\n"
+        )
+        entry = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-11**\n\n#### Bedrock Mantle\n\n"
+            "#### Messages API\n"
+        )
+        with self.assertRaises(ValueError):
+            splice(existing, entry)
 
 
 if __name__ == "__main__":

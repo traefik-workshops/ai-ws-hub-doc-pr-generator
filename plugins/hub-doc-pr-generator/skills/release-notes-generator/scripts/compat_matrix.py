@@ -277,7 +277,18 @@ def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dic
             delta_assigned.add(component)
             if component not in rows:
                 order.append(component)
-            rows[component] = {"component": component, "version": version, "note": None}
+            # Preserve the row's existing note (if any) rather than blanking
+            # it -- cutmode audit finding D: a fragment's `compat:` block is
+            # only ever component: version pairs (see the fragment template),
+            # it has no way to carry its own note, so unconditionally setting
+            # `note: None` here silently dropped a real matrix-derived
+            # caveat, e.g. traefik_proxy_version()'s note flagging that
+            # go.mod and hub/pkg/version/traefik.version disagree at this tag
+            # -- exactly the mismatch that note exists to surface, still
+            # worth a human's attention even after a fragment overrides the
+            # published version.
+            existing_note = rows.get(component, {}).get("note")
+            rows[component] = {"component": component, "version": version, "note": existing_note}
 
     return [rows[name] for name in order]
 
