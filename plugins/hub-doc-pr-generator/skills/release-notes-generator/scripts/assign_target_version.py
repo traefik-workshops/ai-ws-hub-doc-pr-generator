@@ -120,6 +120,20 @@ def main(argv: list[str]) -> int:
              "since nothing in the pipeline ever committed the reassignment). Omit for a "
              "fragment that isn't inside a git repo (e.g. in tests).",
     )
+    parser.add_argument(
+        "--branch",
+        help="the release branch this cut is building (same value passed to preview.py's "
+             "--branch). If given alongside --doc-repo-root, checks out this branch in the doc "
+             "repo -- creating it fresh from origin/main if it doesn't exist locally yet, via "
+             "the same checkout_branch() preview.py itself uses -- BEFORE staging the "
+             "reassignment there (PR #32 review round 4, finding 6). Without this, the "
+             "reassignment stages on whatever branch --doc-repo-root already happened to be on; "
+             "if that isn't the release branch (main, or a stale branch left by other work) and "
+             "preview.py's own later checkout of the release branch then fails (e.g. a diverged "
+             "branch refusing to be overwritten), the reassignment is left staged somewhere that "
+             "was never going to be committed anywhere real. Omit only when there's no release "
+             "branch yet to check out (e.g. reassigning a fragment outside the cut pipeline).",
+    )
     args = parser.parse_args(argv)
     path = Path(args.fragment)
 
@@ -146,9 +160,36 @@ def main(argv: list[str]) -> int:
                   f"(computed relative path {rel_path!r}). Refusing to touch the fragment "
                   "until this is fixed.", file=sys.stderr)
             return 1
+        if args.branch:
+            # Same "validate/act before writing" ordering as the checks
+            # above -- a failed checkout must leave the fragment untouched,
+            # not rewritten-but-on-the-wrong-branch.
+            from scripts.preview import checkout_branch
+            try:
+                checkout_branch(args.doc_repo_root, args.branch)
+            except _git.GitError as e:
+                print(f"{args.fragment}: failed to check out branch {args.branch!r} in "
+                      f"{args.doc_repo_root!r}: {e}. Refusing to touch the fragment until this "
+                      "is fixed.", file=sys.stderr)
+                return 1
 
     try:
-        path.write_text(assign(path.read_text(encoding="utf-8"), args.version), encoding="utf-8")
+        # newline="" on BOTH read and write, not Path.read_text()/write_text()'s
+        # defaults (PR #32 review round 4, finding 2): Path.read_text() with
+        # the default newline=None applies Python's universal-newline
+        # translation, silently converting every \r\n to \n BEFORE assign()
+        # ever sees the content -- confirmed live, this defeated the whole
+        # CRLF-preservation fix above in the one code path that matters (the
+        # CLI is what actually rewrites fragments on disk; the regression
+        # test for that fix calls assign() directly with an in-memory string,
+        # which never exercised this). newline="" on write likewise stops
+        # write_text() from re-translating the \n's assign() already paired
+        # with \r back into the platform default.
+        with open(path, encoding="utf-8", newline="") as f:
+            content = f.read()
+        new_content = assign(content, args.version)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(new_content)
     except ValueError as e:
         print(f"{args.fragment}: {e}", file=sys.stderr)
         return 1

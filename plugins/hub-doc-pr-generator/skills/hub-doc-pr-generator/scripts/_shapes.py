@@ -36,16 +36,19 @@ test that has to keep pace with classify.py's implementation details.
 """
 from __future__ import annotations
 
-BREAKING_SUBSECTION = "breaking-subsection"
-GA_BULLET = "ga-bullet"
-EA_SUBSECTION = "ea-subsection"
-GA_SUBSECTION = "ga-subsection"
-PLAIN_BULLET = "plain-bullet"
-
-VALID_SHAPES = frozenset({
-    BREAKING_SUBSECTION,
-    GA_BULLET,
-    EA_SUBSECTION,
-    GA_SUBSECTION,
-    PLAIN_BULLET,
-})
+# One literal per shape, written exactly once (PR #32 review round 4,
+# finding 8): the constants below and VALID_SHAPES both derive from this
+# single tuple instead of each hand-listing all five names -- the earlier
+# version had VALID_SHAPES as its own frozenset literal repeating every
+# constant a second time, in the very module whose docstring above says its
+# purpose is eliminating exactly this kind of two-places-to-update drift.
+# Adding a sixth shape now only means adding one entry here.
+_SHAPE_NAMES = (
+    "breaking-subsection",
+    "ga-bullet",
+    "ea-subsection",
+    "ga-subsection",
+    "plain-bullet",
+)
+BREAKING_SUBSECTION, GA_BULLET, EA_SUBSECTION, GA_SUBSECTION, PLAIN_BULLET = _SHAPE_NAMES
+VALID_SHAPES = frozenset(_SHAPE_NAMES)

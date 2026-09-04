@@ -287,6 +287,33 @@ class TestSplice(unittest.TestCase):
         self.assertIn("This section describes our support policy.", result)
         self.assertIn("Messages API", result)
 
+    def test_unclosed_fence_in_trailing_content_raises_instead_of_deleting_it(self):
+        """Regression test (PR #32 review round 4, finding 3):
+        _first_line_outside_fences toggles in_fence on every ``` line and
+        never checks the count is balanced. An unclosed (odd number of)
+        fence anywhere in the scanned tail permanently flips in_fence true
+        and never flips back before EOF, hiding every real heading after it
+        -- confirmed live, this reopens cutmode audit finding A (trailing
+        content silently deleted on re-cut) via a malformed/unclosed fence
+        instead of finding A's original trigger. Matching this codebase's
+        established 'raise rather than silently guess wrong' convention
+        (splice()'s own 'no existing heading found' error,
+        assign_target_version.py's 'exits non-zero rather than silently
+        doing nothing'), an unbalanced fence must raise loudly instead of
+        silently truncating the file."""
+        existing = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-10**\n\n#### Bedrock Mantle\n\n"
+            "## Support policy\n\nExample:\n\n"
+            "```\n"
+            "some unterminated fence someone forgot to close before EOF\n"
+        )
+        entry = (
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-11**\n\n#### Bedrock Mantle\n\n"
+            "#### Messages API\n"
+        )
+        with self.assertRaises(ValueError):
+            splice(existing, entry)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -62,10 +62,38 @@ def _first_line_outside_fences(text: str, start: int, matches) -> int | None:
     with no fence awareness at all, re-opening review finding 4's bug --  a
     fenced example demonstrating heading syntax before the real first heading
     got mistaken for the insertion point -- on a code path this exact
-    fence-tracking loop was sitting right next to, just not shared with it)."""
+    fence-tracking loop was sitting right next to, just not shared with it).
+
+    Raises ValueError if the scanned text has an unclosed fence (an odd
+    number of ``` lines) rather than silently trusting fence state past it
+    (PR #32 review round 4, finding 3): toggling in_fence on every ``` line
+    with no check that they're ever balanced means one stray unclosed fence
+    anywhere in the tail permanently flips in_fence true and it never flips
+    back before EOF -- hiding every real heading after it. Confirmed live:
+    re-cutting the last section of a release-notes.mdx whose trailing
+    footer contains an unterminated fence then silently deleted that footer
+    and everything after it, reopening cutmode audit finding A via a
+    malformed fence instead of finding A's original trigger. Matching this
+    module's own established convention for an unexpected condition it
+    can't safely guess through (splice()'s "no existing heading found"
+    error below) -- raise loudly instead of returning a wrong answer."""
+    lines = text[start:].splitlines(keepends=True)
+    # Count the exact same lines the toggle loop below reacts to (any line
+    # STARTING with ```), not a raw substring count of "```" in the text --
+    # those can disagree (e.g. a line with four backticks, or ``` appearing
+    # mid-line in inline code) and the toggle loop only ever looks at
+    # line-start markers.
+    if sum(1 for line in lines if line.startswith("```")) % 2 != 0:
+        raise ValueError(
+            "found an odd number of ``` fence markers while scanning for a section "
+            "boundary in release-notes.mdx -- an unclosed code fence makes fence-aware "
+            "boundary detection unreliable (it could hide a real heading, silently "
+            "deleting everything after it, or fail to hide a fenced example, "
+            "truncating a section early). Fix the malformed fence before re-cutting."
+        )
     in_fence = False
     pos = start
-    for line in text[start:].splitlines(keepends=True):
+    for line in lines:
         if line.startswith("```"):
             in_fence = not in_fence
         elif not in_fence and matches(line):

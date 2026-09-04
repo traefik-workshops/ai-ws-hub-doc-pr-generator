@@ -60,9 +60,8 @@ def _staged_paths_matching(staged: list[str], pattern: str) -> list[str]:
 
 def _fragments_with_staged_reassignment(doc_repo_root: str, fragment_paths: list[str]) -> list[str]:
     """The subset of `fragment_paths` that staging actually gave a real
-    (non-'unassigned') target_version where its last-committed state (or
-    absence, for a brand-new fragment) did not -- not just any staged edit
-    under FRAGMENT_GLOB.
+    (non-'unassigned') target_version where its last-committed (HEAD) state
+    was still 'unassigned' -- not just any staged edit under FRAGMENT_GLOB.
 
     Matching FRAGMENT_GLOB alone re-opens the exact shared-clone risk finding
     E's explicit-pathspec commit was written to close (PR #32 review finding
@@ -88,7 +87,23 @@ def _fragments_with_staged_reassignment(doc_repo_root: str, fragment_paths: list
     `UNASSIGNED_TARGET_VERSION_RE` (the same regex assign_target_version.py
     and preview.py already treat as the single source of truth for what
     "unassigned" means) sidesteps both: no diff text to misparse, and an
-    exact structural check instead of a substring guess."""
+    exact structural check instead of a substring guess.
+
+    Requires HEAD to actually have the fragment (still 'unassigned' there),
+    not merely absent from HEAD (PR #32 review round 4, finding 4). An
+    earlier version of this function also auto-discovered a fragment whose
+    HEAD blob was simply missing -- treating "brand-new, staged, and already
+    assigned" the same as "existed in HEAD as unassigned, now staged as
+    assigned". But in the normal cut-mode workflow a fragment
+    assign_target_version.py reassigns already exists in HEAD as
+    'unassigned' (it was merged via its own doc PR before the cut ever
+    ran) -- so a brand-new, HEAD-absent, already-assigned fragment is never
+    what a real reassignment by this run looks like; it's indistinguishable
+    from an unrelated concurrent session's off-convention fragment that
+    skipped the 'unassigned' placeholder entirely, reopening the exact
+    shared-clone risk this function otherwise closes. Excluding it means
+    that narrow case needs an explicit `--path` instead of being silently
+    swept in -- fails closed, not open."""
     if not fragment_paths:
         return []
     specs = [f"HEAD:{p}" for p in fragment_paths] + [f":{p}" for p in fragment_paths]
@@ -99,7 +114,7 @@ def _fragments_with_staged_reassignment(doc_repo_root: str, fragment_paths: list
         if staged is None or UNASSIGNED_TARGET_VERSION_RE.search(staged):
             continue  # not actually staged, or staged but still unassigned
         head = blobs.get(f"HEAD:{path}")
-        if head is None or UNASSIGNED_TARGET_VERSION_RE.search(head):
+        if head is not None and UNASSIGNED_TARGET_VERSION_RE.search(head):
             reassigned.append(path)
     return reassigned
 

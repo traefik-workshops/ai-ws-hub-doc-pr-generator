@@ -112,6 +112,29 @@ class TestMain(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("target_version: v3.21.0-ea.1", path.read_text())
 
+    def test_preserves_crlf_through_the_actual_file_round_trip(self):
+        """Regression test (PR #32 review round 4, finding 2):
+        test_preserves_crlf_line_endings_throughout above only calls
+        assign() directly with an in-memory string, so it never exercised
+        main()'s actual read/write path. Path.read_text()/write_text() at
+        their default `newline=None` apply Python's universal-newline
+        translation -- confirmed live: reading a file written as
+        `b'---\\r\\ntarget_version: unassigned\\r\\n---\\r\\n'` back with
+        `read_text(encoding='utf-8')` returns `'---\\ntarget_version:
+        unassigned\\n---\\n'`, every \\r already gone before assign() ever
+        runs -- silently defeating the whole CRLF-preservation fix in the
+        one code path that matters, since the CLI is what actually rewrites
+        fragments on disk."""
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "964-bedrock-mantle.mdx"
+            path.write_bytes(FRAGMENT_BARE.replace("\n", "\r\n").encode("utf-8"))
+            rc = main(["--fragment", str(path), "--version", "v3.21.0-ea.1"])
+            self.assertEqual(rc, 0)
+            raw = path.read_bytes()
+            self.assertNotIn(b"\n", raw.replace(b"\r\n", b""),
+                              "result has a bare LF not part of a CRLF pair")
+            self.assertIn(b"target_version: v3.21.0-ea.1\r\n", raw)
+
     def test_returns_nonzero_and_leaves_file_untouched_on_no_match(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "964-bedrock-mantle.mdx"
@@ -156,6 +179,72 @@ class TestMainGitStaging(unittest.TestCase):
                 capture_output=True, text=True, check=True,
             ).stdout
             self.assertIn("docs/api-gateway/release-notes.d/_964-bedrock-mantle.mdx", staged)
+
+    def test_branch_argument_checks_out_the_release_branch_before_staging(self):
+        """Regression test (PR #32 review round 4, finding 6): cut mode's
+        step 2 (this command) previously staged a fragment reassignment on
+        whatever branch --doc-repo-root happened to be checked out to, and
+        only step 6 (preview.py, several steps later) ever created/checked
+        out the real release branch. If that later checkout failed (a
+        diverged branch refusing an overwrite -- the exact concurrent-
+        session risk CLAUDE.md documents), the reassignment was left staged
+        somewhere that was never going to be committed anywhere real.
+        Passing --branch makes this command check out (creating from
+        origin/main if needed) the SAME branch preview.py uses, before
+        staging, using the exact same checkout_branch() preview.py itself
+        calls -- so the fragment always lands staged on the branch that's
+        actually going somewhere."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._init_repo(repo)
+            frag_dir = repo / "docs" / "api-gateway" / "release-notes.d"
+            frag_dir.mkdir(parents=True)
+            frag_path = frag_dir / "_964-bedrock-mantle.mdx"
+            frag_path.write_text(FRAGMENT_BARE)
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+            # No local "origin" remote in this bare test repo -- checkout_branch()
+            # only fetches from origin when the branch doesn't exist locally yet,
+            # so create the release branch locally (via `git branch`, which
+            # doesn't switch to it) first to exercise the "already exists,
+            # just switch to it" path without needing a real remote.
+            subprocess.run(["git", "branch", "docs/release-notes"], cwd=repo, check=True)
+
+            rc = main([
+                "--fragment", str(frag_path), "--version", "v3.21.0-ea.1",
+                "--doc-repo-root", str(repo), "--branch", "docs/release-notes",
+            ])
+            self.assertEqual(rc, 0)
+            current_branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo,
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            self.assertEqual(current_branch, "docs/release-notes")
+            staged = subprocess.run(
+                ["git", "diff", "--cached", "--name-only"], cwd=repo,
+                capture_output=True, text=True, check=True,
+            ).stdout
+            self.assertIn("docs/api-gateway/release-notes.d/_964-bedrock-mantle.mdx", staged)
+
+    def test_omitting_branch_keeps_staging_on_whatever_branch_is_checked_out(self):
+        """--branch is optional -- omitting it must not attempt any checkout,
+        preserving the exact behavior every other test in this class relies
+        on (staging on the repo's current branch, whatever it is)."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._init_repo(repo)
+            frag_dir = repo / "docs" / "api-gateway" / "release-notes.d"
+            frag_dir.mkdir(parents=True)
+            frag_path = frag_dir / "_964-bedrock-mantle.mdx"
+            frag_path.write_text(FRAGMENT_BARE)
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+            rc = main([
+                "--fragment", str(frag_path), "--version", "v3.21.0-ea.1",
+                "--doc-repo-root", str(repo),
+            ])
+            self.assertEqual(rc, 0)
 
     def test_omitting_doc_repo_root_keeps_write_only_behavior(self):
         """--doc-repo-root is optional -- omitting it must not attempt any

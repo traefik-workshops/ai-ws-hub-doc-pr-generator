@@ -12,7 +12,7 @@ from scripts.preview import (
 
 def _init_git(d: Path) -> None:
     """A repo with a self-referencing 'origin' remote and a fetched 'main' —
-    matches what a real hub-doc clone looks like, so _checkout_branch's
+    matches what a real hub-doc clone looks like, so checkout_branch's
     `fetch origin main` + `checkout -b <branch> origin/main` has something
     real to branch from."""
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=d, check=True)

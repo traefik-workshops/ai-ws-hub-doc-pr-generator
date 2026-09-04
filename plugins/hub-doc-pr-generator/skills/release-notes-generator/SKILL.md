@@ -307,12 +307,24 @@ them into the real section, once, when the release is actually confirmed.
    > `<version>`?"
 
    For each fragment the writer selects, rewrite its front matter in place —
-   **always pass `--doc-repo-root`** so the rewrite is staged in the same
-   git repo, not left as an uncommitted local edit:
+   **always pass both `--doc-repo-root` and `--branch`** so the rewrite is
+   staged in the same git repo, on the same release branch step 6's
+   `preview.py` uses, not left as an uncommitted edit on whatever branch the
+   doc repo happened to be on:
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.assign_target_version \
-     --fragment <fragment-path> --version <version> --doc-repo-root <hub-doc-root>
+     --fragment <fragment-path> --version <version> \
+     --doc-repo-root <hub-doc-root> --branch <branch>
    ```
+   `--branch` checks out (creating fresh from `origin/main` if needed) the
+   exact branch this cut is building, before staging — skipping it would
+   stage the reassignment on whatever branch happened to be checked out
+   (`main`, or a stale branch left by other work), and only step 6's own
+   later checkout would ever select the real release branch; if THAT
+   checkout then failed (a diverged branch refusing to be overwritten — a
+   real risk on the shared clones this repo's CLAUDE.md warns about), the
+   reassignment would be stranded staged on a branch that was never going
+   to be committed anywhere real (PR #32 review round 4, finding 6).
    Not a shell `sed -i` (its in-place syntax differs between BSD/macOS and
    GNU/Linux — `sed -i ''` specifically is BSD-only) and not a literal
    string `.replace` (silently no-ops on a quoted `target_version: "unassigned"`,

@@ -230,6 +230,39 @@ class TestCommitReleaseNotes(unittest.TestCase):
         commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
         self.assertIn("docs/api-gateway/release-notes.d/_964-x.mdx", commit_call.args[1])
 
+    def test_brand_new_already_assigned_fragment_is_not_auto_discovered(self):
+        """Regression test (PR #32 review round 4, finding 4): a fragment
+        absent from HEAD (a brand-new file, not yet committed) that's staged
+        with a real target_version already set doesn't necessarily mean THIS
+        run's assign_target_version.py --doc-repo-root did that -- in the
+        normal cut-mode workflow, a fragment assign_target_version.py
+        reassigns already exists in HEAD as 'unassigned' (it was merged via
+        its own doc PR before the cut ever ran); a fragment that's both
+        brand-new AND already-assigned looks identical whether it came from
+        this run or from an unrelated concurrent session on the same shared
+        clone creating an off-convention fragment that skips the
+        'unassigned' placeholder entirely -- the exact CLAUDE.md
+        shared-clone risk this function's docstring says it exists to
+        avoid. Treating 'absent from HEAD' as automatic proof of
+        reassignment (the same as 'present in HEAD but still unassigned')
+        reopens that risk; only the latter is unambiguous, so only the
+        latter should auto-discover."""
+        blobs = {
+            "HEAD:docs/api-gateway/release-notes.d/_999-new.mdx": None,
+            ":docs/api-gateway/release-notes.d/_999-new.mdx": "---\ntarget_version: v3.21.0-ea.1\n---\nbody\n",
+        }
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value=blobs), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n"
+                "docs/api-gateway/release-notes.d/_999-new.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertNotIn("docs/api-gateway/release-notes.d/_999-new.mdx", commit_call.args[1])
+
     def test_rel_path_argument_controls_the_committed_pathspec(self):
         """Regression test: commit_release_notes used to hardcode
         DEFAULT_REL_PATH regardless of what preview.py's own overridable
