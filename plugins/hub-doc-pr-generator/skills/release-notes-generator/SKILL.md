@@ -293,6 +293,13 @@ them into the real section, once, when the release is actually confirmed.
    `PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.rename_legacy_fragments --release-notes-dir <dir> --apply`
    to migrate them (a plain rename, front matter and body are untouched) before continuing.
 
+   If the JSON's `skipped_files` is non-empty (or the command printed a `note:
+   skipped non-fragment file ...` to stderr about it), `release-notes.d/` has a
+   stray `*.mdx` that isn't a real fragment (no valid front matter, or a
+   filename `_pr_number` can't parse -- e.g. a leftover `_README.mdx` template).
+   Flag it to the engineer for cleanup as part of this run's manual-checks list
+   (step 7) instead of leaving it to silently recur on every future cut.
+
 2. **Resolve unassigned fragments, if any.** If `/tmp/fragments.json`'s `unassigned`
    is non-empty, use `AskUserQuestion` (multiSelect) listing each one's filename,
    `shape`, and `source_prs`:
@@ -376,6 +383,14 @@ them into the real section, once, when the release is actually confirmed.
    newest-first, compatibility matrix last (see `assemble_section.py`'s
    docstring). No LLM judgment call in this step; the content itself was already
    written and reviewed when each fragment's doc PR merged.
+
+   If `assemble_section` exits non-zero, `/tmp/assembled.json` is empty and the
+   `jq` line above fails right after it with its own generic parse error --
+   the real cause is `assemble_section`'s own stderr message just above that
+   (cutmode audit finding B: a fragment has an unrecognized `shape`, e.g. a
+   typo'd or case-variant value). Stop and have the engineer fix that
+   fragment's front matter before re-running this step; never guess a shape
+   to work around it.
 
    `--docs-dir` also runs a mechanical defense-in-depth check
    (`check_fragment_links`): each fragment's relative markdown links are

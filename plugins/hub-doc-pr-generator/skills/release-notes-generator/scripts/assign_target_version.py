@@ -24,7 +24,12 @@ import sys
 from pathlib import Path
 
 from scripts import _discover, _git
-from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE, split_front_matter
+from scripts._frontmatter import (
+    UNASSIGNED_TARGET_VERSION_RE,
+    detect_newline,
+    join_front_matter,
+    split_front_matter,
+)
 
 
 def assign(content: str, version: str) -> str:
@@ -52,15 +57,19 @@ def assign(content: str, version: str) -> str:
     Preserves the fragment's original line-ending style throughout (PR #32
     review finding 1). split_front_matter already keeps whatever `\\r\\n` or
     `\\n` the original fm/body used, but that guarantee is only as good as
-    what this function does with it: the delimiter lines below must be
-    rebuilt using the SAME line ending as the rest of the file (not a
-    hardcoded `\\n`), and the one line actually being rewritten must keep its
-    own trailing `\\r` too -- confirmed live that a naive fix of only the
+    what this function does with it: the delimiter lines rebuilt by
+    join_front_matter must use the SAME line ending as the rest of the file
+    (detect_newline reads it off the file's own first line, not a hardcoded
+    `\\n`), and the one line actually being rewritten must keep its own
+    trailing `\\r` too -- confirmed live that a naive fix of only the
     delimiters still left a CRLF fragment's rewritten line as bare `\\n`
     (UNASSIGNED_TARGET_VERSION_RE's `\\s*$` swallows the `\\r` into the match,
     so it never survives into the replacement unless put back explicitly),
     producing the exact mixed-line-ending write-back diff this CRLF-tolerance
-    work exists to avoid."""
+    work exists to avoid. The newline detection and delimiter reconstruction
+    themselves live in the shared _frontmatter module (join_front_matter/
+    detect_newline), not as a private expression here, so a future
+    front-matter rewriter doesn't have to reinvent this trick."""
     try:
         fm_text, body = split_front_matter(content)
     except ValueError:
@@ -94,8 +103,7 @@ def assign(content: str, version: str) -> str:
         return f"target_version: {version}{trailing_cr}"
 
     new_fm = UNASSIGNED_TARGET_VERSION_RE.sub(_replacement, fm_text, count=1)
-    newline = "\r\n" if content[:content.find("\n")].endswith("\r") else "\n"
-    return f"---{newline}{new_fm}{newline}---{newline}{body}"
+    return join_front_matter(new_fm, body, detect_newline(content))
 
 
 def main(argv: list[str]) -> int:

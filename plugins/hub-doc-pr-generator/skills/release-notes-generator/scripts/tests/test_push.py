@@ -121,7 +121,14 @@ class TestCommitReleaseNotes(unittest.TestCase):
         already in git (assign_target_version.py's --doc-repo-root stages
         them) -- commit_release_notes must read that directly instead of
         trusting an external list, with no --path argument needed at all."""
+        blobs = {
+            "HEAD:docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: v3.21.0-ea.1\n---\nbody\n",
+            "HEAD:docs/api-gateway/release-notes.d/_970-y.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":docs/api-gateway/release-notes.d/_970-y.mdx": "---\ntarget_version: v3.21.0-ea.1\n---\nbody\n",
+        }
         with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value=blobs), \
              patch("scripts.push._git.run") as mock_run:
             mock_run.side_effect = [
                 # git diff --cached --name-only (staged paths, read once and
@@ -129,15 +136,6 @@ class TestCommitReleaseNotes(unittest.TestCase):
                 "docs/api-gateway/release-notes.mdx\n"
                 "docs/api-gateway/release-notes.d/_964-x.mdx\n"
                 "docs/api-gateway/release-notes.d/_970-y.mdx\n",
-                # git diff --cached -- <candidate fragments> (confirms each
-                # candidate's staged diff is a real target_version
-                # reassignment, not an unrelated staged edit -- finding 6)
-                "diff --git a/docs/api-gateway/release-notes.d/_964-x.mdx b/docs/api-gateway/release-notes.d/_964-x.mdx\n"
-                "-target_version: unassigned\n"
-                "+target_version: v3.21.0-ea.1\n"
-                "diff --git a/docs/api-gateway/release-notes.d/_970-y.mdx b/docs/api-gateway/release-notes.d/_970-y.mdx\n"
-                "-target_version: unassigned\n"
-                "+target_version: v3.21.0-ea.1\n",
                 "",  # commit
             ]
             commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
@@ -169,22 +167,18 @@ class TestCommitReleaseNotes(unittest.TestCase):
         typo fix, not a version reassignment) -- exactly the CLAUDE.md
         "shared clone" risk finding E's explicit-pathspec fix was meant to
         close, reopened via the auto-discovery glob. Auto-discovery must
-        additionally confirm the staged diff for that fragment actually
-        contains a target_version reassignment before including it."""
+        additionally confirm the staged fragment's content actually shows a
+        target_version reassignment before including it."""
+        blobs = {
+            "HEAD:docs/api-gateway/release-notes.d/_970-y.mdx": "---\ntarget_version: v3.21.0-ea.1\n---\nOld body text\n",
+            ":docs/api-gateway/release-notes.d/_970-y.mdx": "---\ntarget_version: v3.21.0-ea.1\n---\nFixed a typo in the body\n",
+        }
         with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value=blobs), \
              patch("scripts.push._git.run") as mock_run:
             mock_run.side_effect = [
-                # diff --cached --name-only: a fragment is staged...
                 "docs/api-gateway/release-notes.mdx\n"
                 "docs/api-gateway/release-notes.d/_970-y.mdx\n",
-                # ...but its staged diff shows only a body edit, no
-                # target_version reassignment.
-                "diff --git a/docs/api-gateway/release-notes.d/_970-y.mdx b/docs/api-gateway/release-notes.d/_970-y.mdx\n"
-                "--- a/docs/api-gateway/release-notes.d/_970-y.mdx\n"
-                "+++ b/docs/api-gateway/release-notes.d/_970-y.mdx\n"
-                "@@ -6,1 +6,1 @@\n"
-                "-#### Old body text\n"
-                "+#### Fixed a typo in the body\n",
                 "",  # commit
             ]
             commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
@@ -192,25 +186,70 @@ class TestCommitReleaseNotes(unittest.TestCase):
         self.assertNotIn("docs/api-gateway/release-notes.d/_970-y.mdx", commit_call.args[1])
 
     def test_auto_discovers_a_staged_fragment_with_a_real_reassignment(self):
-        """The positive case for the same guard: a fragment whose staged diff
-        DOES show a target_version reassignment (what assign_target_version.py
-        --doc-repo-root actually produces) is still auto-discovered."""
+        """The positive case for the same guard: a fragment whose staged
+        content DOES show a target_version reassignment (what
+        assign_target_version.py --doc-repo-root actually produces) is still
+        auto-discovered."""
+        blobs = {
+            "HEAD:docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: v3.21.0-ea.1\n---\nbody\n",
+        }
         with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value=blobs), \
              patch("scripts.push._git.run") as mock_run:
             mock_run.side_effect = [
                 "docs/api-gateway/release-notes.mdx\n"
                 "docs/api-gateway/release-notes.d/_964-x.mdx\n",
-                "diff --git a/docs/api-gateway/release-notes.d/_964-x.mdx b/docs/api-gateway/release-notes.d/_964-x.mdx\n"
-                "--- a/docs/api-gateway/release-notes.d/_964-x.mdx\n"
-                "+++ b/docs/api-gateway/release-notes.d/_964-x.mdx\n"
-                "@@ -4,1 +4,1 @@\n"
-                "-target_version: unassigned\n"
-                "+target_version: v3.21.0-ea.1\n",
                 "",  # commit
             ]
             commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
         commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
         self.assertIn("docs/api-gateway/release-notes.d/_964-x.mdx", commit_call.args[1])
+
+    def test_a_reassigned_value_that_merely_contains_the_word_unassigned_still_counts(self):
+        """Regression test: an earlier version of the auto-discovery check
+        did `"unassigned" not in line` against the raw diff line, so a real
+        assigned value that happens to CONTAIN the substring "unassigned"
+        (e.g. a typo'd `v3.21.0-unassigned-rc1`) was wrongly treated as
+        still-unassigned and silently excluded -- reopening finding F for
+        that fragment. The check must match the exact sentinel
+        (UNASSIGNED_TARGET_VERSION_RE), not do a substring search."""
+        blobs = {
+            "HEAD:docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: v3.21.0-unassigned-rc1\n---\nbody\n",
+        }
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value=blobs), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n"
+                "docs/api-gateway/release-notes.d/_964-x.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertIn("docs/api-gateway/release-notes.d/_964-x.mdx", commit_call.args[1])
+
+    def test_rel_path_argument_controls_the_committed_pathspec(self):
+        """Regression test: commit_release_notes used to hardcode
+        DEFAULT_REL_PATH regardless of what preview.py's own overridable
+        --rel-path actually wrote and staged. If they ever disagree, the
+        pathspec this function builds doesn't match what's staged and the
+        real edit is silently dropped (see rel_path's docstring). A caller
+        that passes the same --rel-path preview.py was given must have that
+        honored."""
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/some-other-file.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(
+                doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x",
+                rel_path="docs/api-gateway/some-other-file.mdx",
+            )
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertIn("docs/api-gateway/some-other-file.mdx", commit_call.args[1])
 
     def test_commit_includes_extra_paths_when_given(self):
         """A cut that reassigned fragments must commit those fragment paths

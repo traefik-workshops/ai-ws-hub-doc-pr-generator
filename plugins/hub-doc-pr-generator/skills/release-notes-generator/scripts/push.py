@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from scripts import _discover, _gh, _git
+from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE
 from scripts.preview import DEFAULT_REL_PATH
 
 UPSTREAM_HUB_DOC = "traefik/hub-doc"
@@ -58,9 +59,10 @@ def _staged_paths_matching(staged: list[str], pattern: str) -> list[str]:
 
 
 def _fragments_with_staged_reassignment(doc_repo_root: str, fragment_paths: list[str]) -> list[str]:
-    """The subset of `fragment_paths` whose staged diff actually contains a
-    `target_version` reassignment (a `+target_version: <non-unassigned>`
-    line), not just any staged edit under FRAGMENT_GLOB.
+    """The subset of `fragment_paths` that staging actually gave a real
+    (non-'unassigned') target_version where its last-committed state (or
+    absence, for a brand-new fragment) did not -- not just any staged edit
+    under FRAGMENT_GLOB.
 
     Matching FRAGMENT_GLOB alone re-opens the exact shared-clone risk finding
     E's explicit-pathspec commit was written to close (PR #32 review finding
@@ -70,24 +72,35 @@ def _fragments_with_staged_reassignment(doc_repo_root: str, fragment_paths: list
     have staged for an unrelated reason" (a body typo fix, say) -- the exact
     CLAUDE.md "ec2.md nearly got committed into an unrelated PR" failure
     mode, just moved from "any staged file" down to "any staged fragment".
-    Checking the staged diff's actual content for what a real reassignment
-    looks like closes that gap without needing per-caller bookkeeping.
 
-    One `git diff --cached` call for ALL candidates at once (not one per
-    fragment) -- parsing the multi-file diff by its `diff --git a/... b/...`
-    headers keeps this from re-introducing the redundant-git-call pattern
-    finding 8 removed elsewhere in this same fix."""
+    Compares each candidate's HEAD and staged (index) blob content directly
+    (one batched `git cat-file --batch` call via `_git.show_many`, not one
+    `git diff`/`git show` process per fragment) instead of hand-parsing a
+    multi-file `git diff --cached` text output by its `diff --git a/... b/...`
+    headers -- an earlier version of this function did that, and it was
+    fragile in two confirmed ways: (1) it treated the substring "unassigned"
+    anywhere in a `+target_version:` line as proof of non-reassignment, which
+    a real assigned value that merely contains that substring (e.g. a typo'd
+    `v3.21.0-unassigned-rc1`) would defeat; (2) it recovered the fragment
+    path from the diff header via `line.rsplit(" b/", 1)`, which mis-parses
+    if the path itself ever contains the literal substring " b/". Reading
+    each candidate's actual front matter with the shared
+    `UNASSIGNED_TARGET_VERSION_RE` (the same regex assign_target_version.py
+    and preview.py already treat as the single source of truth for what
+    "unassigned" means) sidesteps both: no diff text to misparse, and an
+    exact structural check instead of a substring guess."""
     if not fragment_paths:
         return []
-    diff = _git.run(doc_repo_root, ["diff", "--cached", "--", *fragment_paths])
+    specs = [f"HEAD:{p}" for p in fragment_paths] + [f":{p}" for p in fragment_paths]
+    blobs = _git.show_many(doc_repo_root, specs)
     reassigned: list[str] = []
-    current: str | None = None
-    for line in diff.splitlines():
-        if line.startswith("diff --git "):
-            current = line.rsplit(" b/", 1)[-1] if " b/" in line else None
-        elif current and current not in reassigned and line.startswith("+target_version:") \
-                and "unassigned" not in line:
-            reassigned.append(current)
+    for path in fragment_paths:
+        staged = blobs.get(f":{path}")
+        if staged is None or UNASSIGNED_TARGET_VERSION_RE.search(staged):
+            continue  # not actually staged, or staged but still unassigned
+        head = blobs.get(f"HEAD:{path}")
+        if head is None or UNASSIGNED_TARGET_VERSION_RE.search(head):
+            reassigned.append(path)
     return reassigned
 
 
@@ -126,7 +139,10 @@ def _branch_has_commits_to_push(doc_repo_root: str, branch: str) -> bool:
     return False
 
 
-def commit_release_notes(*, doc_repo_root: str, branch: str, title: str, paths: list[str] | None = None) -> None:
+def commit_release_notes(
+    *, doc_repo_root: str, branch: str, title: str,
+    rel_path: str = DEFAULT_REL_PATH, paths: list[str] | None = None,
+) -> None:
     """preview.py writes and stages the new file but never commits it — without
     this, `git push` ships a branch identical to base and the draft PR is empty.
 
@@ -137,13 +153,13 @@ def commit_release_notes(*, doc_repo_root: str, branch: str, title: str, paths: 
     (the exact CLAUDE.md "ec2.md nearly got committed into an unrelated PR"
     failure mode).
 
-    The pathspec is always `DEFAULT_REL_PATH` PLUS whatever extra `paths` the
-    caller passed (PR #32 review finding 2: `--path`'s own help text calls it
-    an "extra path to commit alongside" the default -- additive, not a
-    replacement; an earlier version of this function swapped in `paths` INSTEAD
-    of the default whenever any were given, so a caller following that exact
-    help text silently dropped `DEFAULT_REL_PATH`, the actual release-notes.mdx
-    edit, out of the commit) PLUS whatever is currently staged under
+    The pathspec is always `rel_path` PLUS whatever extra `paths` the caller
+    passed (PR #32 review finding 2: `--path`'s own help text calls it an
+    "extra path to commit alongside" the default -- additive, not a
+    replacement; an earlier version of this function swapped in `paths`
+    INSTEAD of the default whenever any were given, so a caller following
+    that exact help text silently dropped the actual release-notes.mdx edit
+    out of the commit) PLUS whatever is currently staged under
     `FRAGMENT_GLOB` -- that last part is auto-discovered from git, not passed
     in, so a cut's fragment reassignment (assign_target_version.py's
     --doc-repo-root stages it) rides along in the same commit as the
@@ -155,8 +171,18 @@ def commit_release_notes(*, doc_repo_root: str, branch: str, title: str, paths: 
     removes that dependency entirely). `paths` still exists for anything
     outside the fragment glob a caller explicitly wants included.
 
-    A staged fragment is only auto-discovered if its own staged diff shows an
-    actual target_version reassignment, not merely a path match on
+    `rel_path` defaults to `DEFAULT_REL_PATH` -- the same default
+    `preview.py --rel-path` uses -- but is a real parameter, not a hardcoded
+    constant (PR #32 review finding, correctness): preview.py's `--rel-path`
+    is a genuine, tested override, so a caller of the two scripts together
+    who overrides it there must be able to pass the SAME value here or the
+    pathspec this function builds never matches what's actually staged --
+    silently raising "no staged changes" on a fresh branch, or silently
+    no-op'ing as "already committed" on a re-run, either way dropping the
+    real edit with no error.
+
+    A staged fragment is only auto-discovered if its own staged content shows
+    an actual target_version reassignment, not merely a path match on
     FRAGMENT_GLOB (PR #32 review finding 6, altitude) -- see
     _fragments_with_staged_reassignment's docstring for why a glob match
     alone isn't enough in a shared clone."""
@@ -176,7 +202,7 @@ def commit_release_notes(*, doc_repo_root: str, branch: str, title: str, paths: 
     auto_fragment_paths = _fragments_with_staged_reassignment(doc_repo_root, fragment_candidates)
     # dict.fromkeys dedupes while preserving order, in case a caller's
     # explicit `paths` already names one of the auto-discovered fragments.
-    all_paths = list(dict.fromkeys([DEFAULT_REL_PATH, *(paths or []), *auto_fragment_paths]))
+    all_paths = list(dict.fromkeys([rel_path, *(paths or []), *auto_fragment_paths]))
     staged = set(staged_now) & set(all_paths)
     if staged:
         _git.run(doc_repo_root, ["commit", "-m", title, "--", *all_paths])
@@ -190,12 +216,13 @@ def commit_release_notes(*, doc_repo_root: str, branch: str, title: str, paths: 
 
 
 def open_release_notes_pr(
-    *, doc_repo_root: str, branch: str, title: str, body: str, paths: list[str] | None = None,
+    *, doc_repo_root: str, branch: str, title: str, body: str,
+    rel_path: str = DEFAULT_REL_PATH, paths: list[str] | None = None,
 ) -> str:
     fork = detect_fork()
     if fork is None:
         raise RuntimeError(f"no fork of {UPSTREAM_HUB_DOC} detected for the current gh user; fork it first")
-    commit_release_notes(doc_repo_root=doc_repo_root, branch=branch, title=title, paths=paths)
+    commit_release_notes(doc_repo_root=doc_repo_root, branch=branch, title=title, rel_path=rel_path, paths=paths)
     fork_url = f"https://github.com/{fork}.git"
     try:
         _git.run(doc_repo_root, ["remote", "add", "fork", fork_url])
@@ -220,8 +247,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--title", required=True)
     parser.add_argument("--body-file", required=True)
     parser.add_argument(
+        "--rel-path", default=DEFAULT_REL_PATH,
+        help=f"repo-relative path of the release-notes file that was written (default "
+             f"{DEFAULT_REL_PATH!r}). Must match whatever `preview.py --rel-path` was given, "
+             f"if it was ever given a non-default value -- otherwise the commit's pathspec "
+             f"won't match what's actually staged.",
+    )
+    parser.add_argument(
         "--path", action="append", dest="paths",
-        help=f"extra repo-relative path to commit alongside {DEFAULT_REL_PATH!r} (repeatable). "
+        help=f"extra repo-relative path to commit alongside --rel-path (repeatable). "
              f"Rarely needed: any fragment reassigned this run (see assign_target_version.py's "
              f"--doc-repo-root) is auto-discovered from what's already staged under "
              f"{FRAGMENT_GLOB!r} and committed together, without needing to be listed here.",
@@ -230,7 +264,7 @@ def main(argv: list[str]) -> int:
     body = Path(args.body_file).read_text(encoding="utf-8")
     url = open_release_notes_pr(
         doc_repo_root=args.doc_repo_root, branch=args.branch, title=args.title, body=body,
-        paths=args.paths,
+        rel_path=args.rel_path, paths=args.paths,
     )
     print(json.dumps({"pr_url": url}))
     return 0

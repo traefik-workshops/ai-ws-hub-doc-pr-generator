@@ -75,3 +75,32 @@ def split_front_matter(text: str) -> tuple[str, str]:
     if not m:
         raise ValueError("no '---' front matter block found")
     return m["fm"], m["body"]
+
+
+def detect_newline(text: str) -> str:
+    """The line-ending style ('\\r\\n' or '\\n') used by `text`'s own first
+    line. Exists so a front-matter rewriter can rebuild delimiter lines that
+    match the rest of the file instead of hardcoding '\\n' -- see
+    join_front_matter's docstring."""
+    idx = text.find("\n")
+    if idx == -1:
+        return "\n"
+    return "\r\n" if text[:idx].endswith("\r") else "\n"
+
+
+def join_front_matter(fm: str, body: str, newline: str = "\n") -> str:
+    """Inverse of split_front_matter: rebuild `---<nl>fm<nl>---<nl>body` using
+    `newline` for the two delimiter lines it owns (fm/body keep whatever line
+    endings they already contain).
+
+    Pulled out as the shared counterpart to split_front_matter (PR #32
+    review, altitude finding) rather than left as a bespoke f-string in each
+    front-matter rewriter -- assign_target_version.py's assign() had grown
+    this exact reconstruction (delimiter newline detected from the file's
+    first line via detect_newline, so a CRLF-saved fragment's rewritten
+    front matter doesn't come back out with mismatched line endings, cutmode
+    audit finding G's follow-up) as a private local expression; a future
+    front-matter rewriter (the sibling hub-doc-pr-generator skill plausibly
+    needs one too) can now reuse it instead of rediscovering the same
+    newline-preservation trick from scratch."""
+    return f"---{newline}{fm}{newline}---{newline}{body}"

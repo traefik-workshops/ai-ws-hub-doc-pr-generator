@@ -1,5 +1,5 @@
 import unittest
-from scripts._frontmatter import split_front_matter, unquote
+from scripts._frontmatter import detect_newline, join_front_matter, split_front_matter, unquote
 
 
 class TestUnquote(unittest.TestCase):
@@ -50,6 +50,36 @@ class TestSplitFrontMatter(unittest.TestCase):
         original line endings should survive in `body`."""
         fm, body = split_front_matter("---\r\nkey: value\r\n---\r\nBody text\r\nSecond line\r\n")
         self.assertEqual(body, "Body text\r\nSecond line\r\n")
+
+
+class TestDetectNewline(unittest.TestCase):
+    def test_detects_lf(self):
+        self.assertEqual(detect_newline("---\nkey: value\n---\n"), "\n")
+
+    def test_detects_crlf(self):
+        self.assertEqual(detect_newline("---\r\nkey: value\r\n---\r\n"), "\r\n")
+
+    def test_defaults_to_lf_with_no_newline_at_all(self):
+        self.assertEqual(detect_newline("no newline here"), "\n")
+
+
+class TestJoinFrontMatter(unittest.TestCase):
+    def test_round_trips_with_split_front_matter(self):
+        original = "---\nkey: value\n---\nBody text\n"
+        fm, body = split_front_matter(original)
+        self.assertEqual(join_front_matter(fm, body, detect_newline(original)), original)
+
+    def test_round_trips_crlf(self):
+        """Regression coverage for the shared counterpart of PR #32's
+        CRLF-preservation fix (originally private to
+        assign_target_version.assign()): rebuilding a CRLF fragment's
+        delimiters must reproduce the original bytes exactly, not just LF."""
+        original = "---\r\nkey: value\r\n---\r\nBody text\r\n"
+        fm, body = split_front_matter(original)
+        self.assertEqual(join_front_matter(fm, body, detect_newline(original)), original)
+
+    def test_defaults_newline_to_lf(self):
+        self.assertEqual(join_front_matter("key: value", "Body\n"), "---\nkey: value\n---\nBody\n")
 
 
 if __name__ == "__main__":

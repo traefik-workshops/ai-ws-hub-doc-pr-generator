@@ -64,6 +64,33 @@ class TestSplice(unittest.TestCase):
         # The new entry must not have landed inside the fenced example.
         self.assertIn("```md\n## Gateway v9.9.9\n```", result)
 
+    def test_resplice_ignores_gateway_heading_lookalike_inside_fence(self):
+        """Regression test: _existing_section_span's identity-match START
+        search used a bare `heading_re.search(existing)`, unlike the
+        fence-aware end-boundary search (_first_h2_outside_fences) and the
+        fallback insertion search (review finding 4, tested above) that this
+        same PR fixed for the identical bug class. A fenced example
+        demonstrating this exact section's own heading text, appearing before
+        the real section, was mistaken for the section to replace, splicing
+        the re-cut entry INSIDE the fence instead of replacing the real
+        section."""
+        existing = (
+            "preamble\n\n"
+            "Example showing our heading syntax:\n\n"
+            "```md\n"
+            "## Gateway v3.21.0-ea.1\n"
+            "```\n\n"
+            "## Gateway v3.21.0-ea.1\n\n**2026-08-10**\n\nold content\n\n"
+            "## Gateway v3.20.6\n\nolder content\n"
+        )
+        entry = "## Gateway v3.21.0-ea.1\n\n**2026-08-11**\n\nnew content\n"
+        result = splice(existing, entry)
+        # The fenced example must be untouched, and the real section replaced.
+        self.assertIn("```md\n## Gateway v3.21.0-ea.1\n```", result)
+        self.assertIn("new content", result)
+        self.assertNotIn("old content", result)
+        self.assertIn("## Gateway v3.20.6\n\nolder content\n", result)
+
     def test_entry_gets_exactly_one_blank_line_separator(self):
         existing = "preamble\n\n## Gateway v3.20.6\n\nold\n"
         entry = "## Gateway v3.20.7\n\nnew\n\n\n"  # trailing blank lines in the entry itself

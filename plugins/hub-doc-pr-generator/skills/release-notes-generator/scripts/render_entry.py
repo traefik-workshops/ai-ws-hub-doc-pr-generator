@@ -148,16 +148,32 @@ def _existing_section_span(existing: str, identity: str) -> tuple[int, int] | No
     the default insert-above-first path, and produced two headings for one
     release -- the same duplicate-heading failure this function exists to
     prevent, just reopened via a casing-drift trigger instead of a spacing or
-    prefix-vs-full-identity one."""
+    prefix-vs-full-identity one.
+
+    Fence-aware for the same reason _first_h2_outside_fences (the end
+    boundary just below) and splice()'s own fallback search are: a release
+    note can legitimately contain a fenced example whose content happens to
+    read like a real heading (e.g. demonstrating this exact release-note
+    heading syntax). A bare `.search(existing)` -- what this function used
+    before -- would match that fenced text first if it precedes the real
+    section, splicing the new entry INSIDE the fence instead of replacing
+    the real section (the same bug class as review finding 4, left open on
+    this identity-match search). `_first_line_outside_fences` is the same
+    fence-tracking loop the other two searches already share, applied here
+    too instead of being left as this function's own unshared bare regex
+    search."""
     heading_re = re.compile(
         rf"^## Gateway {re.escape(identity)}(?:\s*<EarlyAccessBadge\s*/>)?\s*$",
-        re.MULTILINE | re.IGNORECASE,
+        re.IGNORECASE,
     )
-    m = heading_re.search(existing)
-    if not m:
+    start = _first_line_outside_fences(existing, 0, lambda line: heading_re.match(line) is not None)
+    if start is None:
         return None
-    stop = _first_h2_outside_fences(existing, m.end())
-    return m.start(), (stop if stop is not None else len(existing))
+    heading_end = existing.find("\n", start)
+    if heading_end == -1:
+        heading_end = len(existing)
+    stop = _first_h2_outside_fences(existing, heading_end)
+    return start, (stop if stop is not None else len(existing))
 
 
 def splice(existing: str, entry: str) -> str:
