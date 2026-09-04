@@ -50,6 +50,30 @@ _HEADING_IDENTITY_RE = re.compile(
 )
 
 
+def _first_line_outside_fences(text: str, start: int, matches) -> int | None:
+    """Position of the first line at or after `start` for which `matches(line)`
+    is true and that isn't inside a fenced code block (```...```). None if no
+    such line exists before the end of `text`.
+
+    The fence-tracking loop itself, factored out so every place in this
+    module that needs "find a line, but not one hiding inside a fenced
+    example" shares one implementation (PR #32 review finding 4: splice()'s
+    own top-of-file insertion search used a bare `_HEADING_RE.search(existing)`
+    with no fence awareness at all, re-opening review finding 4's bug --  a
+    fenced example demonstrating heading syntax before the real first heading
+    got mistaken for the insertion point -- on a code path this exact
+    fence-tracking loop was sitting right next to, just not shared with it)."""
+    in_fence = False
+    pos = start
+    for line in text[start:].splitlines(keepends=True):
+        if line.startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and matches(line):
+            return pos
+        pos += len(line)
+    return None
+
+
 def _first_h2_outside_fences(text: str, start: int) -> int | None:
     """Position of the first line at or after `start` that starts with
     '## ' (any level-2 heading, not just a Gateway one) and isn't inside a
@@ -77,15 +101,7 @@ def _first_h2_outside_fences(text: str, start: int) -> int | None:
     mistook that for a real section boundary, which truncated the section
     early and left its true trailing content orphaned as stray top-level
     text instead of being cleanly superseded on a re-splice."""
-    in_fence = False
-    pos = start
-    for line in text[start:].splitlines(keepends=True):
-        if line.startswith("```"):
-            in_fence = not in_fence
-        elif not in_fence and line.startswith("## "):
-            return pos
-        pos += len(line)
-    return None
+    return _first_line_outside_fences(text, start, lambda line: line.startswith("## "))
 
 
 def _heading_identity(text: str) -> str | None:
@@ -154,13 +170,22 @@ def splice(existing: str, entry: str) -> str:
             start, end = span
             return existing[:start] + entry_block + existing[end:]
 
-    m = _HEADING_RE.search(existing)
-    if not m:
+    # Fence-aware for the same reason _first_h2_outside_fences (used above,
+    # via _existing_section_span) is -- PR #32 review finding 4: this
+    # fallback path used a bare `_HEADING_RE.search(existing)` with no fence
+    # tracking, so a fenced example demonstrating heading syntax (e.g. a code
+    # block showing "## Gateway v9.9.9") before the real first heading was
+    # mistaken for the insertion point and the new entry got spliced INSIDE
+    # the fence, corrupting the file -- the identical bug class this
+    # function's sibling boundary search was already fixed for, left open
+    # here.
+    pos = _first_line_outside_fences(existing, 0, lambda line: _HEADING_RE.match(line) is not None)
+    if pos is None:
         raise ValueError(
             "no existing '## Gateway v...' heading found in release-notes.mdx — "
             "refusing to guess an insertion point; check the file wasn't fetched empty/truncated"
         )
-    return existing[:m.start()] + entry_block + existing[m.start():]
+    return existing[:pos] + entry_block + existing[pos:]
 
 
 def main(argv: list[str]) -> int:

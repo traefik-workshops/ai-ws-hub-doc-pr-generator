@@ -41,6 +41,29 @@ class TestSplice(unittest.TestCase):
         with self.assertRaises(ValueError):
             splice(existing, "## Gateway v3.20.7\n\nnew\n")
 
+    def test_fallback_insertion_point_ignores_gateway_heading_lookalike_inside_fence(self):
+        """Regression test (PR #32 review finding 4): splice()'s FALLBACK
+        insertion path (a brand-new version with no existing section of its
+        own to replace) used a plain `_HEADING_RE.search(existing)`, unlike
+        the fence-aware `_first_h2_outside_fences` scanner added elsewhere in
+        this same PR for the identical bug class. A fenced example
+        demonstrating heading syntax (e.g. `## Gateway v9.9.9`) before the
+        real first heading was mistaken for the insertion point, splicing the
+        new entry INSIDE the fence and corrupting the file."""
+        existing = (
+            "preamble\n\n"
+            "Example showing our heading syntax:\n\n"
+            "```md\n"
+            "## Gateway v9.9.9\n"
+            "```\n\n"
+            "## Gateway v3.20.6\n\nold content\n"
+        )
+        entry = "## Gateway v3.20.7\n\nnew content\n"
+        result = splice(existing, entry)
+        self.assertLess(result.index("v3.20.7"), result.index("v3.20.6"))
+        # The new entry must not have landed inside the fenced example.
+        self.assertIn("```md\n## Gateway v9.9.9\n```", result)
+
     def test_entry_gets_exactly_one_blank_line_separator(self):
         existing = "preamble\n\n## Gateway v3.20.6\n\nold\n"
         entry = "## Gateway v3.20.7\n\nnew\n\n\n"  # trailing blank lines in the entry itself

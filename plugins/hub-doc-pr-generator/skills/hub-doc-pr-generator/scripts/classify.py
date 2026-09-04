@@ -10,7 +10,7 @@ import re
 import sys
 from pathlib import Path
 
-from scripts import _discover
+from scripts import _discover, _shapes
 
 _PREFIX_RE = re.compile(r"^(?P<type>feat|fix|chore|refactor|test|docs|style|perf|build|ci)\b")
 
@@ -61,21 +61,21 @@ def needs_release_note(pr: dict, *, impl_repo: str) -> dict:
 
     if _has_label("breaking") or "breaking change" in body:
         signals.append("breaking-change-signal")
-        shape = "breaking-subsection"
+        shape = _shapes.BREAKING_SUBSECTION
     elif any(k in hay for k in _GA_GRADUATION_MARKERS):
         signals.append("ga-graduation-marker")
-        shape = "ga-bullet"
+        shape = _shapes.GA_BULLET
     elif any(k in hay for k in _EA_MARKERS):
         signals.append("ea-marker")
-        shape = "ea-subsection"
+        shape = _shapes.EA_SUBSECTION
     elif is_feat and any(k in hay for k in _GA_NEW_MARKERS):
         signals.append("ga-new-marker")
-        shape = "ga-subsection"
+        shape = _shapes.GA_SUBSECTION
     elif is_feat:
         signals.append("feat-default-ea")
         if _has_label("enhancement") or _has_label("feature"):
             signals.append("enhancement-label")
-        shape = "ea-subsection"
+        shape = _shapes.EA_SUBSECTION
     elif feature_type(title) in _NON_NOTE_PREFIXES:
         return {
             "verdict": "no",

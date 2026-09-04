@@ -1,4 +1,3 @@
-import re
 import unittest
 from scripts.classify import feature_type, needs_release_note, _title_to_heading
 from scripts.classify import needs_screenshots
@@ -353,22 +352,57 @@ class TestClassifyWithNoPR(unittest.TestCase):
 
 
 class TestShapeSync(unittest.TestCase):
-    """Regression coverage for PR #32 review finding 6: every literal `shape`
-    string classify.py can propose must be a member of the shared
-    _shapes.VALID_SHAPES set (also used by the sibling release-notes-generator
-    skill's assemble_section.py to validate a shape before rendering) -- a
-    shape classify.py starts proposing without also being added there would
-    otherwise be silently rejected downstream at cut time, not caught here."""
+    """Regression coverage for PR #32 review finding 6 (and its own follow-up,
+    review finding 3): every shape classify.py can actually propose must be a
+    member of the shared _shapes.VALID_SHAPES set (also used by the sibling
+    release-notes-generator skill's assemble_section.py to validate a shape
+    before rendering) -- a shape classify.py proposes without also being added
+    there would otherwise be silently rejected downstream at cut time, not
+    caught here.
 
-    def test_every_shape_classify_can_propose_is_in_valid_shapes(self):
-        from scripts._shapes import VALID_SHAPES
-        source = Path(__file__).resolve().parents[1].joinpath("classify.py").read_text()
-        proposed = set(re.findall(r'shape = "([\w-]+)"', source))
-        self.assertTrue(proposed, "expected to find at least one shape literal in classify.py")
-        self.assertTrue(
-            proposed.issubset(VALID_SHAPES),
-            f"classify.py proposes shape(s) not in _shapes.VALID_SHAPES: {proposed - VALID_SHAPES}",
-        )
+    Exercises needs_release_note() through every branch that sets `shape`,
+    rather than regex-scraping classify.py's source text for `shape = "..."`
+    literals: that scrape only matched the literal-assignment style classify.py
+    happened to use at the time, so a later refactor of HOW `shape` gets
+    computed (an f-string, a dict lookup, `_shapes.EA_SUBSECTION` with no
+    surrounding spaces) could make the regex match nothing or a partial set
+    while classify.py silently kept proposing shapes never actually checked
+    against VALID_SHAPES. Calling the real function and reading its real
+    output has no such blind spot -- it fails the moment a branch proposes an
+    unrecognized shape, regardless of how that shape's value is computed."""
+
+    def _pr(self, title="", labels=None, body=""):
+        return {"title": title, "labels": labels or [], "body": body}
+
+    def _shape_for(self, **kw):
+        result = needs_release_note(self._pr(**kw), impl_repo="traefik/traefik-hub")
+        self.assertEqual(result["verdict"], "yes", f"expected a release note for {kw!r}: {result}")
+        return result["proposed_shape"]
+
+    def test_every_branch_proposes_a_valid_shape(self):
+        from scripts import _shapes
+
+        by_branch = {
+            "breaking-change-signal": self._shape_for(title="feat: rename X", labels=["kind/breaking-change"]),
+            "ga-graduation-marker": self._shape_for(title="feat: X graduates to GA"),
+            "ea-marker": self._shape_for(title="feat: add quota API", body="Ships as Early Access."),
+            "ga-new-marker": self._shape_for(title="feat: add tracing export", body="Generally available now."),
+            "feat-default-ea": self._shape_for(title="feat: add X"),
+        }
+        for branch, shape in by_branch.items():
+            with self.subTest(branch=branch):
+                self.assertIn(
+                    shape, _shapes.VALID_SHAPES,
+                    f"{branch} branch proposed {shape!r}, not in _shapes.VALID_SHAPES",
+                )
+        # Also pins each branch to the specific shape it's documented to
+        # propose, so a branch silently drifting to a DIFFERENT (but still
+        # valid) shape doesn't pass unnoticed.
+        self.assertEqual(by_branch["breaking-change-signal"], _shapes.BREAKING_SUBSECTION)
+        self.assertEqual(by_branch["ga-graduation-marker"], _shapes.GA_BULLET)
+        self.assertEqual(by_branch["ea-marker"], _shapes.EA_SUBSECTION)
+        self.assertEqual(by_branch["ga-new-marker"], _shapes.GA_SUBSECTION)
+        self.assertEqual(by_branch["feat-default-ea"], _shapes.EA_SUBSECTION)
 
 
 if __name__ == "__main__":

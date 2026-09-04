@@ -86,6 +86,22 @@ class TestAssign(unittest.TestCase):
         result = assign(FRAGMENT_BARE, r"v3.20\1")
         self.assertIn("target_version: v3.20\\1", result)
 
+    def test_preserves_crlf_line_endings_throughout(self):
+        """Regression test (PR #32 review finding 1): a CRLF-saved fragment
+        previously came back with MIXED line endings -- split_front_matter
+        preserves the original \\r\\n inside fm/body, but assign()'s final
+        `f"---\\n{new_fm}\\n---\\n{body}"` hardcoded LF for both delimiter
+        lines, and the substitution itself dropped the \\r on the one line it
+        rewrote (`\\s*$` in UNASSIGNED_TARGET_VERSION_RE swallows a trailing
+        \\r). Confirmed live: assigning a version to a CRLF fragment produced
+        a file with both \\n and \\r\\n line endings in the same front-matter
+        block -- exactly the noisy write-back diff this CRLF-tolerance work
+        was supposed to eliminate."""
+        crlf_fragment = FRAGMENT_BARE.replace("\n", "\r\n")
+        result = assign(crlf_fragment, "v3.21.0-ea.1")
+        self.assertNotIn("\n", result.replace("\r\n", ""), "result has a bare LF not part of a CRLF pair")
+        self.assertIn("target_version: v3.21.0-ea.1\r\n", result)
+
 
 class TestMain(unittest.TestCase):
     def test_writes_file_and_returns_zero(self):

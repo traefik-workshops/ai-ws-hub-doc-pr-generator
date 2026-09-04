@@ -20,13 +20,32 @@ Each shape name corresponds to a release-note-<name-without-"-subsection">
 release-note-heuristics.md's shape table) -- the historical "ea"/"breaking"
 template filenames predate the "-subsection" suffix on the shape identifiers
 themselves.
+
+Named constants, not just the VALID_SHAPES set (PR #32 review finding 3):
+extracting the set alone still left classify.py free to keep writing its own
+`shape = "ea-subsection"` string literals rather than importing anything from
+here, so the "structurally impossible" drift this module's docstring
+originally promised was only actually enforced by a test that regex-scrapes
+classify.py's source text for `shape = "..."` -- a refactor of how classify.py
+assigns `shape` (an f-string, a dict lookup, different spacing) could make
+that regex match nothing while classify.py silently keeps proposing shapes
+never checked against VALID_SHAPES. Importing these constants instead of
+retyping the strings means classify.py can't reference a shape that doesn't
+exist here -- an actual `ImportError`/`AttributeError` at import time, not a
+test that has to keep pace with classify.py's implementation details.
 """
 from __future__ import annotations
 
+BREAKING_SUBSECTION = "breaking-subsection"
+GA_BULLET = "ga-bullet"
+EA_SUBSECTION = "ea-subsection"
+GA_SUBSECTION = "ga-subsection"
+PLAIN_BULLET = "plain-bullet"
+
 VALID_SHAPES = frozenset({
-    "breaking-subsection",
-    "ga-bullet",
-    "ea-subsection",
-    "ga-subsection",
-    "plain-bullet",
+    BREAKING_SUBSECTION,
+    GA_BULLET,
+    EA_SUBSECTION,
+    GA_SUBSECTION,
+    PLAIN_BULLET,
 })

@@ -464,8 +464,9 @@ them into the real section, once, when the release is actually confirmed.
   full set to re-derive a complete section from. The one sanctioned exception
   is step 2's own `assign_target_version.py` rewrite of a *selected* fragment's
   `target_version` front-matter field — always stage that rewrite with
-  `--doc-repo-root` and commit it in step 8 (`--path`), never leave it as an
-  uncommitted local edit (finding F)
+  `--doc-repo-root` and let step 8 commit it (auto-discovered from git, no
+  `--path` needed — see step 8), never leave it as an uncommitted local edit
+  (finding F)
 
 ## When to use the AskUserQuestion tool
 

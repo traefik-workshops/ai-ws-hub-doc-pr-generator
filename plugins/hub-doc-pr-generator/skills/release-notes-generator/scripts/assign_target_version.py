@@ -19,6 +19,7 @@ target_version line to replace -- never silently no-ops.
 from __future__ import annotations
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -46,7 +47,20 @@ def assign(content: str, version: str) -> str:
     contain the literal string "target_version: unassigned") count as a second
     "duplicate key", permanently blocking assignment with a false "malformed
     front matter" error even though the front matter itself was perfectly
-    well-formed."""
+    well-formed.
+
+    Preserves the fragment's original line-ending style throughout (PR #32
+    review finding 1). split_front_matter already keeps whatever `\\r\\n` or
+    `\\n` the original fm/body used, but that guarantee is only as good as
+    what this function does with it: the delimiter lines below must be
+    rebuilt using the SAME line ending as the rest of the file (not a
+    hardcoded `\\n`), and the one line actually being rewritten must keep its
+    own trailing `\\r` too -- confirmed live that a naive fix of only the
+    delimiters still left a CRLF fragment's rewritten line as bare `\\n`
+    (UNASSIGNED_TARGET_VERSION_RE's `\\s*$` swallows the `\\r` into the match,
+    so it never survives into the replacement unless put back explicitly),
+    producing the exact mixed-line-ending write-back diff this CRLF-tolerance
+    work exists to avoid."""
     try:
         fm_text, body = split_front_matter(content)
     except ValueError:
@@ -64,15 +78,24 @@ def assign(content: str, version: str) -> str:
             "matter -- that's a duplicate key and needs a human to fix it by hand before it can "
             "be assigned a version"
         )
-    # A callable replacement, not an f-string passed straight to `sub`'s `repl`
-    # argument -- re.sub treats a STRING repl's backslash-digit sequences
-    # (\1, \g<name>, ...) as backreferences, so a version containing one
-    # (a plausible typo, e.g. an accidentally-pasted regex fragment) would
-    # raise a raw `re.error: invalid group reference` instead of this
-    # module's documented clean non-zero exit. A callable's return value is
-    # inserted literally -- no backreference processing.
-    new_fm = UNASSIGNED_TARGET_VERSION_RE.sub(lambda m: f"target_version: {version}", fm_text, count=1)
-    return f"---\n{new_fm}\n---\n{body}"
+
+    def _replacement(m: re.Match[str]) -> str:
+        # A callable replacement, not an f-string passed straight to `sub`'s
+        # `repl` argument -- re.sub treats a STRING repl's backslash-digit
+        # sequences (\1, \g<name>, ...) as backreferences, so a version
+        # containing one (a plausible typo, e.g. an accidentally-pasted regex
+        # fragment) would raise a raw `re.error: invalid group reference`
+        # instead of this module's documented clean non-zero exit. A
+        # callable's return value is inserted literally -- no backreference
+        # processing. `\s*$` in the pattern swallows a trailing `\r` (CRLF)
+        # into the match, so it has to be put back here or the rewritten
+        # line loses its `\r` while every other line in the file keeps it.
+        trailing_cr = "\r" if m.group(0).endswith("\r") else ""
+        return f"target_version: {version}{trailing_cr}"
+
+    new_fm = UNASSIGNED_TARGET_VERSION_RE.sub(_replacement, fm_text, count=1)
+    newline = "\r\n" if content[:content.find("\n")].endswith("\r") else "\n"
+    return f"---{newline}{new_fm}{newline}---{newline}{body}"
 
 
 def main(argv: list[str]) -> int:

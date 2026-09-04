@@ -19,21 +19,28 @@ from pathlib import Path
 from typing import Optional
 
 from scripts import _discover, _gh, _git
+from scripts.preview import DEFAULT_REL_PATH
 
 UPSTREAM_HUB_DOC = "traefik/hub-doc"
-# Same default as preview.py's DEFAULT_REL_PATH -- kept as its own constant
-# here rather than imported, matching this module's own "hub-only,
-# single-file trim" convention (see module docstring).
-DEFAULT_REL_PATH = "docs/api-gateway/release-notes.mdx"
 # Glob (matched against a repo-relative path) for fragment files
 # commit_release_notes() auto-discovers among what's already staged -- see
 # _staged_paths_matching()'s docstring.
 FRAGMENT_GLOB = "docs/api-gateway/release-notes.d/*.mdx"
 
 
-def _staged_paths_matching(doc_repo_root: str, pattern: str) -> list[str]:
-    """Repo-relative paths currently staged in `doc_repo_root` that match
-    `pattern` (fnmatch against the full path).
+def _staged_paths(doc_repo_root: str) -> list[str]:
+    """Repo-relative paths currently staged in `doc_repo_root` -- one `git
+    diff --cached --name-only` call, read once and reused by both the
+    fragment-auto-discovery step and the "did anything actually get staged"
+    check in commit_release_notes(), instead of running the same unscoped
+    diff against the same unchanged index twice (PR #32 review finding 8)."""
+    staged = _git.run(doc_repo_root, ["diff", "--cached", "--name-only"]).strip()
+    return staged.splitlines() if staged else []
+
+
+def _staged_paths_matching(staged: list[str], pattern: str) -> list[str]:
+    """The subset of `staged` repo-relative paths that match `pattern`
+    (fnmatch against the full path).
 
     This is what makes finding F's fix self-enforcing instead of prose-only
     (PR #32 review finding 1): assign_target_version.py's --doc-repo-root
@@ -47,10 +54,41 @@ def _staged_paths_matching(doc_repo_root: str, pattern: str) -> list[str]:
     review finding 2, unquoted `sed` word-splitting a path containing a
     space). If nothing matching `pattern` is staged, this simply returns an
     empty list -- not an error, since most cuts reassign zero fragments."""
-    staged = _git.run(doc_repo_root, ["diff", "--cached", "--name-only"]).strip()
-    if not staged:
+    return [p for p in staged if fnmatch.fnmatch(p, pattern)]
+
+
+def _fragments_with_staged_reassignment(doc_repo_root: str, fragment_paths: list[str]) -> list[str]:
+    """The subset of `fragment_paths` whose staged diff actually contains a
+    `target_version` reassignment (a `+target_version: <non-unassigned>`
+    line), not just any staged edit under FRAGMENT_GLOB.
+
+    Matching FRAGMENT_GLOB alone re-opens the exact shared-clone risk finding
+    E's explicit-pathspec commit was written to close (PR #32 review finding
+    6, altitude): it can't tell "a fragment THIS run's
+    assign_target_version.py --doc-repo-root staged" apart from "a fragment
+    someone else in a concurrent session on the same shared clone happens to
+    have staged for an unrelated reason" (a body typo fix, say) -- the exact
+    CLAUDE.md "ec2.md nearly got committed into an unrelated PR" failure
+    mode, just moved from "any staged file" down to "any staged fragment".
+    Checking the staged diff's actual content for what a real reassignment
+    looks like closes that gap without needing per-caller bookkeeping.
+
+    One `git diff --cached` call for ALL candidates at once (not one per
+    fragment) -- parsing the multi-file diff by its `diff --git a/... b/...`
+    headers keeps this from re-introducing the redundant-git-call pattern
+    finding 8 removed elsewhere in this same fix."""
+    if not fragment_paths:
         return []
-    return [p for p in staged.splitlines() if fnmatch.fnmatch(p, pattern)]
+    diff = _git.run(doc_repo_root, ["diff", "--cached", "--", *fragment_paths])
+    reassigned: list[str] = []
+    current: str | None = None
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            current = line.rsplit(" b/", 1)[-1] if " b/" in line else None
+        elif current and current not in reassigned and line.startswith("+target_version:") \
+                and "unassigned" not in line:
+            reassigned.append(current)
+    return reassigned
 
 
 def _parent_full_name(parent: dict) -> str:
@@ -99,30 +137,47 @@ def commit_release_notes(*, doc_repo_root: str, branch: str, title: str, paths: 
     (the exact CLAUDE.md "ec2.md nearly got committed into an unrelated PR"
     failure mode).
 
-    The pathspec is `paths` (defaulting to just `DEFAULT_REL_PATH`) PLUS
-    whatever is currently staged under `FRAGMENT_GLOB` -- that second part is
-    auto-discovered from git, not passed in, so a cut's fragment
-    reassignment (assign_target_version.py's --doc-repo-root stages it) rides
-    along in the same commit as the release-notes.mdx splice without the
-    caller having to track and pass every reassigned fragment path itself
-    (finding F, and PR #32 review finding 1: an earlier version of this fix
-    made that tracking the *caller's* job via an external SKILL.md scratch
-    file, which had no way to catch a lost or incomplete list -- reading it
-    directly from git's own staged-file list removes that dependency
-    entirely). `paths` still exists for anything outside the fragment glob a
-    caller explicitly wants included."""
+    The pathspec is always `DEFAULT_REL_PATH` PLUS whatever extra `paths` the
+    caller passed (PR #32 review finding 2: `--path`'s own help text calls it
+    an "extra path to commit alongside" the default -- additive, not a
+    replacement; an earlier version of this function swapped in `paths` INSTEAD
+    of the default whenever any were given, so a caller following that exact
+    help text silently dropped `DEFAULT_REL_PATH`, the actual release-notes.mdx
+    edit, out of the commit) PLUS whatever is currently staged under
+    `FRAGMENT_GLOB` -- that last part is auto-discovered from git, not passed
+    in, so a cut's fragment reassignment (assign_target_version.py's
+    --doc-repo-root stages it) rides along in the same commit as the
+    release-notes.mdx splice without the caller having to track and pass every
+    reassigned fragment path itself (finding F, and PR #32 review finding 1:
+    an earlier version of this fix made that tracking the *caller's* job via
+    an external SKILL.md scratch file, which had no way to catch a lost or
+    incomplete list -- reading it directly from git's own staged-file list
+    removes that dependency entirely). `paths` still exists for anything
+    outside the fragment glob a caller explicitly wants included.
+
+    A staged fragment is only auto-discovered if its own staged diff shows an
+    actual target_version reassignment, not merely a path match on
+    FRAGMENT_GLOB (PR #32 review finding 6, altitude) -- see
+    _fragments_with_staged_reassignment's docstring for why a glob match
+    alone isn't enough in a shared clone."""
     current = _git.head_branch(doc_repo_root)
     if current != branch:
         raise ValueError(
             f"hub-doc repo is on {current!r}, not the release-note branch {branch!r}; "
             "run preview first so the generated file is staged on that branch"
         )
-    explicit_paths = list(paths) if paths else [DEFAULT_REL_PATH]
-    auto_fragment_paths = _staged_paths_matching(doc_repo_root, FRAGMENT_GLOB)
+    staged_now = _staged_paths(doc_repo_root)
+    explicit = set(paths or [])
+    # Fragments the caller already named explicitly are trusted as-is (that's
+    # what `paths` is for); only fragments NOT already explicit go through
+    # the reassignment-content check below -- a caller that already knows
+    # exactly which fragment it wants committed shouldn't be second-guessed.
+    fragment_candidates = [p for p in _staged_paths_matching(staged_now, FRAGMENT_GLOB) if p not in explicit]
+    auto_fragment_paths = _fragments_with_staged_reassignment(doc_repo_root, fragment_candidates)
     # dict.fromkeys dedupes while preserving order, in case a caller's
     # explicit `paths` already names one of the auto-discovered fragments.
-    all_paths = list(dict.fromkeys([*explicit_paths, *auto_fragment_paths]))
-    staged = _git.run(doc_repo_root, ["diff", "--cached", "--name-only", "--", *all_paths]).strip()
+    all_paths = list(dict.fromkeys([DEFAULT_REL_PATH, *(paths or []), *auto_fragment_paths]))
+    staged = set(staged_now) & set(all_paths)
     if staged:
         _git.run(doc_repo_root, ["commit", "-m", title, "--", *all_paths])
         return
