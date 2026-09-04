@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from scripts.push import (
     _parent_full_name, detect_fork, _branch_has_commits_to_push,
-    commit_release_notes, open_release_notes_pr,
+    _fragments_with_staged_reassignment, commit_release_notes, open_release_notes_pr,
 )
 from scripts import _git
 
@@ -62,6 +62,42 @@ class TestBranchHasCommitsToPush(unittest.TestCase):
     def test_false_when_all_bases_fail(self):
         with patch("scripts.push._git.run", side_effect=_git.GitError("no such ref")):
             self.assertFalse(_branch_has_commits_to_push("/hub-doc", "docs/rn"))
+
+
+class TestFragmentsWithStagedReassignment(unittest.TestCase):
+    """Unit-level coverage of the version-scoping guard (PR #32 review round
+    5, finding 3) directly on the helper function, separate from
+    TestCommitReleaseNotes' end-to-end coverage through commit_release_notes."""
+
+    def test_expected_version_none_matches_any_real_reassignment(self):
+        blobs = {
+            "HEAD:frag.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":frag.mdx": "---\ntarget_version: v3.20.9\n---\nbody\n",
+        }
+        with patch("scripts.push._git.show_many", return_value=blobs):
+            self.assertEqual(
+                _fragments_with_staged_reassignment("/hub-doc", ["frag.mdx"]), ["frag.mdx"],
+            )
+
+    def test_expected_version_excludes_a_different_assigned_version(self):
+        blobs = {
+            "HEAD:frag.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":frag.mdx": "---\ntarget_version: v3.20.9\n---\nbody\n",
+        }
+        with patch("scripts.push._git.show_many", return_value=blobs):
+            self.assertEqual(
+                _fragments_with_staged_reassignment("/hub-doc", ["frag.mdx"], "v3.21.0-ea.2"), [],
+            )
+
+    def test_expected_version_includes_the_matching_assigned_version(self):
+        blobs = {
+            "HEAD:frag.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":frag.mdx": "---\ntarget_version: v3.21.0-ea.2\n---\nbody\n",
+        }
+        with patch("scripts.push._git.show_many", return_value=blobs):
+            self.assertEqual(
+                _fragments_with_staged_reassignment("/hub-doc", ["frag.mdx"], "v3.21.0-ea.2"), ["frag.mdx"],
+            )
 
 
 class TestCommitReleaseNotes(unittest.TestCase):
@@ -323,6 +359,123 @@ class TestCommitReleaseNotes(unittest.TestCase):
         commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
         self.assertIn("docs/api-gateway/release-notes.mdx", commit_call.args[1])
         self.assertIn("some/extra/file.md", commit_call.args[1])
+
+
+    def test_version_scoping_excludes_a_fragment_reassigned_to_a_different_version(self):
+        """Regression test (PR #32 review round 5, finding 3): without
+        --version, auto-discovery can't tell "this cut's own reassignment"
+        apart from a DIFFERENT concurrent cut's reassignment sitting staged
+        in the same shared clone -- two `cut` sessions running close
+        together, each reassigning a different fragment to a different
+        version, would each sweep up the OTHER's staged fragment into
+        whichever session's push commits first. Passing the exact version
+        this push is for must exclude a fragment staged for some other
+        version."""
+        blobs = {
+            "HEAD:docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: v3.20.9\n---\nbody\n",
+        }
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value=blobs), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n"
+                "docs/api-gateway/release-notes.d/_964-x.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(
+                doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x",
+                version="v3.21.0-ea.2",
+            )
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertNotIn("docs/api-gateway/release-notes.d/_964-x.mdx", commit_call.args[1])
+
+    def test_version_scoping_includes_a_fragment_reassigned_to_the_matching_version(self):
+        """The positive case for the same guard: a fragment staged with
+        EXACTLY the version this push is for is still auto-discovered."""
+        blobs = {
+            "HEAD:docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: v3.21.0-ea.2\n---\nbody\n",
+        }
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value=blobs), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n"
+                "docs/api-gateway/release-notes.d/_964-x.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(
+                doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x",
+                version="v3.21.0-ea.2",
+            )
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertIn("docs/api-gateway/release-notes.d/_964-x.mdx", commit_call.args[1])
+
+    def test_no_version_given_keeps_old_any_reassignment_behavior(self):
+        """Backward compatibility: tag mode never reassigns fragments and
+        doesn't pass --version -- omitting it must behave exactly as before
+        (any real reassignment is auto-discovered, regardless of value)."""
+        blobs = {
+            "HEAD:docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: v3.20.9\n---\nbody\n",
+        }
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value=blobs), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n"
+                "docs/api-gateway/release-notes.d/_964-x.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertIn("docs/api-gateway/release-notes.d/_964-x.mdx", commit_call.args[1])
+
+    def test_unknown_explicit_path_raises_clean_error_instead_of_failing_the_whole_commit(self):
+        """Regression test (PR #32 review round 5, finding 4): `git commit --
+        <pathspec>` requires every path in the pathspec to be tracked or
+        staged, or the ENTIRE commit fails -- confirmed live (`git commit --
+        a.txt nonexistent.txt` -> "pathspec 'nonexistent.txt' did not match
+        any file(s) known to git"). A typo'd or never-staged explicit --path
+        must be caught with a clear, specific error before the git commit
+        call, not surface as a cryptic low-level failure that also blocks
+        the legitimate, validly-staged release-notes.mdx edit."""
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n",  # diff --cached --name-only
+                "",  # ls-files -- typo/d-path.mdx (not tracked, empty output)
+            ]
+            with self.assertRaises(ValueError) as ctx:
+                commit_release_notes(
+                    doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x",
+                    paths=["typo/d-path.mdx"],
+                )
+        self.assertIn("typo/d-path.mdx", str(ctx.exception))
+        # The commit itself must never have been attempted.
+        commit_calls = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"]
+        self.assertEqual(commit_calls, [])
+
+    def test_known_explicit_path_not_in_staged_now_but_tracked_is_accepted(self):
+        """An explicit --path that's a real, already-tracked file (just not
+        currently showing up in `git diff --cached` because it has no
+        pending changes) must still be accepted -- the new validation only
+        needs to rule out paths git has never heard of, not second-guess a
+        caller who explicitly named a legitimate path."""
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n",  # diff --cached --name-only
+                "already/tracked/unchanged.md\n",  # ls-files -- already/tracked/unchanged.md
+                "",  # commit
+            ]
+            commit_release_notes(
+                doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x",
+                paths=["already/tracked/unchanged.md"],
+            )
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertIn("already/tracked/unchanged.md", commit_call.args[1])
 
 
 class TestOpenReleaseNotesPr(unittest.TestCase):

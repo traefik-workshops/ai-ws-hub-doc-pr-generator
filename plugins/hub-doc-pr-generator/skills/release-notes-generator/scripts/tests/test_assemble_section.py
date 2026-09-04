@@ -181,6 +181,21 @@ class TestShapeValidation(unittest.TestCase):
             )
 
 
+class TestBulletShapeSourcedFromSharedModule(unittest.TestCase):
+    """Regression test (PR #32 review round 5 finding 5): _BULLET_SHAPE was
+    still a hardcoded "ga-bullet" literal even after _shapes.py was
+    introduced as the single source of truth specifically to prevent this
+    kind of drift -- assemble_section.py imported VALID_SHAPES for
+    validation but kept retyping the grouping constant separately.
+    Confirms _BULLET_SHAPE tracks scripts._shapes.GA_BULLET (an identity
+    check, not just an equal-strings check) rather than a private copy."""
+
+    def test_bullet_shape_is_the_shared_ga_bullet_constant(self):
+        from scripts import _shapes
+        from scripts.assemble_section import _BULLET_SHAPE
+        self.assertIs(_BULLET_SHAPE, _shapes.GA_BULLET)
+
+
 class TestCheckFragmentLinks(unittest.TestCase):
     """Defense-in-depth check for the traefik/hub-doc#988 class of bug: a
     fragment's relative link is written for its post-assembly location (the

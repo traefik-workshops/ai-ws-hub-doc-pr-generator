@@ -332,9 +332,14 @@ them into the real section, once, when the release is actually confirmed.
    bugs here before). `assign_target_version.py` tolerates the same quoted/bare
    forms `preview.py`'s `check_unassigned_fragment` recognizes, and **exits
    non-zero rather than silently doing nothing** if no unassigned line is found
-   — stop and investigate rather than proceeding if that happens. Then re-run
-   step 1 so the updated assignment is picked up. Fragments the writer does
-   *not* select stay `unassigned` for a future cut; never touch them.
+   — stop and investigate rather than proceeding if that happens. If either
+   `--doc-repo-root` or `--branch` is skipped, the command still exits `0`
+   but prints a `WARNING` to stderr and says `(NOT staged ...)` in its final
+   line instead of `(staged in ...)` (PR #32 review round 5, finding 1) —
+   treat that warning as a stop-and-fix signal, not something to proceed
+   past. Then re-run step 1 so the updated assignment is picked up.
+   Fragments the writer does *not* select stay `unassigned` for a future
+   cut; never touch them.
 
    Nothing further to track here — step 8's `push` auto-discovers every
    staged fragment under `release-notes.d/*.mdx` directly from git and
@@ -462,7 +467,7 @@ them into the real section, once, when the release is actually confirmed.
    the diff, `AskUserQuestion` for push / re-prompt / save-and-exit, then:
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.push \
-     --doc-repo-root <hub-doc-root> --branch <branch> \
+     --doc-repo-root <hub-doc-root> --branch <branch> --version <version> \
      --title "docs: release notes for <version>" --body-file /tmp/pr-body.md
    ```
    No `--path` flags needed here even if step 2 reassigned fragments — `push.py`
@@ -475,6 +480,14 @@ them into the real section, once, when the release is actually confirmed.
    the fragment's real `target_version` is committed history, not an
    uncommitted local edit that a future re-cut from a different clone would
    fail to see (finding F).
+
+   **Always pass `--version` here, matching step 2's `--version`** (PR #32
+   review round 5, finding 3): it scopes fragment auto-discovery to
+   fragments staged with THIS exact version, so a different `cut` session
+   working the same shared clone at the same time — reassigning a different
+   fragment to a different version — can't have its own staged reassignment
+   swept into this push's commit. Tag mode's push (step 11) never reassigns
+   fragments and omits `--version`.
 
 ## Confirmation gates
 

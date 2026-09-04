@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -58,7 +59,9 @@ def _staged_paths_matching(staged: list[str], pattern: str) -> list[str]:
     return [p for p in staged if fnmatch.fnmatch(p, pattern)]
 
 
-def _fragments_with_staged_reassignment(doc_repo_root: str, fragment_paths: list[str]) -> list[str]:
+def _fragments_with_staged_reassignment(
+    doc_repo_root: str, fragment_paths: list[str], expected_version: str | None = None,
+) -> list[str]:
     """The subset of `fragment_paths` that staging actually gave a real
     (non-'unassigned') target_version where its last-committed (HEAD) state
     was still 'unassigned' -- not just any staged edit under FRAGMENT_GLOB.
@@ -103,16 +106,35 @@ def _fragments_with_staged_reassignment(doc_repo_root: str, fragment_paths: list
     skipped the 'unassigned' placeholder entirely, reopening the exact
     shared-clone risk this function otherwise closes. Excluding it means
     that narrow case needs an explicit `--path` instead of being silently
-    swept in -- fails closed, not open."""
+    swept in -- fails closed, not open.
+
+    `expected_version`, when given, additionally requires the staged
+    target_version to equal that EXACT value, not merely "any non-unassigned
+    value" (PR #32 review round 5, finding 3). Without this, the check above
+    still can't tell "this cut's own reassignment" apart from a DIFFERENT
+    concurrent cut's reassignment sitting staged in the same shared clone --
+    two `cut` sessions running close together against the same hub-doc
+    clone, each reassigning a different fragment to a different version,
+    would otherwise each sweep up the OTHER's staged fragment into whichever
+    session's `push` commits first, landing that fragment's reassignment in
+    the wrong release's PR. Scoping to the specific version this push is for
+    closes that: a fragment staged for a different version is left alone
+    (still staged, uncommitted, for whichever push actually is for it)."""
     if not fragment_paths:
         return []
     specs = [f"HEAD:{p}" for p in fragment_paths] + [f":{p}" for p in fragment_paths]
     blobs = _git.show_many(doc_repo_root, specs)
+    version_re = (
+        re.compile(rf"^target_version:\s*{re.escape(expected_version)}\s*$", re.MULTILINE)
+        if expected_version is not None else None
+    )
     reassigned: list[str] = []
     for path in fragment_paths:
         staged = blobs.get(f":{path}")
         if staged is None or UNASSIGNED_TARGET_VERSION_RE.search(staged):
             continue  # not actually staged, or staged but still unassigned
+        if version_re is not None and not version_re.search(staged):
+            continue  # assigned, but to a DIFFERENT version -- not this push's fragment
         head = blobs.get(f"HEAD:{path}")
         if head is not None and UNASSIGNED_TARGET_VERSION_RE.search(head):
             reassigned.append(path)
@@ -157,6 +179,7 @@ def _branch_has_commits_to_push(doc_repo_root: str, branch: str) -> bool:
 def commit_release_notes(
     *, doc_repo_root: str, branch: str, title: str,
     rel_path: str = DEFAULT_REL_PATH, paths: list[str] | None = None,
+    version: str | None = None,
 ) -> None:
     """preview.py writes and stages the new file but never commits it — without
     this, `git push` ships a branch identical to base and the draft PR is empty.
@@ -200,7 +223,18 @@ def commit_release_notes(
     an actual target_version reassignment, not merely a path match on
     FRAGMENT_GLOB (PR #32 review finding 6, altitude) -- see
     _fragments_with_staged_reassignment's docstring for why a glob match
-    alone isn't enough in a shared clone."""
+    alone isn't enough in a shared clone.
+
+    `version`, when given, further requires that reassignment be to THIS
+    exact version (PR #32 review round 5, finding 3) -- two `cut` sessions
+    running close together on the same shared clone, each reassigning a
+    different fragment to a different version, would otherwise sweep the
+    OTHER session's staged fragment into whichever one commits first. Cut
+    mode always knows the version it's cutting, so its SKILL.md invocation
+    passes `--version`; tag mode (multiple patch versions per push, no
+    fragment reassignment step) omits it and keeps the old any-reassignment
+    behavior, which is safe there since it never has fragments to sweep up
+    in the first place."""
     current = _git.head_branch(doc_repo_root)
     if current != branch:
         raise ValueError(
@@ -214,12 +248,35 @@ def commit_release_notes(
     # the reassignment-content check below -- a caller that already knows
     # exactly which fragment it wants committed shouldn't be second-guessed.
     fragment_candidates = [p for p in _staged_paths_matching(staged_now, FRAGMENT_GLOB) if p not in explicit]
-    auto_fragment_paths = _fragments_with_staged_reassignment(doc_repo_root, fragment_candidates)
+    auto_fragment_paths = _fragments_with_staged_reassignment(doc_repo_root, fragment_candidates, version)
     # dict.fromkeys dedupes while preserving order, in case a caller's
     # explicit `paths` already names one of the auto-discovered fragments.
     all_paths = list(dict.fromkeys([rel_path, *(paths or []), *auto_fragment_paths]))
     staged = set(staged_now) & set(all_paths)
     if staged:
+        # `git commit -- <pathspec>` requires EVERY token in the pathspec to
+        # be tracked or staged, or the whole commit fails -- confirmed live
+        # (`git commit -- a.txt nonexistent.txt` -> "pathspec 'nonexistent.txt'
+        # did not match any file(s) known to git") -- even when the real
+        # release-notes.mdx edit was validly staged (PR #32 review round 5,
+        # finding 4). rel_path and auto_fragment_paths are always drawn from
+        # staged_now, so they're already known; only an explicit --path not
+        # already seen there could be a typo or a path that never got
+        # staged. Check just that narrow set with one extra `ls-files` call
+        # (not one per path, and not run at all when every path is already
+        # accounted for in staged_now -- the common case) so a bad extra
+        # path fails with a clear, specific error instead of aborting the
+        # whole commit with a cryptic low-level pathspec message.
+        unverified_explicit = explicit - set(staged_now)
+        if unverified_explicit:
+            known = set(_git.run(doc_repo_root, ["ls-files", "--", *sorted(unverified_explicit)]).splitlines())
+            unknown = sorted(unverified_explicit - known)
+            if unknown:
+                raise ValueError(
+                    f"--path {unknown!r} is not staged or tracked in {doc_repo_root!r} -- "
+                    "fix the path(s) and retry; the release-notes.mdx edit was left "
+                    "uncommitted rather than risk the whole commit failing on a bad pathspec"
+                )
         _git.run(doc_repo_root, ["commit", "-m", title, "--", *all_paths])
         return
     if _branch_has_commits_to_push(doc_repo_root, branch):
@@ -233,11 +290,15 @@ def commit_release_notes(
 def open_release_notes_pr(
     *, doc_repo_root: str, branch: str, title: str, body: str,
     rel_path: str = DEFAULT_REL_PATH, paths: list[str] | None = None,
+    version: str | None = None,
 ) -> str:
     fork = detect_fork()
     if fork is None:
         raise RuntimeError(f"no fork of {UPSTREAM_HUB_DOC} detected for the current gh user; fork it first")
-    commit_release_notes(doc_repo_root=doc_repo_root, branch=branch, title=title, rel_path=rel_path, paths=paths)
+    commit_release_notes(
+        doc_repo_root=doc_repo_root, branch=branch, title=title, rel_path=rel_path, paths=paths,
+        version=version,
+    )
     fork_url = f"https://github.com/{fork}.git"
     try:
         _git.run(doc_repo_root, ["remote", "add", "fork", fork_url])
@@ -275,11 +336,20 @@ def main(argv: list[str]) -> int:
              f"--doc-repo-root) is auto-discovered from what's already staged under "
              f"{FRAGMENT_GLOB!r} and committed together, without needing to be listed here.",
     )
+    parser.add_argument(
+        "--version",
+        help="the exact version this push is for (e.g. v3.21.0-ea.1). Cut mode always knows "
+             "this and should always pass it: it scopes fragment auto-discovery to fragments "
+             "staged with THIS version, so a concurrent cut session's own staged reassignment "
+             "on the same shared clone can't be swept into this push's commit (PR #32 review "
+             "round 5, finding 3). Tag mode (multiple patch versions per push, no fragment "
+             "reassignment step) can omit it.",
+    )
     args = parser.parse_args(argv)
     body = Path(args.body_file).read_text(encoding="utf-8")
     url = open_release_notes_pr(
         doc_repo_root=args.doc_repo_root, branch=args.branch, title=args.title, body=body,
-        rel_path=args.rel_path, paths=args.paths,
+        rel_path=args.rel_path, paths=args.paths, version=args.version,
     )
     print(json.dumps({"pr_url": url}))
     return 0

@@ -146,6 +146,34 @@ def main(argv: list[str]) -> int:
     # a re-run of this command will just fail with "no unassigned line
     # found". Catching the likely failure classes here, before the write,
     # means those two mistakes leave the fragment completely untouched.
+    # --doc-repo-root and --branch are optional (a fragment outside any repo,
+    # e.g. in a test, has neither), but SKILL.md's cut-mode step 2 says to
+    # "always pass both" -- that instruction was prose-only, the exact
+    # pattern this PR's own docstrings criticize elsewhere (PR #32 review
+    # round 5, finding 1): omitting either flag left the reassignment
+    # written-but-uncommitted (or committed to the wrong branch) with NO
+    # visible difference in this command's output from the safe case. Warn
+    # loudly on stderr whenever either is skipped, so a copy-pasted older
+    # command or a forgotten flag doesn't silently reopen finding F.
+    if not args.doc_repo_root:
+        print(
+            f"{args.fragment}: WARNING: no --doc-repo-root given -- the rewritten "
+            "target_version will NOT be committed anywhere; it stays a local, uncommitted "
+            "edit that a later re-cut of this version (from this clone or a fresh one) will "
+            "not see, silently reopening cutmode audit finding F for this fragment. Pass "
+            "--doc-repo-root (and --branch) unless this fragment genuinely isn't inside a "
+            "git repo (e.g. a test fixture).",
+            file=sys.stderr,
+        )
+    elif not args.branch:
+        print(
+            f"{args.fragment}: WARNING: --doc-repo-root given without --branch -- staging on "
+            "whatever branch the doc repo currently has checked out, which may not be the "
+            "release branch this cut is building. Pass --branch to check out the exact "
+            "release branch before staging.",
+            file=sys.stderr,
+        )
+
     rel_path: str | None = None
     if args.doc_repo_root:
         repo_root = Path(args.doc_repo_root)
@@ -193,6 +221,27 @@ def main(argv: list[str]) -> int:
     except ValueError as e:
         print(f"{args.fragment}: {e}", file=sys.stderr)
         return 1
+    except OSError as e:
+        # Distinct from the ValueError branch above (PR #32 review round 5,
+        # finding 2): if --branch just checked out an EXISTING local branch
+        # that doesn't happen to contain this fragment yet (a stale branch
+        # left over from other work on a shared clone -- checkout_branch()
+        # only fetches/branches from origin/main when the branch doesn't
+        # exist locally, an already-existing branch is left exactly as-is),
+        # the checkout can silently remove the fragment from the working
+        # tree before this open() ever runs. That used to surface as a raw,
+        # uncaught FileNotFoundError traceback instead of this module's
+        # documented clean non-zero exit with a "Refusing to touch..."
+        # message every other validated failure here produces.
+        hint = (
+            f" --branch {args.branch!r} was checked out just before this -- if that's an "
+            "existing local branch that predates this fragment's merge, checking it out "
+            "would have removed the file from the working tree. Check out a branch that "
+            "actually contains this fragment, or omit --branch to stay on the current one."
+            if args.doc_repo_root and args.branch else ""
+        )
+        print(f"{args.fragment}: could not read/write the fragment file: {e}.{hint}", file=sys.stderr)
+        return 1
 
     if rel_path is not None:
         try:
@@ -212,7 +261,12 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 1
-    print(f"{args.fragment}: target_version -> {args.version}")
+    # The confirmation line states whether staging actually happened (PR #32
+    # review round 5, finding 1) instead of the same text either way -- an
+    # operator skimming output for confirmation shouldn't have to infer
+    # staging status from the presence or absence of a WARNING line above.
+    status = f"staged in {args.doc_repo_root!r}" if rel_path is not None else "NOT staged (no --doc-repo-root given)"
+    print(f"{args.fragment}: target_version -> {args.version} ({status})")
     return 0
 
 

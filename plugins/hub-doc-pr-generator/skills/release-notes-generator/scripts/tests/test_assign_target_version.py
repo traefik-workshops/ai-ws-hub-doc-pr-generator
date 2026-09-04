@@ -320,6 +320,137 @@ class TestMainGitStaging(unittest.TestCase):
             self.assertIn("git -C", err)
             self.assertIn("add -- _964-bedrock-mantle.mdx", err)
 
+    def test_warns_loudly_when_doc_repo_root_omitted(self):
+        """Regression test (PR #32 review round 5, finding 1): SKILL.md's
+        cut-mode step 2 tells the operator/agent to "always pass both
+        --doc-repo-root and --branch", but the flags themselves are optional
+        and nothing enforced or even flagged that instruction -- omitting
+        --doc-repo-root left the rewrite silently uncommitted, with the
+        exact same success message as the staged case. An operator/agent
+        that skips the flag (e.g. copy-pasting an older command) must see an
+        unmistakable warning, not just the same "success" line finding F's
+        fix relies on staging actually happening."""
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "964-bedrock-mantle.mdx"
+            path.write_text(FRAGMENT_BARE)
+            rc, err = self._run_capturing_stderr(["--fragment", str(path), "--version", "v3.21.0-ea.1"])
+        self.assertEqual(rc, 0)
+        self.assertIn("WARNING", err)
+        self.assertIn("--doc-repo-root", err)
+
+    def test_warns_loudly_when_branch_omitted_but_doc_repo_root_given(self):
+        """Same gap, the --branch half: omitting it stages the reassignment
+        on whatever branch the doc repo already happens to be on (main, or a
+        stale branch), not the release branch -- SKILL.md says to always
+        pass both, so silently proceeding without --branch must warn too."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._init_repo(repo)
+            frag_dir = repo / "docs" / "api-gateway" / "release-notes.d"
+            frag_dir.mkdir(parents=True)
+            frag_path = frag_dir / "_964-bedrock-mantle.mdx"
+            frag_path.write_text(FRAGMENT_BARE)
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+            rc, err = self._run_capturing_stderr([
+                "--fragment", str(frag_path), "--version", "v3.21.0-ea.1",
+                "--doc-repo-root", str(repo),
+            ])
+        self.assertEqual(rc, 0)
+        self.assertIn("WARNING", err)
+        self.assertIn("--branch", err)
+
+    def test_no_warning_when_both_safety_flags_are_given(self):
+        """The happy path (both flags passed, as SKILL.md instructs) must
+        stay quiet -- no WARNING noise on every normal cut-mode run."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._init_repo(repo)
+            frag_dir = repo / "docs" / "api-gateway" / "release-notes.d"
+            frag_dir.mkdir(parents=True)
+            frag_path = frag_dir / "_964-bedrock-mantle.mdx"
+            frag_path.write_text(FRAGMENT_BARE)
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+            subprocess.run(["git", "branch", "docs/release-notes"], cwd=repo, check=True)
+
+            rc, err = self._run_capturing_stderr([
+                "--fragment", str(frag_path), "--version", "v3.21.0-ea.1",
+                "--doc-repo-root", str(repo), "--branch", "docs/release-notes",
+            ])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("WARNING", err)
+
+    def test_success_message_states_whether_staging_happened(self):
+        """The final confirmation line must say whether the reassignment was
+        actually staged, not print identical text regardless -- an operator
+        skimming output for confirmation shouldn't have to infer staging
+        status from the presence or absence of a WARNING line above it."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "staged"
+            repo.mkdir()
+            self._init_repo(repo)
+            frag_dir = repo / "docs" / "api-gateway" / "release-notes.d"
+            frag_dir.mkdir(parents=True)
+            frag_path = frag_dir / "_964-bedrock-mantle.mdx"
+            frag_path.write_text(FRAGMENT_BARE)
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+
+            import io
+            import contextlib
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main([
+                    "--fragment", str(frag_path), "--version", "v3.21.0-ea.1",
+                    "--doc-repo-root", str(repo),
+                ])
+            self.assertIn("staged", out.getvalue().lower())
+
+            unstaged_path = Path(td) / "unstaged.mdx"
+            unstaged_path.write_text(FRAGMENT_BARE)
+            out2 = io.StringIO()
+            with contextlib.redirect_stdout(out2):
+                main(["--fragment", str(unstaged_path), "--version", "v3.21.0-ea.1"])
+            self.assertIn("not staged", out2.getvalue().lower())
+
+    def test_stale_local_branch_missing_fragment_gives_clean_error_not_a_crash(self):
+        """Regression test (PR #32 review round 5, finding 2): checkout_branch()
+        leaves an EXISTING local branch as-is (no fetch/merge from origin/main
+        -- only a branch that doesn't exist locally yet gets created fresh
+        from there). If that existing branch is stale and predates this
+        fragment's merge to main (a real risk on the shared clones this
+        repo's own CLAUDE.md documents), checking it out removes the
+        fragment from the working tree before this command's open() call
+        ever runs -- previously an uncaught FileNotFoundError traceback
+        instead of a clean, non-zero, "the fragment is gone" message."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._init_repo(repo)
+            (repo / "README.md").write_text("x")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+            # A stale branch left over from earlier work, branched BEFORE
+            # the fragment ever existed.
+            subprocess.run(["git", "branch", "stale-branch"], cwd=repo, check=True)
+
+            frag_dir = repo / "docs" / "api-gateway" / "release-notes.d"
+            frag_dir.mkdir(parents=True)
+            frag_path = frag_dir / "_964-bedrock-mantle.mdx"
+            frag_path.write_text(FRAGMENT_BARE)
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "add fragment"], cwd=repo, check=True)
+
+            rc, err = self._run_capturing_stderr([
+                "--fragment", str(frag_path), "--version", "v3.21.0-ea.1",
+                "--doc-repo-root", str(repo), "--branch", "stale-branch",
+            ])
+            self.assertEqual(rc, 1)
+            self.assertIn("could not read/write the fragment file", err)
+            self.assertIn("stale-branch", err)
+            self.assertNotIn("Traceback", err)
+
     @staticmethod
     def _run_capturing_stderr(argv):
         import io

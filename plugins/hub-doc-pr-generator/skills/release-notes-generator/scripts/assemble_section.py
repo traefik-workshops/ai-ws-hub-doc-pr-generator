@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 from scripts import _discover
-from scripts._shapes import VALID_SHAPES
+from scripts._shapes import GA_BULLET, VALID_SHAPES
 
 _EA_VERSION_RE = re.compile(r"-ea(\.|$)", re.IGNORECASE)
 
@@ -40,7 +40,13 @@ _EA_VERSION_RE = re.compile(r"-ea(\.|$)", re.IGNORECASE)
 # grouped under "Graduated to GA" -- that heading is reserved for actual GA
 # graduations, and a plain-bullet entry (a small enhancement the
 # engineer/reviewer explicitly declined EA/GA framing for) isn't one.
-_BULLET_SHAPE = "ga-bullet"
+#
+# Imported from _shapes.py, not retyped as a literal (PR #32 review-round-5
+# finding): this constant WAS a hardcoded "ga-bullet" string even after
+# _shapes.py was introduced as the single source of truth specifically to
+# rule out this exact drift -- if GA_BULLET's value ever changed there, this
+# copy would silently stop matching real fragments' shape field.
+_BULLET_SHAPE = GA_BULLET
 
 # Matches markdown link targets, e.g. `[text](../foo/bar.md#anchor)`. Only the
 # target (group 1) is used -- link text can contain nested brackets/parens we
