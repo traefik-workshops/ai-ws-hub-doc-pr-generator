@@ -477,6 +477,127 @@ class TestCommitReleaseNotes(unittest.TestCase):
         commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
         self.assertIn("already/tracked/unchanged.md", commit_call.args[1])
 
+    def test_unstaged_untracked_rel_path_raises_clean_error_instead_of_a_bare_pathspec_crash(self):
+        """Regression test (PR #32 review round 6 finding, correctness):
+        rel_path used to be excluded from the ls-files validation entirely
+        -- only explicit --path values were checked. If --rel-path doesn't
+        match what preview.py actually staged (a typo, or the two scripts
+        given different --rel-path values), but something else (a fragment
+        reassignment) is separately staged, `staged` was still non-empty and
+        the code proceeded straight to `git commit -- <bad rel_path> ...`,
+        which git rejects with a raw, uncaught pathspec error -- the exact
+        failure class this same PR's ls-files check was written to avoid,
+        just not for rel_path. rel_path must go through the same check."""
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                # diff --cached --name-only -- only the fragment is staged,
+                # NOT the (mistyped) rel_path.
+                "docs/api-gateway/release-notes.d/_964-x.mdx\n",
+                "",  # ls-files -- typo'd rel_path (not tracked, empty output)
+            ]
+            with self.assertRaises(ValueError) as ctx:
+                commit_release_notes(
+                    doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x",
+                    rel_path="docs/api-gateway/release-notse.mdx",  # typo
+                    paths=["docs/api-gateway/release-notes.d/_964-x.mdx"],
+                )
+        self.assertIn("release-notse.mdx", str(ctx.exception))
+        # The commit itself must never have been attempted -- the real
+        # fragment path must not get committed without the release-notes
+        # edit riding along in the same commit.
+        commit_calls = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"]
+        self.assertEqual(commit_calls, [])
+
+    def test_version_mismatch_prints_diagnostic_warning_but_does_not_raise(self):
+        """Regression test (PR #32 review round 6 finding, correctness): a
+        fragment that shows a real reassignment to a DIFFERENT version than
+        this push's --version used to be excluded from the commit with zero
+        diagnostic -- indistinguishable from "nothing to see here" whether
+        it was a genuine different concurrent session (correct to exclude)
+        or this run's own --version being mistyped relative to step 2's
+        assign_target_version.py --version (a real, otherwise-invisible bug).
+        Must warn, but must NOT raise -- the mismatch is inherently
+        ambiguous and the release-notes.mdx edit itself must still commit."""
+        import io
+        from contextlib import redirect_stderr
+
+        blobs = {
+            "HEAD:docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: v3.20.9\n---\nbody\n",
+        }
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value=blobs), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n"
+                "docs/api-gateway/release-notes.d/_964-x.mdx\n",
+                "",  # commit
+            ]
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                commit_release_notes(
+                    doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x",
+                    version="v3.21.0-ea.2",
+                )
+        self.assertIn("v3.21.0-ea.2", stderr.getvalue())
+        self.assertIn("docs/api-gateway/release-notes.d/_964-x.mdx", stderr.getvalue())
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        # The mismatched fragment stays excluded (correct, pending
+        # behavior); only the diagnostic is new.
+        self.assertNotIn("docs/api-gateway/release-notes.d/_964-x.mdx", commit_call.args[1])
+        self.assertIn("docs/api-gateway/release-notes.mdx", commit_call.args[1])
+
+    def test_no_fragment_autodiscovery_skips_even_a_real_staged_reassignment(self):
+        """Regression test (PR #32 review round 6 finding, correctness): tag
+        mode's push never reassigns a fragment itself, but with no
+        --version, fragment auto-discovery used to sweep in ANY staged
+        reassignment unscoped -- including a DIFFERENT concurrent cut
+        session's own staged reassignment on the same shared clone.
+        discover_fragments=False (tag mode's --no-fragment-autodiscovery)
+        must skip fragment auto-discovery entirely, unconditionally,
+        regardless of what's staged under FRAGMENT_GLOB."""
+        blobs = {
+            "HEAD:docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: unassigned\n---\nbody\n",
+            ":docs/api-gateway/release-notes.d/_964-x.mdx": "---\ntarget_version: v3.20.9\n---\nbody\n",
+        }
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value=blobs), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n"
+                "docs/api-gateway/release-notes.d/_964-x.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(
+                doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x",
+                discover_fragments=False,
+            )
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertNotIn("docs/api-gateway/release-notes.d/_964-x.mdx", commit_call.args[1])
+        self.assertIn("docs/api-gateway/release-notes.mdx", commit_call.args[1])
+
+    def test_fragment_glob_does_not_match_a_nested_subdirectory(self):
+        """Regression test (PR #32 review round 6 finding, correctness):
+        the old fnmatch-based matching's '*' crossed '/' the same as any
+        other character, so a stray nested file like
+        release-notes.d/archive/970-old.mdx (never created by this
+        skill's own tools, but possible from a manual mistake or an
+        unrelated concurrent session) was wrongly treated as a fragment
+        candidate. Auto-discovery must only ever consider files directly
+        under FRAGMENT_DIR."""
+        with patch("scripts.push._git.head_branch", return_value="docs/rn"), \
+             patch("scripts.push._git.show_many", return_value={}), \
+             patch("scripts.push._git.run") as mock_run:
+            mock_run.side_effect = [
+                "docs/api-gateway/release-notes.mdx\n"
+                "docs/api-gateway/release-notes.d/archive/970-old.mdx\n",
+                "",  # commit
+            ]
+            commit_release_notes(doc_repo_root="/hub-doc", branch="docs/rn", title="docs: x")
+        commit_call = [c for c in mock_run.call_args_list if c.args[1][0] == "commit"][0]
+        self.assertNotIn("docs/api-gateway/release-notes.d/archive/970-old.mdx", commit_call.args[1])
+
 
 class TestOpenReleaseNotesPr(unittest.TestCase):
     def test_raises_when_no_fork_detected(self):

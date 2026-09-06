@@ -264,9 +264,20 @@ that clone path for `hub-doc-pr-generator`, this skill finds it too.
 11. **Push.**
     ```bash
     PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.push \
-      --doc-repo-root <hub-doc-root> --branch <branch> \
+      --doc-repo-root <hub-doc-root> --branch <branch> --no-fragment-autodiscovery \
       --title "docs: release notes for v3.20.8 & v3.19.13" --body-file /tmp/pr-body.md
     ```
+
+    **Always pass `--no-fragment-autodiscovery` here** (PR #32 review round 6
+    finding, correctness): tag mode never reassigns a fragment itself, so
+    fragment auto-discovery has nothing to legitimately find here. Before
+    this flag existed, an omitted `--version` was the only signal telling
+    `push.py` "don't scope fragment discovery" — but on a shared clone, a
+    concurrent cut-mode session's own staged fragment reassignment (step 2
+    of the cut pipeline below) was indistinguishable from "nothing staged"
+    at that moment, so it could get swept into this push's commit instead of
+    the cut session's own. This flag skips fragment auto-discovery
+    unconditionally, closing that off regardless of `--version`.
 
 ## Pipeline (cut mode — assembling EA/GA fragments)
 
@@ -487,7 +498,16 @@ them into the real section, once, when the release is actually confirmed.
    working the same shared clone at the same time — reassigning a different
    fragment to a different version — can't have its own staged reassignment
    swept into this push's commit. Tag mode's push (step 11) never reassigns
-   fragments and omits `--version`.
+   fragments and instead passes `--no-fragment-autodiscovery`.
+
+   If `push` prints a `warning: N staged fragment(s) show a real
+   target_version reassignment but not to '<version>' ...` line, double
+   check `--version` here actually matches what step 2's
+   `assign_target_version.py --version` used — a typo between the two
+   silently leaves that fragment's reassignment uncommitted (PR #32 review
+   round 6 finding, correctness) with no error, only this warning. If the
+   listed fragment(s) genuinely belong to a different concurrent cut session
+   on this shared clone, the warning is expected and nothing needs fixing.
 
 ## Confirmation gates
 

@@ -12,11 +12,10 @@ Usage:
 """
 from __future__ import annotations
 import argparse
-import fnmatch
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from scripts import _discover, _gh, _git
@@ -24,10 +23,18 @@ from scripts._frontmatter import UNASSIGNED_TARGET_VERSION_RE
 from scripts.preview import DEFAULT_REL_PATH
 
 UPSTREAM_HUB_DOC = "traefik/hub-doc"
-# Glob (matched against a repo-relative path) for fragment files
+# Directory (repo-relative, no trailing slash) fragment files
 # commit_release_notes() auto-discovers among what's already staged -- see
-# _staged_paths_matching()'s docstring.
-FRAGMENT_GLOB = "docs/api-gateway/release-notes.d/*.mdx"
+# _staged_paths_matching()'s docstring. Matched as "directly under this
+# directory", not a glob string, so a nested subdirectory can never satisfy
+# it (PR #32 review round 6 finding: fnmatch's `*` matches across `/`, so
+# the old glob-string form treated e.g. an accidental
+# "release-notes.d/archive/970-old.mdx" as a fragment candidate too).
+FRAGMENT_DIR = "docs/api-gateway/release-notes.d"
+FRAGMENT_SUFFIX = ".mdx"
+# Kept for any external caller/help text that still wants a human-readable
+# glob-shaped description of what's matched.
+FRAGMENT_GLOB = f"{FRAGMENT_DIR}/*{FRAGMENT_SUFFIX}"
 
 
 def _staged_paths(doc_repo_root: str) -> list[str]:
@@ -40,9 +47,29 @@ def _staged_paths(doc_repo_root: str) -> list[str]:
     return staged.splitlines() if staged else []
 
 
+def _is_fragment_path(path: str) -> bool:
+    """True if `path` names an .mdx file DIRECTLY under FRAGMENT_DIR -- not
+    one more directory level down.
+
+    Deliberately not `fnmatch.fnmatch(path, FRAGMENT_GLOB)` (PR #32 review
+    round 6 finding, correctness): fnmatch's `*` matches across `/` the same
+    as any other character, so that glob-string form also matched e.g.
+    "docs/api-gateway/release-notes.d/archive/970-old.mdx" -- a nested
+    subdirectory the fragment-writing tools never create, but a stray
+    script, manual mistake, or unrelated concurrent session on the same
+    shared clone could. Comparing PurePosixPath.parent exactly closes that
+    off structurally instead of relying on a glob string staying free of
+    accidental cross-directory matches."""
+    p = PurePosixPath(path)
+    return p.parent.as_posix() == FRAGMENT_DIR and p.suffix == FRAGMENT_SUFFIX
+
+
 def _staged_paths_matching(staged: list[str], pattern: str) -> list[str]:
-    """The subset of `staged` repo-relative paths that match `pattern`
-    (fnmatch against the full path).
+    """The subset of `staged` repo-relative paths that are fragment files
+    (see `_is_fragment_path`). `pattern` is accepted for backward
+    compatibility with existing callers/tests but is otherwise unused --
+    every real caller in this module passes FRAGMENT_GLOB, and the actual
+    match is always the directory-scoped `_is_fragment_path` check now.
 
     This is what makes finding F's fix self-enforcing instead of prose-only
     (PR #32 review finding 1): assign_target_version.py's --doc-repo-root
@@ -54,9 +81,9 @@ def _staged_paths_matching(staged: list[str], pattern: str) -> list[str]:
     /tmp/reassigned_fragment_paths.txt approach, which had no way to catch
     a lost or incomplete list, and whose shell plumbing had its own bug:
     review finding 2, unquoted `sed` word-splitting a path containing a
-    space). If nothing matching `pattern` is staged, this simply returns an
+    space). If nothing under FRAGMENT_DIR is staged, this simply returns an
     empty list -- not an error, since most cuts reassign zero fragments."""
-    return [p for p in staged if fnmatch.fnmatch(p, pattern)]
+    return [p for p in staged if _is_fragment_path(p)]
 
 
 def _fragments_with_staged_reassignment(
@@ -179,7 +206,7 @@ def _branch_has_commits_to_push(doc_repo_root: str, branch: str) -> bool:
 def commit_release_notes(
     *, doc_repo_root: str, branch: str, title: str,
     rel_path: str = DEFAULT_REL_PATH, paths: list[str] | None = None,
-    version: str | None = None,
+    version: str | None = None, discover_fragments: bool = True,
 ) -> None:
     """preview.py writes and stages the new file but never commits it — without
     this, `git push` ships a branch identical to base and the draft PR is empty.
@@ -233,8 +260,30 @@ def commit_release_notes(
     mode always knows the version it's cutting, so its SKILL.md invocation
     passes `--version`; tag mode (multiple patch versions per push, no
     fragment reassignment step) omits it and keeps the old any-reassignment
-    behavior, which is safe there since it never has fragments to sweep up
-    in the first place."""
+    behavior -- **but** "safe there since it never has fragments to sweep up
+    in the first place" (this function's own prior claim) is a claim about
+    tag mode's workflow, not something the code enforced: a concurrent cut
+    session on the same shared clone staging its own reassignment at that
+    exact moment was, until this fix, indistinguishable from "nothing to
+    sweep" (PR #32 review round 6 finding, confirmed). `discover_fragments`
+    closes that at its only real call site: tag mode's SKILL.md invocation
+    now passes `--no-fragment-autodiscovery` (discover_fragments=False here),
+    which skips fragment auto-discovery entirely regardless of what's
+    staged -- matching what tag mode's workflow already guarantees (it never
+    reassigns a fragment itself) instead of relying on an absent `--version`
+    to imply it. Cut mode never sets this, so its behavior (and every
+    existing `--version`-scoping test) is unchanged.
+
+    When `version` is given and any staged fragment candidate shows a real
+    reassignment to some OTHER version, that's logged as a warning (not
+    raised) -- it's ambiguous on purpose: it's either this run's own
+    assign_target_version.py having been given a different `--version` than
+    this push (an operator typo -- the fragment silently never gets
+    committed, previously with no diagnostic at all: PR #32 review round 6
+    finding, correctness) or, exactly as intended, a genuinely different
+    concurrent session's own reassignment that must be left alone. Only a
+    human can tell those apart, so this can't be a hard failure -- but
+    leaving the operator zero signal either way was the actual bug."""
     current = _git.head_branch(doc_repo_root)
     if current != branch:
         raise ValueError(
@@ -243,12 +292,35 @@ def commit_release_notes(
         )
     staged_now = _staged_paths(doc_repo_root)
     explicit = set(paths or [])
-    # Fragments the caller already named explicitly are trusted as-is (that's
-    # what `paths` is for); only fragments NOT already explicit go through
-    # the reassignment-content check below -- a caller that already knows
-    # exactly which fragment it wants committed shouldn't be second-guessed.
-    fragment_candidates = [p for p in _staged_paths_matching(staged_now, FRAGMENT_GLOB) if p not in explicit]
-    auto_fragment_paths = _fragments_with_staged_reassignment(doc_repo_root, fragment_candidates, version)
+    auto_fragment_paths: list[str] = []
+    if discover_fragments:
+        # Fragments the caller already named explicitly are trusted as-is
+        # (that's what `paths` is for); only fragments NOT already explicit
+        # go through the reassignment-content check below -- a caller that
+        # already knows exactly which fragment it wants committed shouldn't
+        # be second-guessed.
+        fragment_candidates = [p for p in _staged_paths_matching(staged_now, FRAGMENT_GLOB) if p not in explicit]
+        auto_fragment_paths = _fragments_with_staged_reassignment(doc_repo_root, fragment_candidates, version)
+        if version is not None and fragment_candidates:
+            # Diagnostic only, never a hard failure (PR #32 review round 6
+            # finding, correctness) -- see this function's own docstring for
+            # why a version mismatch here is inherently ambiguous between
+            # "this run's own --version was mistyped" and "a different
+            # concurrent session's reassignment, correctly left alone".
+            all_real = _fragments_with_staged_reassignment(doc_repo_root, fragment_candidates)
+            mismatched = sorted(set(all_real) - set(auto_fragment_paths))
+            if mismatched:
+                print(
+                    f"warning: {len(mismatched)} staged fragment(s) show a real "
+                    f"target_version reassignment but not to {version!r} (the version "
+                    f"this push is for), so they were left uncommitted: {mismatched!r}. "
+                    "If this run's own assign_target_version.py was given a different "
+                    "--version than this push's --version, that's a typo -- fix it and "
+                    "re-run, or these fragments stay staged-but-uncommitted indefinitely. "
+                    "If they instead belong to a different concurrent session on this "
+                    "shared clone, this is correct: leave them alone.",
+                    file=sys.stderr,
+                )
     # dict.fromkeys dedupes while preserving order, in case a caller's
     # explicit `paths` already names one of the auto-discovered fragments.
     all_paths = list(dict.fromkeys([rel_path, *(paths or []), *auto_fragment_paths]))
@@ -259,21 +331,32 @@ def commit_release_notes(
         # (`git commit -- a.txt nonexistent.txt` -> "pathspec 'nonexistent.txt'
         # did not match any file(s) known to git") -- even when the real
         # release-notes.mdx edit was validly staged (PR #32 review round 5,
-        # finding 4). rel_path and auto_fragment_paths are always drawn from
-        # staged_now, so they're already known; only an explicit --path not
-        # already seen there could be a typo or a path that never got
-        # staged. Check just that narrow set with one extra `ls-files` call
-        # (not one per path, and not run at all when every path is already
-        # accounted for in staged_now -- the common case) so a bad extra
-        # path fails with a clear, specific error instead of aborting the
-        # whole commit with a cryptic low-level pathspec message.
-        unverified_explicit = explicit - set(staged_now)
-        if unverified_explicit:
-            known = set(_git.run(doc_repo_root, ["ls-files", "--", *sorted(unverified_explicit)]).splitlines())
-            unknown = sorted(unverified_explicit - known)
+        # finding 4). auto_fragment_paths are always drawn from staged_now,
+        # so they're already known; rel_path and any explicit --path not
+        # already seen there could be a typo, a mismatch with preview.py's
+        # own --rel-path, or a path that never got staged (PR #32 review
+        # round 6 finding, correctness: rel_path used to be excluded from
+        # this check entirely, on the mistaken assumption that only explicit
+        # --path values could ever be wrong -- but rel_path is just as much
+        # a caller-supplied value, and a mismatched one used to reach
+        # `git commit` unchecked and fail with the exact raw pathspec error
+        # this check exists to avoid). Check just that narrow set with one
+        # extra `ls-files` call (not one per path, and not run at all when
+        # every path is already accounted for in staged_now -- the common
+        # case) so a bad path fails with a clear, specific error instead of
+        # aborting the whole commit with a cryptic low-level pathspec
+        # message.
+        unverified = ({rel_path} | explicit) - set(staged_now)
+        if unverified:
+            known = set(_git.run(doc_repo_root, ["ls-files", "--", *sorted(unverified)]).splitlines())
+            unknown = sorted(unverified - known)
             if unknown:
+                hint = (
+                    f" ({rel_path!r} is rel_path -- check it matches the value passed to "
+                    "preview.py --rel-path)" if rel_path in unknown else ""
+                )
                 raise ValueError(
-                    f"--path {unknown!r} is not staged or tracked in {doc_repo_root!r} -- "
+                    f"{unknown!r} is not staged or tracked in {doc_repo_root!r}{hint} -- "
                     "fix the path(s) and retry; the release-notes.mdx edit was left "
                     "uncommitted rather than risk the whole commit failing on a bad pathspec"
                 )
@@ -290,14 +373,14 @@ def commit_release_notes(
 def open_release_notes_pr(
     *, doc_repo_root: str, branch: str, title: str, body: str,
     rel_path: str = DEFAULT_REL_PATH, paths: list[str] | None = None,
-    version: str | None = None,
+    version: str | None = None, discover_fragments: bool = True,
 ) -> str:
     fork = detect_fork()
     if fork is None:
         raise RuntimeError(f"no fork of {UPSTREAM_HUB_DOC} detected for the current gh user; fork it first")
     commit_release_notes(
         doc_repo_root=doc_repo_root, branch=branch, title=title, rel_path=rel_path, paths=paths,
-        version=version,
+        version=version, discover_fragments=discover_fragments,
     )
     fork_url = f"https://github.com/{fork}.git"
     try:
@@ -343,13 +426,25 @@ def main(argv: list[str]) -> int:
              "staged with THIS version, so a concurrent cut session's own staged reassignment "
              "on the same shared clone can't be swept into this push's commit (PR #32 review "
              "round 5, finding 3). Tag mode (multiple patch versions per push, no fragment "
-             "reassignment step) can omit it.",
+             "reassignment step) can omit it -- but should pass --no-fragment-autodiscovery "
+             "instead (see that flag's help) rather than rely on --version's absence for safety.",
+    )
+    parser.add_argument(
+        "--no-fragment-autodiscovery", action="store_true",
+        help="skip fragment auto-discovery entirely, regardless of what's staged under "
+             f"{FRAGMENT_GLOB!r}. Tag mode never reassigns a fragment itself, so it should "
+             "pass this instead of relying on an omitted --version for safety -- without it, "
+             "tag mode's push could sweep a DIFFERENT concurrent cut session's own staged "
+             "fragment reassignment into tag mode's commit, since with no --version there was "
+             "no scoping at all (PR #32 review round 6 finding, correctness). Cut mode must "
+             "never pass this (it needs its own reassigned fragments committed).",
     )
     args = parser.parse_args(argv)
     body = Path(args.body_file).read_text(encoding="utf-8")
     url = open_release_notes_pr(
         doc_repo_root=args.doc_repo_root, branch=args.branch, title=args.title, body=body,
         rel_path=args.rel_path, paths=args.paths, version=args.version,
+        discover_fragments=not args.no_fragment_autodiscovery,
     )
     print(json.dumps({"pr_url": url}))
     return 0

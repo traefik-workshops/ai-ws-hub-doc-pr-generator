@@ -287,6 +287,32 @@ class TestSplice(unittest.TestCase):
         self.assertIn("This section describes our support policy.", result)
         self.assertIn("Messages API", result)
 
+    def test_ignores_gateway_heading_lookalike_inside_a_nested_shorter_fence(self):
+        """Regression test (PR #32 review round 6 finding, correctness): the
+        fence toggle used to flip on ANY line starting with 3+ backticks,
+        regardless of length. A release note demonstrating how to safely
+        show a LITERAL 3-backtick fenced example uses the standard markdown
+        technique of a longer (4-backtick) outer fence -- the inner
+        3-backtick lines are just literal content, not real fence
+        delimiters, and must not be mistaken for the outer fence's close.
+        Before this fix, the inner opening ``` line closed the outer fence
+        early, exposing the heading-lookalike inside as a real boundary."""
+        existing = (
+            "preamble\n\n"
+            "Example showing how to escape a fenced block in your own docs:\n\n"
+            "````md\n"
+            "```\n"
+            "## Gateway v9.9.9\n"
+            "```\n"
+            "````\n\n"
+            "## Gateway v3.20.6\n\nold content\n"
+        )
+        entry = "## Gateway v3.20.7\n\nnew content\n"
+        result = splice(existing, entry)
+        self.assertLess(result.index("v3.20.7"), result.index("v3.20.6"))
+        # The nested fenced example must be untouched, in its entirety.
+        self.assertIn("````md\n```\n## Gateway v9.9.9\n```\n````", result)
+
     def test_unclosed_fence_in_trailing_content_raises_instead_of_deleting_it(self):
         """Regression test (PR #32 review round 4, finding 3):
         _first_line_outside_fences toggles in_fence on every ``` line and
