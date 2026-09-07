@@ -200,6 +200,8 @@ that clone path for `hub-doc-pr-generator`, this skill finds it too.
      Tier 1 — Core rules
    - `${CLAUDE_SKILL_DIR}/../hub-doc-pr-generator/references/hub-doc-conventions.md`
      for MDX admonition/heading conventions
+   - `${CLAUDE_SKILL_DIR}/../hub-doc-pr-generator/references/release-note-style.md`
+     for this genre's language rules
    - The current top of `docs/api-gateway/release-notes.mdx` in the hub-doc
      clone (first ~30 lines, to confirm nothing about the file's preamble has
      changed) — do not read the whole file; `render_entry.py` in step 7
@@ -212,7 +214,11 @@ that clone path for `hub-doc-pr-generator`, this skill finds it too.
    `vX.Y.Z only:` / `vX.Y.Z:` per the template. Write the wording from the
    commit subject and your understanding of what it actually does — don't
    just retitle-case the raw subject line, and don't invent behavior the
-   commit doesn't describe.
+   commit doesn't describe. Per `release-note-style.md`, end each bullet with
+   the observable consequence, not just the mechanism (never ship one that
+   stops at restating the commit subject); the one exception is a bare
+   dependency-bump or CVE-advisory bullet in `### Misc`, which stays a plain
+   fact with no outcome clause.
 
    Write the new entry to `/tmp/new-entry.mdx`.
 
