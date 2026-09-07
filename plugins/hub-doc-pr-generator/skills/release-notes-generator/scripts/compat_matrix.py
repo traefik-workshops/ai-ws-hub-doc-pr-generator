@@ -32,10 +32,28 @@ whatever the last published entry said:
     plugin follows. As of writing this can genuinely come back empty (the
     latest chart tag can lag a day or more behind a Hub patch release) —
     that's reported as `version: null`, never guessed.
-  - Static Analyzer: no pin location has been identified yet. The Makefile
-    invokes `hub-static-analyzer` but doesn't pin a version anywhere found
-    so far. Always reported as unknown; see references/compat-matrix-sources.md
-    before wiring this up for real.
+  - Static Analyzer: traefik-hub never pins a version for it (not go.mod,
+    not the Makefile, not CI, not flake.nix — checked all four). It ships
+    from its own repo, traefik/hub-static-analyzer, with its own release
+    cadence. Verified live: hub-doc's published v3.20.12 entry (traefik-hub
+    tagged 2026-08-26) lists Static Analyzer v1.9.4, exactly that repo's own
+    latest release as of that date (published 2026-08-19). So this reads
+    that repo's releases and picks the newest one at or before the Hub tag's
+    own commit date, the same rule whoever filled these in by hand was
+    apparently already following.
+  - MCP specification: unlike every other row, there is currently no version
+    to pin at all, not just an unlocated one. Confirmed live against
+    traefik-hub@main (hub/pkg/middleware/mcp/middleware.go): the middleware
+    reads the client's `Mcp-Protocol-Version` request header and hands it
+    straight to telemetry (telemetry.go's buildSemConvAttributes) with no
+    comparison, allow-list, or rejection path — a pure pass-through, not
+    version enforcement. `go.mod` pins `github.com/modelcontextprotocol/
+    go-sdk`, but only `e2e/middlewares/mcp_test.go` imports it; no
+    production package does. So "the revision Hub supports" is not yet a
+    fact the codebase states anywhere (see hub-issues#3152, technical
+    proposal 1: engineering has to declare a constant before this row can
+    report anything but TBD). Always reported as unknown; see
+    references/compat-matrix-sources.md.
 
 Usage:
   python -m scripts.compat_matrix --tag v3.19.13 --tag v3.20.8 [--max-chart-tags 25]
@@ -167,13 +185,73 @@ def helm_chart_for(tag: str, *, max_chart_tags: int) -> dict:
     }
 
 
-def static_analyzer_version() -> dict:
+STATIC_ANALYZER_REPO = "traefik/hub-static-analyzer"
+
+
+def _hub_tag_date(tag: str) -> Optional[str]:
+    try:
+        return _gh.run_text(["api", f"repos/{HUB_REPO}/commits/{tag}", "--jq", ".commit.committer.date"]).strip()
+    except _gh.GhError:
+        return None
+
+
+def _analyzer_releases(max_releases: int) -> list[tuple[str, str]]:
+    """(tag_name, published_at) pairs for traefik/hub-static-analyzer, newest
+    first — GitHub's releases API already orders them that way."""
+    raw = _gh.run_text([
+        "api", f"repos/{STATIC_ANALYZER_REPO}/releases", "--paginate",
+        "--jq", ".[] | [.tag_name, .published_at] | @tsv",
+    ])
+    out: list[tuple[str, str]] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        tag_name, published_at = line.split("\t", 1)
+        out.append((tag_name, published_at))
+    return out[:max_releases]
+
+
+def static_analyzer_version(tag: str, *, max_releases: int = 25) -> dict:
+    """hub-static-analyzer isn't a go.mod dependency — traefik-hub never pins
+    a version for it anywhere (checked go.mod, the Makefile, CI, and
+    flake.nix). It ships from its own repo, traefik/hub-static-analyzer, with
+    its own release cadence. Verified live: hub-doc's published v3.20.12 entry
+    (traefik-hub tagged 2026-08-26) lists Static Analyzer v1.9.4, which is
+    exactly hub-static-analyzer's own latest release as of that date
+    (published 2026-08-19). So "the latest hub-static-analyzer release at or
+    before the Hub tag's own commit date" is the real, reproducible rule
+    whoever filled in past entries by hand was actually following — not a
+    guess, and not something that needed carrying forward blindly."""
+    hub_date = _hub_tag_date(tag)
+    if hub_date is None:
+        return {"version": None, "note": f"could not resolve {tag}'s commit date in {HUB_REPO}"}
+
+    for release_tag, published_at in _analyzer_releases(max_releases):
+        if published_at <= hub_date:
+            return {
+                "version": release_tag,
+                "note": f"latest {STATIC_ANALYZER_REPO} release at or before {tag}'s tag date ({hub_date})",
+            }
+
     return {
         "version": None,
         "note": (
-            "pin location not yet identified (Makefile invokes hub-static-analyzer without "
-            "a version pin) — carry forward the previous release's value and verify manually; "
-            "see references/compat-matrix-sources.md"
+            f"no {STATIC_ANALYZER_REPO} release among the last {max_releases} predates {tag} — "
+            "check that repo for a release before publishing, or leave as TBD"
+        ),
+    }
+
+
+def mcp_specification_version() -> dict:
+    return {
+        "version": None,
+        "note": (
+            "no supported revision is declared anywhere in traefik-hub — the MCP middleware "
+            "passes the client's Mcp-Protocol-Version header straight through to telemetry with "
+            "no validation or pinned constant (hub/pkg/middleware/mcp/middleware.go). Engineering "
+            "needs to confirm which revision(s) Hub actually supports before this row can carry a "
+            "real value; see hub-issues#3152. Do not guess or carry forward a previous value — "
+            "there isn't one."
         ),
     }
 
@@ -186,6 +264,7 @@ _DISPLAY_NAMES = {
     "owasp_crs": "OWASP CRS",
     "static_analyzer": "Static Analyzer",
     "kubernetes_gateway_api": "Kubernetes Gateway API",
+    "mcp_specification": "MCP specification",
 }
 
 
@@ -293,7 +372,7 @@ def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dic
     return [rows[name] for name in order]
 
 
-def build_matrix(tag: str, *, max_chart_tags: int) -> dict:
+def build_matrix(tag: str, *, max_chart_tags: int, max_analyzer_releases: int = 25) -> dict:
     deps = go_mod_deps(tag)
     return {
         "tag": tag,
@@ -303,7 +382,8 @@ def build_matrix(tag: str, *, max_chart_tags: int) -> dict:
         "coraza_waf": deps["coraza_waf"],
         "owasp_crs": deps["owasp_crs"],
         "kubernetes_gateway_api": deps["kubernetes_gateway_api"],
-        "static_analyzer": static_analyzer_version(),
+        "static_analyzer": static_analyzer_version(tag, max_releases=max_analyzer_releases),
+        "mcp_specification": mcp_specification_version(),
     }
 
 
@@ -311,8 +391,12 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tag", action="append", required=True, dest="tags")
     parser.add_argument("--max-chart-tags", type=int, default=25)
+    parser.add_argument("--max-analyzer-releases", type=int, default=25)
     args = parser.parse_args(argv)
-    result = {"tags": [build_matrix(t, max_chart_tags=args.max_chart_tags) for t in args.tags]}
+    result = {"tags": [
+        build_matrix(t, max_chart_tags=args.max_chart_tags, max_analyzer_releases=args.max_analyzer_releases)
+        for t in args.tags
+    ]}
     print(json.dumps(result, indent=2))
     return 0
 

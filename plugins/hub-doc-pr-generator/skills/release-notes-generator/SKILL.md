@@ -177,6 +177,16 @@ that clone path for `hub-doc-pr-generator`, this skill finds it too.
    `note` into the PR body's TBD checklist in step 8; never fill in a number
    the script didn't return.
 
+   `mcp_specification` is a harder case than any other TBD row here: even
+   `static_analyzer` resolves to a real value (from `traefik/hub-static-
+   analyzer`'s own releases, not go.mod), so its `null` is just "this
+   release predates the automation." `mcp_specification` has no source to
+   automate against at all — nothing in `traefik-hub` has ever declared a
+   supported MCP spec revision (see `references/compat-matrix-sources.md`).
+   Render it as TBD every time until hub-issues#3152 is resolved and the
+   script is updated with a real source — never guess a revision string or
+   repeat a prior release's TBD note as if it were a value.
+
 6. **Generate.** This is the LLM step — no script decides bullet wording.
    Read:
    - `/tmp/classified.json` and `/tmp/dedup.json` (which commits, shared vs.
