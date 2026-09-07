@@ -18,7 +18,19 @@ PYTHONPATH package.
 from __future__ import annotations
 import re
 
-_FRONT_MATTER_RE = re.compile(r"^---\n(?P<fm>.*?)\n---\n?(?P<body>.*)$", re.DOTALL)
+# `\r?\n` rather than a literal `\n` around each delimiter -- cutmode audit
+# finding G, and PR #32 review finding 5: an earlier version of this fix
+# normalized the WHOLE input text (`text.replace("\r\n", "\n")`) before
+# matching, which tolerated a CRLF-saved fragment (a plausible
+# Windows-editor save) but also silently rewrote every line ending in the
+# returned `fm`/`body` to LF -- producing a noisy full-file diff on
+# write-back (assign_target_version.assign() reconstructs the file from this
+# same split) for a change that should have touched only the
+# target_version line. Tolerating `\r?\n` in the regex itself, instead of
+# preprocessing the text, means only the two delimiter lines are
+# affected -- the captured `fm`/`body` groups keep whatever line endings the
+# original file actually used.
+_FRONT_MATTER_RE = re.compile(r"^---\r?\n(?P<fm>.*?)\r?\n---\r?\n?(?P<body>.*)$", re.DOTALL)
 
 # What counts as an unassigned release-note fragment's target_version (bare or
 # quoted -- collect_fragments.parse_fragment unquotes scalars when reading a
@@ -53,8 +65,42 @@ def split_front_matter(text: str) -> tuple[str, str]:
     """Split `text` into (front_matter_block, body), where front_matter_block is
     the raw text between the `---` delimiters (not yet parsed into fields).
     Raises ValueError if there's no such block — callers decide whether that's
-    fatal for their use case."""
+    fatal for their use case. Tolerates CRLF around the delimiters without
+    altering any other line endings in the returned `fm`/`body` (see
+    _FRONT_MATTER_RE's comment) -- per-line parsers downstream of this
+    (collect_fragments.parse_fragment's `fm_text.splitlines()`) already
+    handle a `\\r\\n`-terminated line correctly on their own, so no further
+    normalization is needed here."""
     m = _FRONT_MATTER_RE.match(text)
     if not m:
         raise ValueError("no '---' front matter block found")
     return m["fm"], m["body"]
+
+
+def detect_newline(text: str) -> str:
+    """The line-ending style ('\\r\\n' or '\\n') used by `text`'s own first
+    line. Exists so a front-matter rewriter can rebuild delimiter lines that
+    match the rest of the file instead of hardcoding '\\n' -- see
+    join_front_matter's docstring."""
+    idx = text.find("\n")
+    if idx == -1:
+        return "\n"
+    return "\r\n" if text[:idx].endswith("\r") else "\n"
+
+
+def join_front_matter(fm: str, body: str, newline: str = "\n") -> str:
+    """Inverse of split_front_matter: rebuild `---<nl>fm<nl>---<nl>body` using
+    `newline` for the two delimiter lines it owns (fm/body keep whatever line
+    endings they already contain).
+
+    Pulled out as the shared counterpart to split_front_matter (PR #32
+    review, altitude finding) rather than left as a bespoke f-string in each
+    front-matter rewriter -- assign_target_version.py's assign() had grown
+    this exact reconstruction (delimiter newline detected from the file's
+    first line via detect_newline, so a CRLF-saved fragment's rewritten
+    front matter doesn't come back out with mismatched line endings, cutmode
+    audit finding G's follow-up) as a private local expression; a future
+    front-matter rewriter (the sibling hub-doc-pr-generator skill plausibly
+    needs one too) can now reuse it instead of rediscovering the same
+    newline-preservation trick from scratch."""
+    return f"---{newline}{fm}{newline}---{newline}{body}"

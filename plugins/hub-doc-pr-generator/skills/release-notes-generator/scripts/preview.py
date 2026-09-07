@@ -36,7 +36,7 @@ _PLACEHOLDER_RE = re.compile(r"…|\.\.\.|\betc\.?\b", re.IGNORECASE)
 DEFAULT_REL_PATH = "docs/api-gateway/release-notes.mdx"
 
 
-def _checkout_branch(repo_path: str, branch: str) -> None:
+def checkout_branch(repo_path: str, branch: str) -> None:
     """Check out `branch`, creating it fresh from `origin/main` if it doesn't
     exist locally yet.
 
@@ -47,7 +47,19 @@ def _checkout_branch(repo_path: str, branch: str) -> None:
     traefik/hub-doc#965, from the sibling hub-doc-pr-generator skill's
     identical bug). An already-existing local branch is left as-is — it has
     its own legitimate history diverging from main, which isn't this bug.
-    """
+
+    Public (no leading underscore), not private to this module (PR #32
+    review round 4, finding 6): assign_target_version.py --doc-repo-root
+    also calls this now, so the SAME branch exists and is checked out
+    before cut mode's step 2 stages a fragment reassignment there, not just
+    before step 6's preview.py writes release-notes.mdx. Previously the
+    fragment could get rewritten-and-staged on whatever branch the doc repo
+    happened to be on (main, or a stale branch left by other work), and only
+    step 6's checkout -- run several steps later -- would ever create/select
+    the real release branch; if that checkout then failed (a diverged branch
+    refusing to be overwritten, exactly the concurrent-session risk
+    CLAUDE.md documents), the reassignment was left staged somewhere that
+    was never going to be committed anywhere real."""
     try:
         _git.run(repo_path, ["rev-parse", "--verify", f"refs/heads/{branch}"])
     except _git.GitError:
@@ -58,7 +70,7 @@ def _checkout_branch(repo_path: str, branch: str) -> None:
 
 
 def apply_edit(*, repo_path: str, branch: str, rel_path: str, content: str) -> None:
-    _checkout_branch(repo_path, branch)
+    checkout_branch(repo_path, branch)
     dest = Path(repo_path) / rel_path
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")

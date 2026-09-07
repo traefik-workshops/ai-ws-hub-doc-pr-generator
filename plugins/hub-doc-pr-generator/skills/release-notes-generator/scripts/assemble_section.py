@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 from scripts import _discover
+from scripts._shapes import GA_BULLET, VALID_SHAPES
 
 _EA_VERSION_RE = re.compile(r"-ea(\.|$)", re.IGNORECASE)
 
@@ -39,7 +40,13 @@ _EA_VERSION_RE = re.compile(r"-ea(\.|$)", re.IGNORECASE)
 # grouped under "Graduated to GA" -- that heading is reserved for actual GA
 # graduations, and a plain-bullet entry (a small enhancement the
 # engineer/reviewer explicitly declined EA/GA framing for) isn't one.
-_BULLET_SHAPE = "ga-bullet"
+#
+# Imported from _shapes.py, not retyped as a literal (PR #32 review-round-5
+# finding): this constant WAS a hardcoded "ga-bullet" string even after
+# _shapes.py was introduced as the single source of truth specifically to
+# rule out this exact drift -- if GA_BULLET's value ever changed there, this
+# copy would silently stop matching real fragments' shape field.
+_BULLET_SHAPE = GA_BULLET
 
 # Matches markdown link targets, e.g. `[text](../foo/bar.md#anchor)`. Only the
 # target (group 1) is used -- link text can contain nested brackets/parens we
@@ -125,6 +132,17 @@ def assemble(*, version: str, date: str, fragments: list[dict], compat_rows: lis
     """`fragments` must already be filtered to this version and ordered
     newest-first (see collect_fragments.for_version) -- this function does not
     re-sort or re-filter; it only groups by shape and renders."""
+    for f in fragments:
+        shape = f.get("shape")
+        if shape not in VALID_SHAPES:
+            # Loud failure, not a silent fall-through to the subsections
+            # bucket -- see _shapes.py's docstring (cutmode audit finding B).
+            # A typo'd or case-variant shape needs a human to fix the
+            # fragment's front matter, not to be quietly misrendered.
+            raise ValueError(
+                f"{f.get('filename', '<unknown fragment>')}: unrecognized shape {shape!r} -- "
+                f"expected one of {sorted(VALID_SHAPES)}"
+            )
     badge = " <EarlyAccessBadge />" if _EA_VERSION_RE.search(version) else ""
     heading = f"## Gateway {version}{badge}"
     date_line = f"**{date}**"
@@ -157,7 +175,15 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     fragments = json.loads(Path(args.fragments).read_text(encoding="utf-8"))
     compat_rows = json.loads(Path(args.compat_rows).read_text(encoding="utf-8"))
-    section = assemble(version=args.version, date=args.date, fragments=fragments, compat_rows=compat_rows)
+    try:
+        section = assemble(version=args.version, date=args.date, fragments=fragments, compat_rows=compat_rows)
+    except ValueError as e:
+        # An unrecognized shape needs a human to fix the fragment's front
+        # matter -- clean stderr message and non-zero exit, same convention
+        # collect_fragments.py's and assign_target_version.py's main()
+        # already use, not a raw traceback.
+        print(f"error assembling section: {e}", file=sys.stderr)
+        return 1
     link_warnings = check_fragment_links(fragments, Path(args.docs_dir)) if args.docs_dir else []
     print(json.dumps({"section": section, "link_warnings": link_warnings}, indent=2))
     return 0

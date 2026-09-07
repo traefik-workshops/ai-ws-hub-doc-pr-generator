@@ -224,6 +224,28 @@ class TestMergeFragmentDeltas(unittest.TestCase):
         by_component = {r["component"]: r["version"] for r in rows}
         self.assertEqual(by_component["Traefik Proxy"], "v3.7.10")
 
+    def test_fragment_delta_override_preserves_matrix_row_note(self):
+        """Regression test for cutmode audit finding D: overriding a matrix
+        row's version with a fragment delta previously always set that row's
+        note to None, silently dropping a real matrix-derived caveat -- e.g.
+        traefik_proxy_version()'s note flagging a go.mod/traefik.version
+        mismatch, which is exactly the case this note exists to surface.
+        A fragment delta has no way to carry its own note (the compat:
+        front-matter block is just component: version pairs), so overriding
+        a row's version must carry the existing note forward, not blank it."""
+        matrix_with_note = {
+            **SAMPLE_MATRIX,
+            "traefik_proxy": {
+                "version": "v3.7.9",
+                "note": "go.mod pins v3.7.9; hub/pkg/version/traefik.version reads v3.7.8 -- these disagree",
+            },
+        }
+        deltas = [{"compat": {"Traefik Proxy": "v3.7.10"}}]
+        rows = merge_fragment_deltas(matrix_with_note, deltas)
+        by_component = {r["component"]: r for r in rows}
+        self.assertEqual(by_component["Traefik Proxy"]["version"], "v3.7.10")
+        self.assertIn("disagree", by_component["Traefik Proxy"]["note"])
+
     def test_fragment_delta_for_unknown_component_is_appended(self):
         deltas = [{"compat": {"Envoy": "v1.30.0"}}]
         rows = merge_fragment_deltas(SAMPLE_MATRIX, deltas)
