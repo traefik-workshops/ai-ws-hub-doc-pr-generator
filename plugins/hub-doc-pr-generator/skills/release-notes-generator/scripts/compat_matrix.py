@@ -41,19 +41,19 @@ whatever the last published entry said:
     that repo's releases and picks the newest one at or before the Hub tag's
     own commit date, the same rule whoever filled these in by hand was
     apparently already following.
-  - MCP specification: unlike every other row, there is currently no version
-    to pin at all, not just an unlocated one. Confirmed live against
-    traefik-hub@main (hub/pkg/middleware/mcp/middleware.go): the middleware
-    reads the client's `Mcp-Protocol-Version` request header and hands it
-    straight to telemetry (telemetry.go's buildSemConvAttributes) with no
-    comparison, allow-list, or rejection path — a pure pass-through, not
-    version enforcement. `go.mod` pins `github.com/modelcontextprotocol/
-    go-sdk`, but only `e2e/middlewares/mcp_test.go` imports it; no
-    production package does. So "the revision Hub supports" is not yet a
-    fact the codebase states anywhere (see hub-issues#3152, technical
-    proposal 1: engineering has to declare a constant before this row can
-    report anything but TBD). Always reported as unknown; see
-    references/compat-matrix-sources.md.
+  - MCP specification: traefik-hub's MCP middleware doesn't validate or pin
+    a revision itself (a pure pass-through to telemetry — see
+    hub/pkg/middleware/mcp/middleware.go), so this isn't runtime-enforced
+    the way the go.mod-derived rows above are. But `go.mod`'s pinned
+    `github.com/modelcontextprotocol/go-sdk` version is real, and that SDK
+    declares its own `latestProtocolVersion` constant in `mcp/shared.go` —
+    reading it at the pinned SDK version reproduces hub-doc's published
+    values exactly (verified: go-sdk v1.4.1, pinned at traefik-hub v3.20.13,
+    resolves to 2025-06-18, matching tracing.md's documented example) and
+    moves as the SDK does (go-sdk v1.7.0 has since advanced to 2026-07-28),
+    so it's read fresh per tag like everything else here. See
+    mcp_specification_version()'s docstring for a live discrepancy this
+    caught in an open hub-doc PR.
 
 Usage:
   python -m scripts.compat_matrix --tag v3.19.13 --tag v3.20.8 [--max-chart-tags 25]
@@ -242,16 +242,95 @@ def static_analyzer_version(tag: str, *, max_releases: int = 25) -> dict:
     }
 
 
-def mcp_specification_version() -> dict:
+MCP_SDK_REPO = "modelcontextprotocol/go-sdk"
+MCP_SDK_SHARED_GO = "mcp/shared.go"
+_GO_SDK_DEP_RE = re.compile(r"github\.com/modelcontextprotocol/go-sdk\s+(v\S+)")
+_LATEST_PROTOCOL_ALIAS_RE = re.compile(r"latestProtocolVersion\s*=\s*(\w+)")
+
+
+def _go_sdk_pin(tag: str) -> Optional[str]:
+    content = _file_at_ref(HUB_REPO, "go.mod", tag)
+    if content is None:
+        return None
+    m = _GO_SDK_DEP_RE.search(content)
+    return m.group(1) if m else None
+
+
+def mcp_specification_version(tag: str) -> dict:
+    """traefik-hub's MCP middleware doesn't validate or pin a revision itself
+    — it passes the client's Mcp-Protocol-Version header straight through to
+    telemetry (hub/pkg/middleware/mcp/middleware.go) — and go.mod's pinned
+    `github.com/modelcontextprotocol/go-sdk` is imported only by
+    e2e/middlewares/mcp_test.go, not by any production package. So this is
+    not a runtime-enforced fact the way the go.mod-derived rows above are.
+
+    It's still a real, reproducible one, though: go-sdk itself declares a
+    `latestProtocolVersion` constant in mcp/shared.go (an alias to one of
+    several `protocolVersionYYYYMMDD` string constants) — "the version that
+    the client sends in the initialization request, and the default version
+    used by the server", per that file's own comment. Reading it at the
+    go-sdk version go.mod pins for a given Hub tag reproduces hub-doc's
+    already-published values exactly: verified live that go-sdk v1.4.1
+    (pinned at traefik-hub v3.20.13) resolves to 2025-06-18, matching the
+    `mcp.protocol.version` example already in
+    docs/api-gateway/reference/install/observability/tracing.md. And it
+    moves — go-sdk v1.7.0 (traefik-hub main, as of writing) has since
+    advanced `latestProtocolVersion` to 2026-07-28 — so this is read fresh
+    per tag, never assumed static, same as every other row here.
+
+    Caution for whoever reviews a generated entry: hub-doc PR #1000 (open,
+    unmerged at time of writing) got this exact derivation right in its own
+    PR description — 2025-06-18, sourced from go-sdk v1.4.1's
+    latestProtocolVersion — but the table it actually committed to
+    release-notes.mdx says 2025-11-25, which is go-sdk v1.4.1's *other*
+    protocolVersion constant, one its own source comment marks "not yet
+    released". Don't trust a past entry's MCP specification value without
+    re-deriving it the way this function does.
+    """
+    sdk_version = _go_sdk_pin(tag)
+    if sdk_version is None:
+        return {
+            "version": None,
+            "note": f"github.com/modelcontextprotocol/go-sdk not found in go.mod at {tag}",
+        }
+
+    shared_go = _file_at_ref(MCP_SDK_REPO, MCP_SDK_SHARED_GO, sdk_version)
+    if shared_go is None:
+        return {
+            "version": None,
+            "note": (
+                f"go.mod pins go-sdk {sdk_version}, but could not read {MCP_SDK_SHARED_GO} "
+                f"from {MCP_SDK_REPO} at that version"
+            ),
+        }
+
+    alias_m = _LATEST_PROTOCOL_ALIAS_RE.search(shared_go)
+    if not alias_m:
+        return {
+            "version": None,
+            "note": (
+                f"go-sdk {sdk_version}'s {MCP_SDK_SHARED_GO} has no latestProtocolVersion constant — "
+                "the SDK's source shape may have changed; check manually"
+            ),
+        }
+    alias = alias_m.group(1)
+    const_m = re.search(rf"{re.escape(alias)}\s*=\s*\"([^\"]+)\"", shared_go)
+    if not const_m:
+        return {
+            "version": None,
+            "note": (
+                f"go-sdk {sdk_version}: latestProtocolVersion aliases {alias}, but its string value "
+                "couldn't be resolved — check manually"
+            ),
+        }
+    revision = const_m.group(1)
     return {
-        "version": None,
+        "version": revision,
         "note": (
-            "no supported revision is declared anywhere in traefik-hub — the MCP middleware "
-            "passes the client's Mcp-Protocol-Version header straight through to telemetry with "
-            "no validation or pinned constant (hub/pkg/middleware/mcp/middleware.go). Engineering "
-            "needs to confirm which revision(s) Hub actually supports before this row can carry a "
-            "real value; see hub-issues#3152. Do not guess or carry forward a previous value — "
-            "there isn't one."
+            f"go.mod pins {MCP_SDK_REPO} {sdk_version}; that SDK version's own latestProtocolVersion "
+            f"constant is {revision!r}. Not runtime-enforced by traefik-hub's MCP middleware (see "
+            "hub/pkg/middleware/mcp/middleware.go) — this is the revision Hub is built/tested against, "
+            "per hub-issues#3152."
         ),
     }
 
@@ -383,7 +462,7 @@ def build_matrix(tag: str, *, max_chart_tags: int, max_analyzer_releases: int = 
         "owasp_crs": deps["owasp_crs"],
         "kubernetes_gateway_api": deps["kubernetes_gateway_api"],
         "static_analyzer": static_analyzer_version(tag, max_releases=max_analyzer_releases),
-        "mcp_specification": mcp_specification_version(),
+        "mcp_specification": mcp_specification_version(tag),
     }
 
 

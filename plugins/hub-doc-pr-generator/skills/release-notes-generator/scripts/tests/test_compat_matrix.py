@@ -15,6 +15,7 @@ go 1.26.0
 require (
 \tgithub.com/corazawaf/coraza-coreruleset/v4 v4.25.0
 \tgithub.com/corazawaf/coraza/v3 v3.7.0
+\tgithub.com/modelcontextprotocol/go-sdk v1.4.1
 \tgithub.com/traefik/traefik/v3 v3.7.10-0.20260730153609-e80aaab074b4
 \tsigs.k8s.io/gateway-api v1.6.1
 )
@@ -29,6 +30,19 @@ version: 41.1.0
 annotations:
   traefik.io/hub-min-version: v3.19.3
   traefik.io/hub-max-version: v3.20.7
+"""
+
+# Trimmed real snippet, verified live against modelcontextprotocol/go-sdk@v1.4.1's
+# mcp/shared.go.
+MCP_SDK_SHARED_GO_SNIPPET = """
+const (
+\t// latestProtocolVersion is the latest protocol version that this version of
+\t// the SDK supports.
+\tlatestProtocolVersion   = protocolVersion20250618
+\tprotocolVersion20251125 = "2025-11-25" // not yet released
+\tprotocolVersion20250618 = "2025-06-18"
+\tprotocolVersion20250326 = "2025-03-26"
+)
 """
 
 
@@ -153,11 +167,47 @@ class TestStaticAnalyzerVersion(unittest.TestCase):
 
 
 class TestMcpSpecificationVersion(unittest.TestCase):
-    def test_always_returns_null_with_explanatory_note(self):
-        result = mcp_specification_version()
+    def test_resolves_latest_protocol_version_from_pinned_sdk(self):
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: (
+                       GO_MOD_SNIPPET if "go.mod" in path else MCP_SDK_SHARED_GO_SNIPPET
+                   )):
+            result = mcp_specification_version("v3.20.13")
+        self.assertEqual(result["version"], "2025-06-18")
+        self.assertIn("v1.4.1", result["note"])
+
+    def test_does_not_pick_the_unreleased_sibling_constant(self):
+        """Regression guard for the exact hub-doc#1000 mistake: the SDK's
+        mcp/shared.go defines a second protocolVersion constant right next to
+        the aliased one, explicitly marked 'not yet released'. Only the one
+        latestProtocolVersion actually aliases may be returned."""
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: (
+                       GO_MOD_SNIPPET if "go.mod" in path else MCP_SDK_SHARED_GO_SNIPPET
+                   )):
+            result = mcp_specification_version("v3.20.13")
+        self.assertNotEqual(result["version"], "2025-11-25")
+
+    def test_missing_go_sdk_pin_returns_null_with_note(self):
+        no_sdk = "module x\n\nrequire (\n\tsigs.k8s.io/gateway-api v1.6.1\n)\n"
+        with patch("scripts.compat_matrix._file_at_ref", return_value=no_sdk):
+            result = mcp_specification_version("v3.20.13")
         self.assertIsNone(result["version"])
-        self.assertIn("no supported revision is declared", result["note"])
-        self.assertIn("3152", result["note"])
+        self.assertIn("not found in go.mod", result["note"])
+
+    def test_unreachable_sdk_source_returns_null_with_note(self):
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else None):
+            result = mcp_specification_version("v3.20.13")
+        self.assertIsNone(result["version"])
+        self.assertIn("could not read", result["note"])
+
+    def test_sdk_source_missing_the_constant_returns_null_with_note(self):
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else "package mcp\n"):
+            result = mcp_specification_version("v3.20.13")
+        self.assertIsNone(result["version"])
+        self.assertIn("no latestProtocolVersion constant", result["note"])
 
 
 class TestBuildMatrix(unittest.TestCase):
@@ -166,6 +216,7 @@ class TestBuildMatrix(unittest.TestCase):
                    side_effect=lambda repo, path, ref: (
                        GO_MOD_SNIPPET if "go.mod" in path else
                        "v3.7.10\n" if "traefik.version" in path else
+                       MCP_SDK_SHARED_GO_SNIPPET if "shared.go" in path else
                        CHART_YAML_SNIPPET
                    )), \
              patch("scripts.compat_matrix._chart_tag_names", return_value=["v41.1.0"]), \
@@ -177,7 +228,7 @@ class TestBuildMatrix(unittest.TestCase):
         self.assertEqual(matrix["traefik_hub"], "v3.20.8")
         self.assertEqual(matrix["coraza_waf"], "v3.7.0")
         self.assertEqual(matrix["static_analyzer"]["version"], "v1.9.4")
-        self.assertIsNone(matrix["mcp_specification"]["version"])
+        self.assertEqual(matrix["mcp_specification"]["version"], "2025-06-18")
 
 
 SAMPLE_MATRIX = {

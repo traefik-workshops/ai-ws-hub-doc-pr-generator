@@ -177,15 +177,17 @@ that clone path for `hub-doc-pr-generator`, this skill finds it too.
    `note` into the PR body's TBD checklist in step 8; never fill in a number
    the script didn't return.
 
-   `mcp_specification` is a harder case than any other TBD row here: even
-   `static_analyzer` resolves to a real value (from `traefik/hub-static-
-   analyzer`'s own releases, not go.mod), so its `null` is just "this
-   release predates the automation." `mcp_specification` has no source to
-   automate against at all — nothing in `traefik-hub` has ever declared a
-   supported MCP spec revision (see `references/compat-matrix-sources.md`).
-   Render it as TBD every time until hub-issues#3152 is resolved and the
-   script is updated with a real source — never guess a revision string or
-   repeat a prior release's TBD note as if it were a value.
+   `mcp_specification` isn't runtime-enforced by traefik-hub's MCP middleware
+   (a pure header pass-through — see `references/compat-matrix-sources.md`),
+   but it does resolve to a real value: `go.mod`'s pinned
+   `github.com/modelcontextprotocol/go-sdk` version, cross-referenced against
+   that SDK's own `latestProtocolVersion` constant. Trust what the script
+   returns here, not a past release-notes entry's value — `hub-doc#1000`
+   (open at time of writing) shows why: its PR description derived the
+   correct `2025-06-18`, but the table it actually committed says
+   `2025-11-25`, the SDK's *other*, explicitly-unreleased constant at that
+   same version. If this comes back `null`, treat it exactly like any other
+   unknown row: carry the note into the TBD checklist, never guess.
 
 6. **Generate.** This is the LLM step — no script decides bullet wording.
    Read:
