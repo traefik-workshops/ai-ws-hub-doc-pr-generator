@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from scripts import compat_matrix
 from scripts.compat_matrix import (
     go_mod_deps, traefik_proxy_version, helm_chart_for, static_analyzer_version,
     mcp_specification_version, build_matrix, merge_fragment_deltas,
@@ -129,6 +130,28 @@ class TestHelmChartFor(unittest.TestCase):
         self.assertIsNone(result["version"])
 
 
+class TestAnalyzerReleases(unittest.TestCase):
+    """`_analyzer_releases` itself, independent of the tag-date filtering
+    `static_analyzer_version` layers on top."""
+
+    def test_sorts_explicitly_rather_than_trusting_api_order(self):
+        # Deliberately out of chronological order -- the API's ordering
+        # (creation time) isn't guaranteed to match published_at.
+        raw = "v1.9.3\t2026-08-12T08:31:30Z\nv1.9.4\t2026-08-19T08:00:48Z\n"
+        with patch("scripts.compat_matrix._gh.run_text", return_value=raw):
+            releases = compat_matrix._analyzer_releases(max_releases=25)
+        self.assertEqual([r[0] for r in releases], ["v1.9.4", "v1.9.3"])
+
+    def test_draft_release_with_no_published_at_is_dropped(self):
+        # A draft release reports published_at as null -- empty string over
+        # this TSV encoding. Left in, it would sort as "before everything"
+        # and could be picked as if it predated every real tag date.
+        raw = "v1.9.5\t\nv1.9.4\t2026-08-19T08:00:48Z\n"
+        with patch("scripts.compat_matrix._gh.run_text", return_value=raw):
+            releases = compat_matrix._analyzer_releases(max_releases=25)
+        self.assertEqual([r[0] for r in releases], ["v1.9.4"])
+
+
 class TestStaticAnalyzerVersion(unittest.TestCase):
     def test_picks_newest_release_at_or_before_hub_tag_date(self):
         releases = [
@@ -208,6 +231,41 @@ class TestMcpSpecificationVersion(unittest.TestCase):
             result = mcp_specification_version("v3.20.13")
         self.assertIsNone(result["version"])
         self.assertIn("no latestProtocolVersion constant", result["note"])
+
+    def test_alias_with_unresolvable_string_value_returns_null_with_note(self):
+        """latestProtocolVersion aliases a name, but that alias's own string
+        constant is nowhere in the file -- e.g. the SDK moved to computing it
+        instead of a literal, or the alias is misspelled. Distinct from the
+        'no latestProtocolVersion constant at all' case above: here the alias
+        itself resolves, only the second lookup fails."""
+        orphan_alias_snippet = """
+const (
+\tlatestProtocolVersion = protocolVersionUnresolved
+\tprotocolVersion20250618 = "2025-06-18"
+)
+"""
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else orphan_alias_snippet):
+            result = mcp_specification_version("v3.20.13")
+        self.assertIsNone(result["version"])
+        self.assertIn("couldn't be resolved", result["note"])
+
+    def test_alias_name_is_not_matched_as_a_substring_of_a_longer_identifier(self):
+        """Regression guard for suggestion #3 in the PR #34 review: the alias
+        lookup must not match a longer identifier that merely contains the
+        alias name as a substring (e.g. a differently-scoped constant that
+        happens to share a suffix). Word-boundary anchoring must win here."""
+        shadowed_snippet = """
+const (
+\tlatestProtocolVersion = protocolVersion20250618
+\txprotocolVersion20250618 = "1999-01-01" // decoy: alias name is a literal substring of this identifier, appears first
+\tprotocolVersion20250618 = "2025-06-18"
+)
+"""
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else shadowed_snippet):
+            result = mcp_specification_version("v3.20.13")
+        self.assertEqual(result["version"], "2025-06-18")
 
 
 class TestBuildMatrix(unittest.TestCase):

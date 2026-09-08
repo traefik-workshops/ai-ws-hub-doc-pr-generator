@@ -197,7 +197,18 @@ def _hub_tag_date(tag: str) -> Optional[str]:
 
 def _analyzer_releases(max_releases: int) -> list[tuple[str, str]]:
     """(tag_name, published_at) pairs for traefik/hub-static-analyzer, newest
-    first — GitHub's releases API already orders them that way."""
+    first. GitHub's releases API returns entries by creation order, which
+    usually matches published_at but isn't guaranteed to (a release's publish
+    date can be edited after the fact) -- so this sorts explicitly rather
+    than trusting API ordering.
+
+    A draft release reports `published_at: null` (empty string over the TSV
+    API used here); those are dropped rather than sorted in, since an empty
+    string would otherwise compare as "before everything" and could get
+    picked as if it predated every real tag date. GitHub only surfaces draft
+    releases to callers with push access to the repo, so this is unlikely to
+    ever fire against a third-party repo like hub-static-analyzer -- it's a
+    defensive guard, not a case seen in practice."""
     raw = _gh.run_text([
         "api", f"repos/{STATIC_ANALYZER_REPO}/releases", "--paginate",
         "--jq", ".[] | [.tag_name, .published_at] | @tsv",
@@ -207,7 +218,10 @@ def _analyzer_releases(max_releases: int) -> list[tuple[str, str]]:
         if not line.strip():
             continue
         tag_name, published_at = line.split("\t", 1)
+        if not published_at:
+            continue  # draft release with no publish date -- see docstring
         out.append((tag_name, published_at))
+    out.sort(key=lambda pair: pair[1], reverse=True)
     return out[:max_releases]
 
 
@@ -245,7 +259,7 @@ def static_analyzer_version(tag: str, *, max_releases: int = 25) -> dict:
 MCP_SDK_REPO = "modelcontextprotocol/go-sdk"
 MCP_SDK_SHARED_GO = "mcp/shared.go"
 _GO_SDK_DEP_RE = re.compile(r"github\.com/modelcontextprotocol/go-sdk\s+(v\S+)")
-_LATEST_PROTOCOL_ALIAS_RE = re.compile(r"latestProtocolVersion\s*=\s*(\w+)")
+_LATEST_PROTOCOL_ALIAS_RE = re.compile(r"\blatestProtocolVersion\s*=\s*(\w+)\b")
 
 
 def _go_sdk_pin(tag: str) -> Optional[str]:
@@ -314,7 +328,7 @@ def mcp_specification_version(tag: str) -> dict:
             ),
         }
     alias = alias_m.group(1)
-    const_m = re.search(rf"{re.escape(alias)}\s*=\s*\"([^\"]+)\"", shared_go)
+    const_m = re.search(rf"\b{re.escape(alias)}\s*=\s*\"([^\"]+)\"", shared_go)
     if not const_m:
         return {
             "version": None,
