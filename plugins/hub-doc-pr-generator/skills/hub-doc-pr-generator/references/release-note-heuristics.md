@@ -57,11 +57,7 @@ Reorganized to per-version (semver) sections in [traefik/hub-doc#953](https://gi
 
 - **Feature A** is now generally available. See [...](...).
 
-#### Feature B
-
-:::warning Early Access
-This feature is currently in early access.
-:::
+#### Feature B <EarlyAccessBadge />
 
 Body...
 
@@ -81,6 +77,13 @@ line (`**2026-04-02 & 2026-04-01**`) and one `**v3.x.x**`-labeled compatibility 
 version inside the same `<Collapse>` — this skill never constructs a combined heading
 itself (see "Which version" below); it's a hub-doc-team curation step for when multiple
 patch tags land close together.
+
+Per-feature EA badges inside this file follow the same badge-only rule — no
+`:::warning Early Access` callout, unlike a feature's own standalone doc page (see
+`style-guide.md`'s "Early Access features" section, which still applies there). See
+`release-note-style.md` for why, and for the rest of this genre's language rules
+(the outcome-clause pattern for bug-fix bullets, terse misc bullets, feature-paragraph
+shape, and action-required notices).
 
 The `#### Compatibility Matrix` heading from the old format is gone — the table is
 wrapped directly in `<Collapse title="Compatibility matrix">`, no heading of its own.

@@ -1,9 +1,8 @@
 # Compatibility-matrix sources
 
 None of these are derivable from a commit changelog — they have to be pulled
-from the actual release artifacts. `compat_matrix.py` automates the ones with
-a known source; this documents where each row comes from, and flags the one
-that isn't automated yet.
+from the actual release artifacts. `compat_matrix.py` automates all of them
+now; this documents where each row actually comes from.
 
 | Row | Source | How |
 |---|---|---|
@@ -13,7 +12,8 @@ that isn't automated yet.
 | Coraza WAF | `traefik/traefik-hub`, `go.mod` at the release tag | regex match on `github.com/corazawaf/coraza/v3` |
 | OWASP CRS | `traefik/traefik-hub`, `go.mod` at the release tag | regex match on `github.com/corazawaf/coraza-coreruleset/v4` |
 | Kubernetes Gateway API | `traefik/traefik-hub`, `go.mod` at the release tag | regex match on `sigs.k8s.io/gateway-api`. This is the row that was verifiably wrong in a hand-drafted entry — a stale v1.5.1 carried forward when go.mod at the tag actually pinned v1.6.1 — which is the whole reason this script reads go.mod directly instead of trusting the previous entry. |
-| Static Analyzer | **not yet automated** | the Makefile invokes `hub-static-analyzer` but no version pin for it has been located yet (not in go.mod, not an obvious flake.nix input at a quick look). `compat_matrix.py` always reports this as `null` with a note to carry forward the previous release's value and verify by hand. Whoever wires this up next: find where this tool's version is actually pinned (a separate internal repo? a container image tag? flake.nix more carefully?) and add a lookup function alongside `go_mod_deps`/`traefik_proxy_version` above. |
+| Static Analyzer | `traefik/hub-static-analyzer` releases, plus `traefik/traefik-hub`'s tag commit date | not a go.mod dependency — traefik-hub never pins a version for it anywhere (checked go.mod, the Makefile, CI, flake.nix). It ships from its own repo with its own release cadence. Verified live: hub-doc's published v3.20.12 entry (traefik-hub tagged 2026-08-26) lists Static Analyzer v1.9.4, exactly that repo's own latest release as of that date (published 2026-08-19) — so `static_analyzer_version()` looks up the target tag's commit date in `traefik-hub`, then scans `hub-static-analyzer`'s releases for the newest one published at or before it. Can still come back `null` if no release predates the tag among the last `max_releases` checked — don't guess when that happens, same rule as every other row here. |
+| MCP specification | `traefik/traefik-hub`'s `go.mod` pin for `github.com/modelcontextprotocol/go-sdk`, then that SDK's own `mcp/shared.go` at the pinned version | `traefik-hub`'s MCP middleware (`hub/pkg/middleware/mcp/middleware.go`) doesn't validate or pin a revision itself — it's a pass-through to telemetry, and the SDK is only imported by `e2e/middlewares/mcp_test.go`, not production code — so this isn't runtime-enforced the way the other go.mod-derived rows are. It's still real and reproducible: go-sdk declares its own `latestProtocolVersion` constant (an alias to one of several `protocolVersionYYYYMMDD` strings). Verified live: go-sdk `v1.4.1` (pinned at traefik-hub `v3.20.13`) resolves to `2025-06-18`, matching the `mcp.protocol.version` example already published in [tracing.md](https://github.com/traefik/hub-doc/blob/main/docs/api-gateway/reference/install/observability/tracing.md), and go-sdk `v1.7.0` (traefik-hub `main`, as of writing) has since moved `latestProtocolVersion` to `2026-07-28` — so this is read fresh per tag, same as everything else here, never assumed static. **Caution:** [hub-doc#1000](https://github.com/traefik/hub-doc/pull/1000) (open, unmerged) got the derivation right in its PR description (`2025-06-18`) but committed `2025-11-25` to the actual table — that's go-sdk `v1.4.1`'s *other* constant, explicitly marked "not yet released" in the SDK's own source comment. Don't trust a past entry's value without re-deriving it through `mcp_specification_version()`. |
 
 ## Why go.mod over the previous release-notes entry
 

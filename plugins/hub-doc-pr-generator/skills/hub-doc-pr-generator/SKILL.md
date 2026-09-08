@@ -293,7 +293,11 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    ```
    The release-note edit is a **fragment file**, never a `release-notes.mdx` overwrite — see
    `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md` ("Where the entry goes") for
-   why per-PR full-file overwrites were removed. Use
+   why per-PR full-file overwrites were removed. Load
+   `${CLAUDE_SKILL_DIR}/references/release-note-style.md` for this genre's language rules
+   (outcome-clause bug-fix bullets, terse misc bullets, the feature-paragraph shape, and the
+   badge-only-no-callout EA rule — narrower than the general Early Access section above,
+   which governs the feature's own doc page instead). Use
    `${CLAUDE_SKILL_DIR}/templates/release-note-fragment.mdx.tmpl` for the front matter
    wrapper and the matching shape template (`release-note-ea.mdx.tmpl` etc., picked per
    `${CLAUDE_SKILL_DIR}/references/release-note-heuristics.md`'s shape-selection table) for

@@ -1,8 +1,9 @@
 import unittest
 from unittest.mock import patch
+from scripts import compat_matrix
 from scripts.compat_matrix import (
-    go_mod_deps, traefik_proxy_version, helm_chart_for, static_analyzer_version, build_matrix,
-    merge_fragment_deltas,
+    go_mod_deps, traefik_proxy_version, helm_chart_for, static_analyzer_version,
+    mcp_specification_version, build_matrix, merge_fragment_deltas,
 )
 
 # Real snippets (trimmed) verified live against traefik/traefik-hub@main and
@@ -15,6 +16,7 @@ go 1.26.0
 require (
 \tgithub.com/corazawaf/coraza-coreruleset/v4 v4.25.0
 \tgithub.com/corazawaf/coraza/v3 v3.7.0
+\tgithub.com/modelcontextprotocol/go-sdk v1.4.1
 \tgithub.com/traefik/traefik/v3 v3.7.10-0.20260730153609-e80aaab074b4
 \tsigs.k8s.io/gateway-api v1.6.1
 )
@@ -29,6 +31,19 @@ version: 41.1.0
 annotations:
   traefik.io/hub-min-version: v3.19.3
   traefik.io/hub-max-version: v3.20.7
+"""
+
+# Trimmed real snippet, verified live against modelcontextprotocol/go-sdk@v1.4.1's
+# mcp/shared.go.
+MCP_SDK_SHARED_GO_SNIPPET = """
+const (
+\t// latestProtocolVersion is the latest protocol version that this version of
+\t// the SDK supports.
+\tlatestProtocolVersion   = protocolVersion20250618
+\tprotocolVersion20251125 = "2025-11-25" // not yet released
+\tprotocolVersion20250618 = "2025-06-18"
+\tprotocolVersion20250326 = "2025-03-26"
+)
 """
 
 
@@ -115,11 +130,142 @@ class TestHelmChartFor(unittest.TestCase):
         self.assertIsNone(result["version"])
 
 
+class TestAnalyzerReleases(unittest.TestCase):
+    """`_analyzer_releases` itself, independent of the tag-date filtering
+    `static_analyzer_version` layers on top."""
+
+    def test_sorts_explicitly_rather_than_trusting_api_order(self):
+        # Deliberately out of chronological order -- the API's ordering
+        # (creation time) isn't guaranteed to match published_at.
+        raw = "v1.9.3\t2026-08-12T08:31:30Z\nv1.9.4\t2026-08-19T08:00:48Z\n"
+        with patch("scripts.compat_matrix._gh.run_text", return_value=raw):
+            releases = compat_matrix._analyzer_releases(max_releases=25)
+        self.assertEqual([r[0] for r in releases], ["v1.9.4", "v1.9.3"])
+
+    def test_draft_release_with_no_published_at_is_dropped(self):
+        # A draft release reports published_at as null -- empty string over
+        # this TSV encoding. Left in, it would sort as "before everything"
+        # and could be picked as if it predated every real tag date.
+        raw = "v1.9.5\t\nv1.9.4\t2026-08-19T08:00:48Z\n"
+        with patch("scripts.compat_matrix._gh.run_text", return_value=raw):
+            releases = compat_matrix._analyzer_releases(max_releases=25)
+        self.assertEqual([r[0] for r in releases], ["v1.9.4"])
+
+
 class TestStaticAnalyzerVersion(unittest.TestCase):
-    def test_always_returns_null_with_explanatory_note(self):
-        result = static_analyzer_version()
+    def test_picks_newest_release_at_or_before_hub_tag_date(self):
+        releases = [
+            ("v1.9.4", "2026-08-19T08:00:48Z"),  # newest, predates the tag date -- should win
+            ("v1.9.3", "2026-08-12T08:31:30Z"),
+        ]
+        with patch("scripts.compat_matrix._hub_tag_date", return_value="2026-08-26T09:04:13Z"), \
+             patch("scripts.compat_matrix._analyzer_releases", return_value=releases):
+            result = static_analyzer_version("v3.20.12")
+        self.assertEqual(result["version"], "v1.9.4")
+        self.assertIn("v3.20.12", result["note"])
+
+    def test_release_published_after_hub_tag_date_is_skipped(self):
+        releases = [
+            ("v1.9.5", "2026-09-01T00:00:00Z"),  # published after the tag -- must not be picked
+            ("v1.9.4", "2026-08-19T08:00:48Z"),
+        ]
+        with patch("scripts.compat_matrix._hub_tag_date", return_value="2026-08-26T09:04:13Z"), \
+             patch("scripts.compat_matrix._analyzer_releases", return_value=releases):
+            result = static_analyzer_version("v3.20.12")
+        self.assertEqual(result["version"], "v1.9.4")
+
+    def test_no_release_predating_tag_returns_null_with_note(self):
+        releases = [("v1.9.5", "2026-09-01T00:00:00Z")]
+        with patch("scripts.compat_matrix._hub_tag_date", return_value="2026-08-26T09:04:13Z"), \
+             patch("scripts.compat_matrix._analyzer_releases", return_value=releases):
+            result = static_analyzer_version("v3.20.12")
         self.assertIsNone(result["version"])
-        self.assertIn("not yet identified", result["note"])
+        self.assertIn("no traefik/hub-static-analyzer release", result["note"])
+
+    def test_unresolvable_hub_tag_date_returns_null_with_note(self):
+        with patch("scripts.compat_matrix._hub_tag_date", return_value=None):
+            result = static_analyzer_version("v3.20.12")
+        self.assertIsNone(result["version"])
+        self.assertIn("commit date", result["note"])
+
+
+class TestMcpSpecificationVersion(unittest.TestCase):
+    def test_resolves_latest_protocol_version_from_pinned_sdk(self):
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: (
+                       GO_MOD_SNIPPET if "go.mod" in path else MCP_SDK_SHARED_GO_SNIPPET
+                   )):
+            result = mcp_specification_version("v3.20.13")
+        self.assertEqual(result["version"], "2025-06-18")
+        self.assertIn("v1.4.1", result["note"])
+
+    def test_does_not_pick_the_unreleased_sibling_constant(self):
+        """Regression guard for the exact hub-doc#1000 mistake: the SDK's
+        mcp/shared.go defines a second protocolVersion constant right next to
+        the aliased one, explicitly marked 'not yet released'. Only the one
+        latestProtocolVersion actually aliases may be returned."""
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: (
+                       GO_MOD_SNIPPET if "go.mod" in path else MCP_SDK_SHARED_GO_SNIPPET
+                   )):
+            result = mcp_specification_version("v3.20.13")
+        self.assertNotEqual(result["version"], "2025-11-25")
+
+    def test_missing_go_sdk_pin_returns_null_with_note(self):
+        no_sdk = "module x\n\nrequire (\n\tsigs.k8s.io/gateway-api v1.6.1\n)\n"
+        with patch("scripts.compat_matrix._file_at_ref", return_value=no_sdk):
+            result = mcp_specification_version("v3.20.13")
+        self.assertIsNone(result["version"])
+        self.assertIn("not found in go.mod", result["note"])
+
+    def test_unreachable_sdk_source_returns_null_with_note(self):
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else None):
+            result = mcp_specification_version("v3.20.13")
+        self.assertIsNone(result["version"])
+        self.assertIn("could not read", result["note"])
+
+    def test_sdk_source_missing_the_constant_returns_null_with_note(self):
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else "package mcp\n"):
+            result = mcp_specification_version("v3.20.13")
+        self.assertIsNone(result["version"])
+        self.assertIn("no latestProtocolVersion constant", result["note"])
+
+    def test_alias_with_unresolvable_string_value_returns_null_with_note(self):
+        """latestProtocolVersion aliases a name, but that alias's own string
+        constant is nowhere in the file -- e.g. the SDK moved to computing it
+        instead of a literal, or the alias is misspelled. Distinct from the
+        'no latestProtocolVersion constant at all' case above: here the alias
+        itself resolves, only the second lookup fails."""
+        orphan_alias_snippet = """
+const (
+\tlatestProtocolVersion = protocolVersionUnresolved
+\tprotocolVersion20250618 = "2025-06-18"
+)
+"""
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else orphan_alias_snippet):
+            result = mcp_specification_version("v3.20.13")
+        self.assertIsNone(result["version"])
+        self.assertIn("couldn't be resolved", result["note"])
+
+    def test_alias_name_is_not_matched_as_a_substring_of_a_longer_identifier(self):
+        """Regression guard for suggestion #3 in the PR #34 review: the alias
+        lookup must not match a longer identifier that merely contains the
+        alias name as a substring (e.g. a differently-scoped constant that
+        happens to share a suffix). Word-boundary anchoring must win here."""
+        shadowed_snippet = """
+const (
+\tlatestProtocolVersion = protocolVersion20250618
+\txprotocolVersion20250618 = "1999-01-01" // decoy: alias name is a literal substring of this identifier, appears first
+\tprotocolVersion20250618 = "2025-06-18"
+)
+"""
+        with patch("scripts.compat_matrix._file_at_ref",
+                   side_effect=lambda repo, path, ref: GO_MOD_SNIPPET if "go.mod" in path else shadowed_snippet):
+            result = mcp_specification_version("v3.20.13")
+        self.assertEqual(result["version"], "2025-06-18")
 
 
 class TestBuildMatrix(unittest.TestCase):
@@ -128,14 +274,19 @@ class TestBuildMatrix(unittest.TestCase):
                    side_effect=lambda repo, path, ref: (
                        GO_MOD_SNIPPET if "go.mod" in path else
                        "v3.7.10\n" if "traefik.version" in path else
+                       MCP_SDK_SHARED_GO_SNIPPET if "shared.go" in path else
                        CHART_YAML_SNIPPET
                    )), \
-             patch("scripts.compat_matrix._chart_tag_names", return_value=["v41.1.0"]):
+             patch("scripts.compat_matrix._chart_tag_names", return_value=["v41.1.0"]), \
+             patch("scripts.compat_matrix._hub_tag_date", return_value="2026-08-26T09:04:13Z"), \
+             patch("scripts.compat_matrix._analyzer_releases",
+                   return_value=[("v1.9.4", "2026-08-19T08:00:48Z")]):
             matrix = build_matrix("v3.20.8", max_chart_tags=25)
         self.assertEqual(matrix["tag"], "v3.20.8")
         self.assertEqual(matrix["traefik_hub"], "v3.20.8")
         self.assertEqual(matrix["coraza_waf"], "v3.7.0")
-        self.assertIsNone(matrix["static_analyzer"]["version"])
+        self.assertEqual(matrix["static_analyzer"]["version"], "v1.9.4")
+        self.assertEqual(matrix["mcp_specification"]["version"], "2025-06-18")
 
 
 SAMPLE_MATRIX = {
@@ -147,6 +298,7 @@ SAMPLE_MATRIX = {
     "owasp_crs": "v4.25.0",
     "kubernetes_gateway_api": "v1.6.1",
     "static_analyzer": {"version": None, "note": "pin location not yet identified"},
+    "mcp_specification": {"version": None, "note": "no supported revision is declared"},
 }
 
 
@@ -273,7 +425,8 @@ class TestMergeFragmentDeltas(unittest.TestCase):
         self.assertEqual(
             components,
             ["Traefik Hub", "Helm Chart", "Traefik Proxy", "Coraza WAF",
-             "OWASP CRS", "Static Analyzer", "Kubernetes Gateway API", "Envoy"],
+             "OWASP CRS", "Static Analyzer", "Kubernetes Gateway API",
+             "MCP specification", "Envoy"],
         )
 
 

@@ -177,6 +177,18 @@ that clone path for `hub-doc-pr-generator`, this skill finds it too.
    `note` into the PR body's TBD checklist in step 8; never fill in a number
    the script didn't return.
 
+   `mcp_specification` isn't runtime-enforced by traefik-hub's MCP middleware
+   (a pure header pass-through — see `references/compat-matrix-sources.md`),
+   but it does resolve to a real value: `go.mod`'s pinned
+   `github.com/modelcontextprotocol/go-sdk` version, cross-referenced against
+   that SDK's own `latestProtocolVersion` constant. Trust what the script
+   returns here, not a past release-notes entry's value — `hub-doc#1000`
+   (open at time of writing) shows why: its PR description derived the
+   correct `2025-06-18`, but the table it actually committed says
+   `2025-11-25`, the SDK's *other*, explicitly-unreleased constant at that
+   same version. If this comes back `null`, treat it exactly like any other
+   unknown row: carry the note into the TBD checklist, never guess.
+
 6. **Generate.** This is the LLM step — no script decides bullet wording.
    Read:
    - `/tmp/classified.json` and `/tmp/dedup.json` (which commits, shared vs.
@@ -188,6 +200,8 @@ that clone path for `hub-doc-pr-generator`, this skill finds it too.
      Tier 1 — Core rules
    - `${CLAUDE_SKILL_DIR}/../hub-doc-pr-generator/references/hub-doc-conventions.md`
      for MDX admonition/heading conventions
+   - `${CLAUDE_SKILL_DIR}/../hub-doc-pr-generator/references/release-note-style.md`
+     for this genre's language rules
    - The current top of `docs/api-gateway/release-notes.mdx` in the hub-doc
      clone (first ~30 lines, to confirm nothing about the file's preamble has
      changed) — do not read the whole file; `render_entry.py` in step 7
@@ -200,7 +214,11 @@ that clone path for `hub-doc-pr-generator`, this skill finds it too.
    `vX.Y.Z only:` / `vX.Y.Z:` per the template. Write the wording from the
    commit subject and your understanding of what it actually does — don't
    just retitle-case the raw subject line, and don't invent behavior the
-   commit doesn't describe.
+   commit doesn't describe. Per `release-note-style.md`, end each bullet with
+   the observable consequence, not just the mechanism (never ship one that
+   stops at restating the commit subject); the one exception is a bare
+   dependency-bump or CVE-advisory bullet in `### Misc`, which stays a plain
+   fact with no outcome clause.
 
    Write the new entry to `/tmp/new-entry.mdx`.
 

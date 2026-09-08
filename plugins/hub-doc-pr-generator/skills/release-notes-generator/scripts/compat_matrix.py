@@ -32,10 +32,28 @@ whatever the last published entry said:
     plugin follows. As of writing this can genuinely come back empty (the
     latest chart tag can lag a day or more behind a Hub patch release) —
     that's reported as `version: null`, never guessed.
-  - Static Analyzer: no pin location has been identified yet. The Makefile
-    invokes `hub-static-analyzer` but doesn't pin a version anywhere found
-    so far. Always reported as unknown; see references/compat-matrix-sources.md
-    before wiring this up for real.
+  - Static Analyzer: traefik-hub never pins a version for it (not go.mod,
+    not the Makefile, not CI, not flake.nix — checked all four). It ships
+    from its own repo, traefik/hub-static-analyzer, with its own release
+    cadence. Verified live: hub-doc's published v3.20.12 entry (traefik-hub
+    tagged 2026-08-26) lists Static Analyzer v1.9.4, exactly that repo's own
+    latest release as of that date (published 2026-08-19). So this reads
+    that repo's releases and picks the newest one at or before the Hub tag's
+    own commit date, the same rule whoever filled these in by hand was
+    apparently already following.
+  - MCP specification: traefik-hub's MCP middleware doesn't validate or pin
+    a revision itself (a pure pass-through to telemetry — see
+    hub/pkg/middleware/mcp/middleware.go), so this isn't runtime-enforced
+    the way the go.mod-derived rows above are. But `go.mod`'s pinned
+    `github.com/modelcontextprotocol/go-sdk` version is real, and that SDK
+    declares its own `latestProtocolVersion` constant in `mcp/shared.go` —
+    reading it at the pinned SDK version reproduces hub-doc's published
+    values exactly (verified: go-sdk v1.4.1, pinned at traefik-hub v3.20.13,
+    resolves to 2025-06-18, matching tracing.md's documented example) and
+    moves as the SDK does (go-sdk v1.7.0 has since advanced to 2026-07-28),
+    so it's read fresh per tag like everything else here. See
+    mcp_specification_version()'s docstring for a live discrepancy this
+    caught in an open hub-doc PR.
 
 Usage:
   python -m scripts.compat_matrix --tag v3.19.13 --tag v3.20.8 [--max-chart-tags 25]
@@ -167,13 +185,166 @@ def helm_chart_for(tag: str, *, max_chart_tags: int) -> dict:
     }
 
 
-def static_analyzer_version() -> dict:
+STATIC_ANALYZER_REPO = "traefik/hub-static-analyzer"
+
+
+def _hub_tag_date(tag: str) -> Optional[str]:
+    try:
+        return _gh.run_text(["api", f"repos/{HUB_REPO}/commits/{tag}", "--jq", ".commit.committer.date"]).strip()
+    except _gh.GhError:
+        return None
+
+
+def _analyzer_releases(max_releases: int) -> list[tuple[str, str]]:
+    """(tag_name, published_at) pairs for traefik/hub-static-analyzer, newest
+    first. GitHub's releases API returns entries by creation order, which
+    usually matches published_at but isn't guaranteed to (a release's publish
+    date can be edited after the fact) -- so this sorts explicitly rather
+    than trusting API ordering.
+
+    A draft release reports `published_at: null` (empty string over the TSV
+    API used here); those are dropped rather than sorted in, since an empty
+    string would otherwise compare as "before everything" and could get
+    picked as if it predated every real tag date. GitHub only surfaces draft
+    releases to callers with push access to the repo, so this is unlikely to
+    ever fire against a third-party repo like hub-static-analyzer -- it's a
+    defensive guard, not a case seen in practice."""
+    raw = _gh.run_text([
+        "api", f"repos/{STATIC_ANALYZER_REPO}/releases", "--paginate",
+        "--jq", ".[] | [.tag_name, .published_at] | @tsv",
+    ])
+    out: list[tuple[str, str]] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        tag_name, published_at = line.split("\t", 1)
+        if not published_at:
+            continue  # draft release with no publish date -- see docstring
+        out.append((tag_name, published_at))
+    out.sort(key=lambda pair: pair[1], reverse=True)
+    return out[:max_releases]
+
+
+def static_analyzer_version(tag: str, *, max_releases: int = 25) -> dict:
+    """hub-static-analyzer isn't a go.mod dependency — traefik-hub never pins
+    a version for it anywhere (checked go.mod, the Makefile, CI, and
+    flake.nix). It ships from its own repo, traefik/hub-static-analyzer, with
+    its own release cadence. Verified live: hub-doc's published v3.20.12 entry
+    (traefik-hub tagged 2026-08-26) lists Static Analyzer v1.9.4, which is
+    exactly hub-static-analyzer's own latest release as of that date
+    (published 2026-08-19). So "the latest hub-static-analyzer release at or
+    before the Hub tag's own commit date" is the real, reproducible rule
+    whoever filled in past entries by hand was actually following — not a
+    guess, and not something that needed carrying forward blindly."""
+    hub_date = _hub_tag_date(tag)
+    if hub_date is None:
+        return {"version": None, "note": f"could not resolve {tag}'s commit date in {HUB_REPO}"}
+
+    for release_tag, published_at in _analyzer_releases(max_releases):
+        if published_at <= hub_date:
+            return {
+                "version": release_tag,
+                "note": f"latest {STATIC_ANALYZER_REPO} release at or before {tag}'s tag date ({hub_date})",
+            }
+
     return {
         "version": None,
         "note": (
-            "pin location not yet identified (Makefile invokes hub-static-analyzer without "
-            "a version pin) — carry forward the previous release's value and verify manually; "
-            "see references/compat-matrix-sources.md"
+            f"no {STATIC_ANALYZER_REPO} release among the last {max_releases} predates {tag} — "
+            "check that repo for a release before publishing, or leave as TBD"
+        ),
+    }
+
+
+MCP_SDK_REPO = "modelcontextprotocol/go-sdk"
+MCP_SDK_SHARED_GO = "mcp/shared.go"
+_GO_SDK_DEP_RE = re.compile(r"github\.com/modelcontextprotocol/go-sdk\s+(v\S+)")
+_LATEST_PROTOCOL_ALIAS_RE = re.compile(r"\blatestProtocolVersion\s*=\s*(\w+)\b")
+
+
+def _go_sdk_pin(tag: str) -> Optional[str]:
+    content = _file_at_ref(HUB_REPO, "go.mod", tag)
+    if content is None:
+        return None
+    m = _GO_SDK_DEP_RE.search(content)
+    return m.group(1) if m else None
+
+
+def mcp_specification_version(tag: str) -> dict:
+    """traefik-hub's MCP middleware doesn't validate or pin a revision itself
+    — it passes the client's Mcp-Protocol-Version header straight through to
+    telemetry (hub/pkg/middleware/mcp/middleware.go) — and go.mod's pinned
+    `github.com/modelcontextprotocol/go-sdk` is imported only by
+    e2e/middlewares/mcp_test.go, not by any production package. So this is
+    not a runtime-enforced fact the way the go.mod-derived rows above are.
+
+    It's still a real, reproducible one, though: go-sdk itself declares a
+    `latestProtocolVersion` constant in mcp/shared.go (an alias to one of
+    several `protocolVersionYYYYMMDD` string constants) — "the version that
+    the client sends in the initialization request, and the default version
+    used by the server", per that file's own comment. Reading it at the
+    go-sdk version go.mod pins for a given Hub tag reproduces hub-doc's
+    already-published values exactly: verified live that go-sdk v1.4.1
+    (pinned at traefik-hub v3.20.13) resolves to 2025-06-18, matching the
+    `mcp.protocol.version` example already in
+    docs/api-gateway/reference/install/observability/tracing.md. And it
+    moves — go-sdk v1.7.0 (traefik-hub main, as of writing) has since
+    advanced `latestProtocolVersion` to 2026-07-28 — so this is read fresh
+    per tag, never assumed static, same as every other row here.
+
+    Caution for whoever reviews a generated entry: hub-doc PR #1000 (open,
+    unmerged at time of writing) got this exact derivation right in its own
+    PR description — 2025-06-18, sourced from go-sdk v1.4.1's
+    latestProtocolVersion — but the table it actually committed to
+    release-notes.mdx says 2025-11-25, which is go-sdk v1.4.1's *other*
+    protocolVersion constant, one its own source comment marks "not yet
+    released". Don't trust a past entry's MCP specification value without
+    re-deriving it the way this function does.
+    """
+    sdk_version = _go_sdk_pin(tag)
+    if sdk_version is None:
+        return {
+            "version": None,
+            "note": f"github.com/modelcontextprotocol/go-sdk not found in go.mod at {tag}",
+        }
+
+    shared_go = _file_at_ref(MCP_SDK_REPO, MCP_SDK_SHARED_GO, sdk_version)
+    if shared_go is None:
+        return {
+            "version": None,
+            "note": (
+                f"go.mod pins go-sdk {sdk_version}, but could not read {MCP_SDK_SHARED_GO} "
+                f"from {MCP_SDK_REPO} at that version"
+            ),
+        }
+
+    alias_m = _LATEST_PROTOCOL_ALIAS_RE.search(shared_go)
+    if not alias_m:
+        return {
+            "version": None,
+            "note": (
+                f"go-sdk {sdk_version}'s {MCP_SDK_SHARED_GO} has no latestProtocolVersion constant — "
+                "the SDK's source shape may have changed; check manually"
+            ),
+        }
+    alias = alias_m.group(1)
+    const_m = re.search(rf"\b{re.escape(alias)}\s*=\s*\"([^\"]+)\"", shared_go)
+    if not const_m:
+        return {
+            "version": None,
+            "note": (
+                f"go-sdk {sdk_version}: latestProtocolVersion aliases {alias}, but its string value "
+                "couldn't be resolved — check manually"
+            ),
+        }
+    revision = const_m.group(1)
+    return {
+        "version": revision,
+        "note": (
+            f"go.mod pins {MCP_SDK_REPO} {sdk_version}; that SDK version's own latestProtocolVersion "
+            f"constant is {revision!r}. Not runtime-enforced by traefik-hub's MCP middleware (see "
+            "hub/pkg/middleware/mcp/middleware.go) — this is the revision Hub is built/tested against, "
+            "per hub-issues#3152."
         ),
     }
 
@@ -186,6 +357,7 @@ _DISPLAY_NAMES = {
     "owasp_crs": "OWASP CRS",
     "static_analyzer": "Static Analyzer",
     "kubernetes_gateway_api": "Kubernetes Gateway API",
+    "mcp_specification": "MCP specification",
 }
 
 
@@ -293,7 +465,7 @@ def merge_fragment_deltas(matrix: dict, fragment_deltas: list[dict]) -> list[dic
     return [rows[name] for name in order]
 
 
-def build_matrix(tag: str, *, max_chart_tags: int) -> dict:
+def build_matrix(tag: str, *, max_chart_tags: int, max_analyzer_releases: int = 25) -> dict:
     deps = go_mod_deps(tag)
     return {
         "tag": tag,
@@ -303,7 +475,8 @@ def build_matrix(tag: str, *, max_chart_tags: int) -> dict:
         "coraza_waf": deps["coraza_waf"],
         "owasp_crs": deps["owasp_crs"],
         "kubernetes_gateway_api": deps["kubernetes_gateway_api"],
-        "static_analyzer": static_analyzer_version(),
+        "static_analyzer": static_analyzer_version(tag, max_releases=max_analyzer_releases),
+        "mcp_specification": mcp_specification_version(tag),
     }
 
 
@@ -311,8 +484,12 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tag", action="append", required=True, dest="tags")
     parser.add_argument("--max-chart-tags", type=int, default=25)
+    parser.add_argument("--max-analyzer-releases", type=int, default=25)
     args = parser.parse_args(argv)
-    result = {"tags": [build_matrix(t, max_chart_tags=args.max_chart_tags) for t in args.tags]}
+    result = {"tags": [
+        build_matrix(t, max_chart_tags=args.max_chart_tags, max_analyzer_releases=args.max_analyzer_releases)
+        for t in args.tags
+    ]}
     print(json.dumps(result, indent=2))
     return 0
 

@@ -150,6 +150,10 @@ import BrowserWindow from '@site/src/components/BrowserWindow';
 ## Early Access features
 
 Load this section when `classify.json`'s `needs_release_note.proposed_shape == "ea-subsection"`.
+This governs the feature's own standalone documentation page. The `release-notes.mdx`
+entry for the same feature follows a different rule — badge only, no callout — see
+`release-note-style.md`.
+
 Every EA feature needs both the `<EarlyAccessBadge />` component and the
 `:::warning Early Access` callout together — never just one. Which shape depends on
 whether the whole topic is new or an existing page is gaining a new EA section
