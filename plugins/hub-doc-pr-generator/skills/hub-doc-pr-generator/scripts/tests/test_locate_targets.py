@@ -8,7 +8,9 @@ from scripts.locate_targets import sidebar_insertion_point, build_locate
 from scripts.locate_targets import existing_doc_refs, issue_texts_from_bundle
 from scripts.locate_targets import build_id_index
 from scripts.locate_targets import find_transcluded_partials
+from scripts.locate_targets import infer_doc_kind_from_path
 from scripts import locate_targets
+from scripts._product_areas import _Section
 
 
 class TestProposePaths(unittest.TestCase):
@@ -268,14 +270,17 @@ class TestGenericPrefixDeclaration(unittest.TestCase):
     """The "is this prefix a real product-area signal" flag lives on the
     _Section entry itself (generic=True/False), not in a separately
     maintained side-set -- so there's nothing to forget to keep in sync when
-    a new prefix is added to _HUB_REF_MAP/_HUB_GUIDE_MAP. These tests pin
-    that shape so a future refactor can't silently reintroduce a side-table."""
+    a new prefix is added to HUB_REF_MAP/HUB_GUIDE_MAP (scripts/_product_areas.py).
+    These tests pin that shape so a future refactor can't silently
+    reintroduce a side-table. locate_targets imports these maps from
+    _product_areas.py (see scripts/tests/test_product_areas_sync.py for the
+    drift guard between placement and doc-kind-scoring prefix lists)."""
 
     def test_known_generic_prefix_is_flagged_on_its_own_section(self):
-        self.assertTrue(locate_targets._HUB_GUIDE_MAP["hub/pkg/"].generic)
+        self.assertTrue(locate_targets.HUB_GUIDE_MAP["hub/pkg/"].generic)
 
     def test_specific_prefixes_are_not_flagged_generic(self):
-        for m in (locate_targets._HUB_REF_MAP, locate_targets._HUB_GUIDE_MAP, locate_targets._OSS_REF_MAP):
+        for m in (locate_targets.HUB_REF_MAP, locate_targets.HUB_GUIDE_MAP, locate_targets.OSS_REF_MAP):
             for prefix, section in m.items():
                 if prefix != "hub/pkg/":
                     self.assertFalse(
@@ -287,9 +292,9 @@ class TestGenericPrefixDeclaration(unittest.TestCase):
         # Guards against a future edit reintroducing a bare tuple (dirs,) for
         # some entries, which would silently make that prefix's genericness
         # unreachable instead of raising an AttributeError up front.
-        for m in (locate_targets._HUB_REF_MAP, locate_targets._HUB_GUIDE_MAP, locate_targets._OSS_REF_MAP):
+        for m in (locate_targets.HUB_REF_MAP, locate_targets.HUB_GUIDE_MAP, locate_targets.OSS_REF_MAP):
             for section in m.values():
-                self.assertIsInstance(section, locate_targets._Section)
+                self.assertIsInstance(section, _Section)
                 self.assertIsInstance(section.generic, bool)
                 self.assertTrue(section.dirs)
 
@@ -664,6 +669,80 @@ class TestBuildLocate(unittest.TestCase):
                 touched_paths=["hub/pkg/middleware/newthing/config.go"],
             )
         self.assertTrue(out["target_exists"])
+
+
+class TestInferDocKindFromPath(unittest.TestCase):
+    def test_guides_segment_is_user_guide(self):
+        self.assertEqual(infer_doc_kind_from_path("docs/dashboard/guides/quotas.md"), "user-guide")
+
+    def test_no_guides_segment_is_reference(self):
+        self.assertEqual(infer_doc_kind_from_path("docs/ai-gateway/middlewares/retry.md"), "reference")
+
+    def test_guide_singular_segment_is_user_guide(self):
+        self.assertEqual(infer_doc_kind_from_path("docs/onboarding/guide/first-steps.md"), "user-guide")
+
+    def test_top_level_reference_dir_is_reference(self):
+        self.assertEqual(infer_doc_kind_from_path("docs/api-gateway/reference/routing.md"), "reference")
+
+
+class TestBuildLocateDocKindMismatch(unittest.TestCase):
+    def test_mismatch_reported_when_confident_existing_page_disagrees_with_requested_kind(self):
+        # A human already pointed at an existing page that turns out to live
+        # under a guides/ directory, even though the caller passed
+        # doc_kind="reference" (Step 5's earlier, weaker guess). The
+        # existing-page signal is stronger evidence than that guess, so the
+        # mismatch must be reported for SKILL.md step 6 to correct.
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/dashboard/guides"
+            d.mkdir(parents=True)
+            (d / "quotas.md").write_text("existing page")
+            out = build_locate(
+                impl_repo="traefik/traefik-hub",
+                doc_repo_root=td,
+                doc_kind="reference",
+                feature_slug="quota-panel",
+                touched_paths=["hub/dashboard/src/QuotaPanel.tsx"],
+                issue_texts=["The doc for this already exists: docs/dashboard/guides/quotas.md"],
+            )
+        self.assertEqual(out["candidates"][0]["path"], "docs/dashboard/guides/quotas.md")
+        self.assertIn("doc_kind_mismatch", out)
+        self.assertEqual(out["doc_kind_mismatch"], {
+            "requested": "reference",
+            "inferred_from_target": "user-guide",
+            "target": "docs/dashboard/guides/quotas.md",
+        })
+
+    def test_no_mismatch_field_when_kinds_agree(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "docs/api-management"
+            d.mkdir(parents=True)
+            (d / "api-auth.md").write_text("existing page")
+            out = build_locate(
+                impl_repo="traefik/traefik-hub",
+                doc_repo_root=td,
+                doc_kind="reference",
+                feature_slug="keyless-authentication",
+                touched_paths=["hub/pkg/middleware/keylessauth/config.go"],
+                issue_texts=["The doc for this already exists: docs/api-management/api-auth.md"],
+            )
+        self.assertNotIn("doc_kind_mismatch", out)
+
+    def test_no_mismatch_field_for_fabricated_new_page(self):
+        # A brand-new page's path is derived FROM the requested doc_kind, so
+        # it can never disagree with it -- target_exists is False here, and
+        # no mismatch should ever be computed against a page that doesn't
+        # exist yet.
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "docs/ai-gateway/middlewares").mkdir(parents=True)
+            out = build_locate(
+                impl_repo="traefik/traefik-hub",
+                doc_repo_root=td,
+                doc_kind="reference",
+                feature_slug="new-thing",
+                touched_paths=["hub/pkg/middleware/newthing/config.go"],
+            )
+        self.assertFalse(out["target_exists"])
+        self.assertNotIn("doc_kind_mismatch", out)
 
 
 class TestFindTranscludedPartials(unittest.TestCase):

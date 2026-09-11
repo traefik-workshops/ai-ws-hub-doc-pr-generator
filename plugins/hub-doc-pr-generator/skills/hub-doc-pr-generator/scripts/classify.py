@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from scripts import _discover, _shapes
+from scripts._product_areas import REFERENCE_SIGNAL_PREFIXES, GUIDE_SIGNAL_PREFIXES
 
 _PREFIX_RE = re.compile(r"^(?P<type>feat|fix|chore|refactor|test|docs|style|perf|build|ci)\b")
 
@@ -162,10 +163,20 @@ def doc_kind_candidates(*, title: str, touched_paths: list[str]) -> list[dict]:
     rationale_ref: list[str] = []
     rationale_guide: list[str] = []
 
-    if any(p.startswith("hub/pkg/middleware/") or "/config.go" in p for p in touched_paths):
+    # REFERENCE_SIGNAL_PREFIXES/GUIDE_SIGNAL_PREFIXES come from
+    # scripts/_product_areas.py -- the same module locate_targets.py's
+    # placement maps live in, kept in sync by
+    # scripts/tests/test_product_areas_sync.py. The "/config.go" substring
+    # check stays local to classify.py: it's a Go-file-naming convention
+    # (config schema files, wherever they live), not a product-area prefix,
+    # so it doesn't belong in the shared module. Both conditions feed the
+    # SAME reference score once (an OR, not two separate signals) --
+    # touching a middleware prefix AND having a config.go file is still one
+    # "this looks like reference-worthy code" signal, not two stacked ones.
+    if any(p.startswith(REFERENCE_SIGNAL_PREFIXES) or "/config.go" in p for p in touched_paths):
         score_ref += 0.6
         rationale_ref.append("touches config/middleware Go package")
-    if any(p.startswith("hub/dashboard/") or p.startswith("hub/portal/") for p in touched_paths):
+    if any(p.startswith(GUIDE_SIGNAL_PREFIXES) for p in touched_paths):
         score_guide += 0.6
         rationale_guide.append("touches UI code")
     if any(w in title_l for w in ("guide", "tutorial", "walkthrough", "setup")):

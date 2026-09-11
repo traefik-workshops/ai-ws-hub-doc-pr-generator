@@ -10,47 +10,7 @@ from pathlib import Path
 
 from scripts import _discover
 from scripts._frontmatter import split_front_matter, unquote
-
-class _Section:
-    """One impl-repo Go-path prefix -> likely doc section(s), plus whether
-    that prefix is a real product-area signal or just a broad catch-all.
-
-    `generic=True` is declared right here, next to the prefix it describes,
-    rather than in a separately-maintained set elsewhere in the file --
-    adding a new broad/catch-all prefix to one of the maps below and marking
-    it generic is a single edit instead of two that have to be kept in sync
-    by hand (a forgotten second edit previously let an overly-broad prefix
-    silently inflate its confidence score to that of a real signal; see
-    _section_dirs/propose_paths for how `generic` is used)."""
-
-    __slots__ = ("dirs", "generic")
-
-    def __init__(self, *dirs: str, generic: bool = False) -> None:
-        self.dirs = dirs
-        self.generic = generic
-
-
-# A small static map of impl-repo Go-path prefixes → likely doc section.
-_HUB_REF_MAP = {
-    "hub/pkg/middleware/": _Section("docs/ai-gateway/middlewares/", "docs/api-gateway/reference/routing/http/middlewares/"),
-    "hub/dashboard/":      _Section("docs/dashboard/"),
-    "hub/portal/":         _Section("docs/portal/"),
-}
-_HUB_GUIDE_MAP = {
-    "hub/dashboard/": _Section("docs/dashboard/guides/"),
-    # "hub/pkg/" is broad enough to match almost any Hub Go package -- it is
-    # NOT a specific-gateway signal despite counting as one matched prefix,
-    # hence generic=True. api-gateway listed first (not ai-gateway):
-    # confirmed live this generic prefix confidently mis-picked AI Gateway
-    # for touched paths that were actually API/MCP Gateway territory
-    # (AuthZEN, 2026-08-24) -- see _section_dirs' fallback comment for the
-    # same reasoning applied there.
-    "hub/pkg/": _Section("docs/api-gateway/guides/", "docs/ai-gateway/guides/", generic=True),
-}
-_OSS_REF_MAP = {
-    "pkg/middlewares/": _Section("docs/content/reference/routing/http/middlewares/"),
-    "pkg/provider/":    _Section("docs/content/reference/install-configuration/providers/"),
-}
+from scripts._product_areas import HUB_REF_MAP, HUB_GUIDE_MAP, OSS_REF_MAP
 
 _DOC_URL_RE = re.compile(r"https?://doc\.traefik\.io/(?:traefik-hub|traefik)/([a-zA-Z0-9\-/_]+)")
 _REPO_PATH_RE = re.compile(r"\b(docs/[a-zA-Z0-9][a-zA-Z0-9\-_/]*\.mdx?)\b")
@@ -185,9 +145,9 @@ def _section_dirs(impl_repo: str, doc_kind: str, touched_paths: list[str]) -> tu
     -- a broad catch-all matching is not a grounded product-area signal even
     though it counts toward matched_prefix_count and still contributes dirs."""
     if impl_repo == "traefik/traefik-hub":
-        m = _HUB_REF_MAP if doc_kind == "reference" else _HUB_GUIDE_MAP
+        m = HUB_REF_MAP if doc_kind == "reference" else HUB_GUIDE_MAP
     else:
-        m = _OSS_REF_MAP
+        m = OSS_REF_MAP
     dirs: list[str] = []
     matched_prefixes = 0
     matched_specific_prefixes = 0
@@ -426,6 +386,21 @@ def propose_paths(*, impl_repo: str, doc_kind: str, feature_slug: str,
     return out
 
 
+def infer_doc_kind_from_path(path: str) -> str:
+    """Infers a page's doc kind from its own path, using the same convention
+    the section maps above already encode: guide-kind content lives under a
+    `guides/` (or `guide/`) subdirectory (docs/dashboard/guides/,
+    docs/api-gateway/guides/, docs/ai-gateway/guides/); everything else is
+    reference-kind. Not an invented rule -- it's the existing placement
+    convention read back off a real path, used to check a confidently
+    identified existing page's doc kind against whatever classify.py guessed
+    earlier (see build_locate's doc_kind_mismatch field)."""
+    segments = Path(path).parts
+    if any(seg in ("guides", "guide") for seg in segments):
+        return "user-guide"
+    return "reference"
+
+
 def select_neighbors(*, doc_repo_root: str, target_path: str, limit: int = 5) -> list[str]:
     target_dir = Path(doc_repo_root) / Path(target_path).parent
     if not target_dir.is_dir():
@@ -501,11 +476,28 @@ def build_locate(*, impl_repo: str, doc_repo_root: str, doc_kind: str,
             ins = sidebar_insertion_point(
                 sidebars.read_text(), target_path=target
             )
-    return {
+    result = {
         "candidates": candidates,
         "sidebar_insertion_point": ins,
         "target_exists": target_exists,
     }
+    # Only reconcile against a CONFIRMED existing page, never a fabricated
+    # one -- a brand-new path was built FROM `doc_kind`, so it can never
+    # disagree with it by construction. target_exists is exactly that gate:
+    # it's already True only for a real file on disk (an issue-referenced
+    # page or an existing-middleware-page match), never a freshly proposed
+    # filename. See SKILL.md step 6 for how this field gets used: it's
+    # stronger evidence than the earlier classify.py guess, so it corrects
+    # doc_kind rather than just being a low-confidence flag.
+    if target_exists:
+        inferred = infer_doc_kind_from_path(target)
+        if inferred != doc_kind:
+            result["doc_kind_mismatch"] = {
+                "requested": doc_kind,
+                "inferred_from_target": inferred,
+                "target": target,
+            }
+    return result
 
 
 def main(argv: list[str]) -> int:
