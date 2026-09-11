@@ -59,7 +59,7 @@ Existing documentation may not follow these rules. Do not mirror patterns from n
 
 **Banned phrases — rewrite or cut:**
 
-- `—` (em dash as connector) → comma, period, or split into two sentences
+- `—` (em dash as connector) → comma, period, or split into two sentences. Don't mechanically swap it for a semicolon or colon either — those are just a disguised em dash. Actually restructure: split into two full sentences, or let it run as one sentence joined by a conjunction ("so", "and", "but").
 - "It's worth noting that…" / "It's important to note that…" → use `:::note` callout or state directly
 - "In order to" → "To"
 - "Furthermore" / "Moreover" / "Additionally" → "Also" or restructure
@@ -67,6 +67,7 @@ Existing documentation may not follow these rules. Do not mirror patterns from n
 - "As mentioned above" / "As described earlier" → omit or restructure
 - "Could potentially" → "can" or "might"
 - Rhetorical questions ("But what if you need X?") → rewrite as a statement
+- Narrative or dramatizing framing ("This record doesn't stand alone: …", "without asking anyone to take your word for it") → state the fact plainly. If the sentence would read fine as a line in a blog post's opening paragraph, it's too rhetorical for a doc; cut the flourish and keep the fact.
 - "Prior to this release" / "From this release" → use the specific version number ("Before v3.20" / "Starting in v3.21") — outside the PR/release-note context, "this" has no referent
 
 **Voice principles:**
@@ -77,6 +78,15 @@ Existing documentation may not follow these rules. Do not mirror patterns from n
 4. **Don't explain what the reader already knows.** Skip definitions of concepts the page's audience uses daily.
 5. **Specifics over vague descriptors.** "Supports up to 100 rules" not "supports many rules."
 6. **Imperative in steps.** "Set the timeout to…" not "You should set the timeout to…"
+7. **Don't gesture at a category with one or two examples unless the reader already knows the category.** "Standard MCP methods such as `tools/list` and `tools/call`" doesn't tell a reader unfamiliar with the MCP spec what else counts as "standard" — either name the full set, link to where it's defined, or drop the category label and state the concrete fact directly ("Most MCP methods already have a default mapping built in").
+8. **Don't make a sentence depend on a term defined many paragraphs earlier on the same page.** If a word was given a specific meaning much earlier (e.g. "decision" as the PDP's allow/deny answer), a sentence using it again later should either restate the meaning briefly or be phrased so it doesn't need the callback at all. This is the concrete form of "make each section self-sufficient" (Titles and headings, above).
+9. **Multi-item exceptions and caveats lead with the action, not the explanation.** When documenting several exceptions to a rule, structure each one as a bolded, imperative lead sentence stating what the reader does, followed by why — not a paragraph of explanation with the action buried at the end. Example:
+   - Avoid: "`initialize` has no built-in default, so a route with only the built-in defaults denies it and no client can complete a handshake. Write a policy for it."
+   - Prefer: "**Write a policy for `initialize`.** It has no built-in default, so a route with only the built-in defaults denies it and no client can complete a handshake."
+10. **`id` vs. `identifier`.** Never write the bare English word "id" or "ID" in prose. When referring to the literal field, use its exact code-formatted name (`` `resource.id` ``). When speaking about the concept in plain English, write "identifier."
+11. **Name the concrete noun instead of a vague placeholder.** Don't write "something delegates authority" or "this happens" when a specific, already-established noun is available — use it. This is especially easy to miss right after introducing a diagram or table that already names the thing precisely; the connecting prose should reuse that exact name, not fall back to "something"/"this"/"it."
+12. **A worked example is not the feature's scope.** When a procedure page picks one concrete scenario to walk through (a payments API's refund endpoint, an e-commerce order lookup, etc.), say so explicitly — "using X as the example" — rather than writing the intro as though the feature exists only for that scenario ("this guide sets up the middleware so a payments API only allows a refund…"). A reader skimming the intro should immediately see the scenario is illustrative, not the boundary of what the feature does.
+13. **Setup specifics belong where the setup happens, not in a concept intro.** A concept or overview page's introduction states what a feature is and why it exists. Field names, exact values, and "where to set this" instructions belong in that page's Prerequisites section or the linked reference/procedure page — even one sentence of configuration detail in an intro paragraph reads as out of place and is a sign it should move.
 
 ---
 
@@ -119,6 +129,36 @@ Additional rules:
 - Start each numbered action with an imperative verb.
 - Confirm the expected state or result at the end of each major step.
 - Do not end with a summary paragraph; close with outcome or next steps.
+
+## Diagrams
+
+Use Mermaid (already enabled via `@docusaurus/theme-mermaid`) for flow/relationship
+diagrams, not a static image export — it's diffable in the PR, stays in sync with
+edits, and (unlike a raster/vector image) adapts to the site's light/dark theme
+automatically, as long as no node gets a hardcoded `classDef fill:#...` color
+(that color is literal and won't adapt either).
+
+- **Bridge prose to diagram with one short sentence directly above it, reusing
+  the diagram's own labels verbatim.** Don't introduce a diagram cold, and don't
+  paraphrase its node names in the connecting sentence — if the diagram says
+  "AuthZEN," the sentence above it says "AuthZEN," not "the authorization step."
+  This is what lets a reader map the sentence to the picture.
+- **Never make a diagram node into a link with Mermaid's `click` directive.**
+  It writes a raw URL that this repo's build-time link checker (`check-relative-paths`)
+  does not validate, so a stale or mistyped path fails silently instead of failing
+  CI. Put every link in ordinary prose/Markdown near the diagram instead, where
+  the existing link checker actually covers it.
+- **Center a standalone diagram** by wrapping the fenced ` ```mermaid ` block in
+  `<div style={{textAlign: 'center'}}>...</div>` (already used for other inline
+  styling in this repo, e.g. `<Details style={{ backgroundColor: ... }}>`) — Mermaid's
+  own output has no default centering.
+- **A cross-reference inside body prose needs the same existence check as a
+  structural link.** Before linking to another page from inside a sentence (not
+  just a "Next steps" bullet), confirm that page actually exists on the target
+  branch — a page still on another open PR's branch, or only merged to `main`
+  after this branch forked, will build locally but fail this repo's Docusaurus
+  link check in CI. If it doesn't exist yet, use a plain-text mention instead of
+  a broken link, and note the missing link as a follow-up once both branches merge.
 
 ## Screenshots and media
 
@@ -208,3 +248,7 @@ without at least one visible flag in the PR body.
   getting individual rows each, mirror that exact treatment — extend the umbrella entry,
   don't add a standalone row duplicating what it already covers. Don't invent a new
   granularity the table doesn't already use elsewhere.
+- Never follow a table with a prose list that breaks down the same rows by a different
+  grouping (e.g. a table of methods and their behavior, followed by a bulleted list of
+  those same methods grouped by category). Fold the extra dimension into the table itself
+  as another column instead — one structure, not two competing ones covering the same data.
