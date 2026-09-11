@@ -212,6 +212,21 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
    Always auto-accept `candidates[0]`. Log: `Auto-selected path: <path> (confidence: <N>)`
    — same, unconditional. The 0.75 threshold likewise only gates the flag below.
 
+   **Reconcile doc kind against the chosen target, if `locate.json` has a
+   `doc_kind_mismatch` field.** This only ever appears when `candidates[0]` is a
+   confirmed EXISTING page (a human-referenced issue link, or a matched existing
+   middleware page) — never a freshly proposed filename, which was built from the
+   doc-kind guess and can't disagree with it. A confirmed existing page's own
+   location is stronger evidence than the earlier classify.py guess, so:
+   - Adopt `doc_kind_mismatch.inferred_from_target` as the doc kind for the rest
+     of this run (template selection, style-guide sections in step 7) — the
+     `kind` originally auto-accepted above is now superseded.
+   - Log it plainly: `Auto-corrected doc kind: <inferred_from_target> (was <requested>), because target path <target> is a confirmed existing page.`
+   - Record it the same way as any other agent-initiated override (see the
+     `--override` paragraph below) so it reaches the PR body's "Needs verification"
+     section — this is the one case where an auto-accepted Step 5 pick turns out
+     to be wrong and gets silently corrected; it must not go unrecorded.
+
    Write the low-confidence paper trail:
    ```bash
    PYTHONPATH="${CLAUDE_SKILL_DIR}" python3 -m scripts.write_flags \
@@ -223,10 +238,11 @@ For the OSS flow (`traefik/traefik`), no path is needed — the engineer invokes
 
    **If you (the agent) override a script's pick** — e.g. you have direct evidence a
    `locate_targets.py` candidate is wrong, beyond what `--bundle`'s issue-text scan already
-   catches — don't hand-edit `flags.json`/`pr-body.md`. Re-run `write_flags` with
-   `--override "<path-you-chose>:<why>"` (repeatable) so the override gets the same
-   consistent PR-body treatment as an auto-flagged low-confidence pick, instead of being
-   recorded ad hoc or not at all.
+   catches, or you just corrected doc kind per `doc_kind_mismatch` above — don't hand-edit
+   `flags.json`/`pr-body.md`. Re-run `write_flags` with `--override "<what-you-chose>:<why>"`
+   (repeatable) so the override gets the same consistent PR-body treatment as an
+   auto-flagged low-confidence pick, instead of being recorded ad hoc or not at all. For a
+   doc-kind correction specifically: `--override "doc kind: <inferred_from_target>:target path <target> is a confirmed existing page, contradicting the earlier <requested> guess"`.
 
 6b. **Re-sync neighbors if locate_targets disagreed with step 4's guess.**
 
